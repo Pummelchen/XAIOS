@@ -59,6 +59,8 @@ else
 fi
 LOADER_OBJ="$EFI_BUILD_DIR/loader_main.obj"
 LOADER_SYSTEM_OBJ="$EFI_BUILD_DIR/system_volume_loader.obj"
+LOADER_PLATFORM_OBJ="$EFI_BUILD_DIR/loader_platform.obj"
+LOADER_IMAGE_OBJ="$EFI_BUILD_DIR/loader_image.obj"
 LOADER_SHA256_OBJ="$EFI_BUILD_DIR/sha256.obj"
 LOADER_SSH_CRYPTO_OBJ="$EFI_BUILD_DIR/ssh_crypto.obj"
 LOADER_TWEETNACL_OBJ="$EFI_BUILD_DIR/tweetnacl_subset.obj"
@@ -402,6 +404,8 @@ fi
 
 for loader_source in \
   "boot/uefi/system_volume_loader.c:$LOADER_SYSTEM_OBJ" \
+  "boot/uefi/loader_platform.c:$LOADER_PLATFORM_OBJ" \
+  "boot/uefi/loader_image.c:$LOADER_IMAGE_OBJ" \
   "kernel/runtime/sha256.c:$LOADER_SHA256_OBJ" \
   "userspace/sshd/ssh_crypto.c:$LOADER_SSH_CRYPTO_OBJ" \
   "userspace/sshd/tweetnacl_subset.c:$LOADER_TWEETNACL_OBJ"
@@ -420,6 +424,7 @@ do
     -fdata-sections \
     -DXAIOS_SHA256_NO_SELF_TEST=1 \
     -DXAIOS_CRYPTO_HASHES_ONLY=1 \
+    -DXAIOS_BOOT_TEST_APPS="$BOOT_TEST_APPS" \
     -Wall \
     -Wextra \
     -Werror \
@@ -439,6 +444,8 @@ done
   /machine:"$UEFI_MACHINE" \
   "$LOADER_OBJ" \
   "$LOADER_SYSTEM_OBJ" \
+  "$LOADER_PLATFORM_OBJ" \
+  "$LOADER_IMAGE_OBJ" \
   "$LOADER_SHA256_OBJ" \
   "$LOADER_SSH_CRYPTO_OBJ" \
   "$LOADER_TWEETNACL_OBJ" \
@@ -713,6 +720,7 @@ else
   $KERNEL_BUILD_DIR/early_mem.o
   $KERNEL_BUILD_DIR/early_pci.o
   $KERNEL_BUILD_DIR/early_serial.o
+  $KERNEL_BUILD_DIR/early_acpi.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -766,6 +774,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/xbfs_alloc.o
   $KERNEL_BUILD_DIR/xbfs_file_io.o
   $KERNEL_BUILD_DIR/xbfs_fd.o
+  $KERNEL_BUILD_DIR/xbfs_mount.o
+  $KERNEL_BUILD_DIR/xbfs_snapshot.o
   $KERNEL_BUILD_DIR/fat.o
   $KERNEL_BUILD_DIR/fat_codec.o
   $KERNEL_BUILD_DIR/vfs.o
@@ -824,6 +834,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/model_compilation.o
   $KERNEL_BUILD_DIR/math_intrinsics.o
   $KERNEL_BUILD_DIR/user.o
+  $KERNEL_BUILD_DIR/user_process.o
+  $KERNEL_BUILD_DIR/user_runtime.o
   $KERNEL_BUILD_DIR/model_arena.o
   $KERNEL_BUILD_DIR/ai_cell.o
   $KERNEL_BUILD_DIR/sandbox.o
@@ -849,6 +861,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/network_stack_tcp_segment.o
   $KERNEL_BUILD_DIR/network_stack_packet.o
   $KERNEL_BUILD_DIR/network_stack_udp.o
+  $KERNEL_BUILD_DIR/network_stack_app.o
+  $KERNEL_BUILD_DIR/network_stack_selftest.o
   $KERNEL_BUILD_DIR/network_config.o
   $KERNEL_BUILD_DIR/git_workspace.o
   $KERNEL_BUILD_DIR/agent_protocol.o
@@ -878,6 +892,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/bpe_tokenizer.o
   $KERNEL_BUILD_DIR/engine_xai_fs.o
   $KERNEL_BUILD_DIR/engine_xai_fs_writer.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer_staging.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_writer_rewrite.o
   $KERNEL_BUILD_DIR/engine_xai_fs_writer_util.o
   $KERNEL_BUILD_DIR/engine_sha256.o
   $KERNEL_BUILD_DIR/engine_sha256_accel.o
@@ -933,6 +949,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_cpu.c" "$KERNEL_BUILD_DIR/ear
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_mem.c" "$KERNEL_BUILD_DIR/early_mem.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_pci.c" "$KERNEL_BUILD_DIR/early_pci.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_serial.c" "$KERNEL_BUILD_DIR/early_serial.o"
+compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_acpi.c" "$KERNEL_BUILD_DIR/early_acpi.o"
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
@@ -983,6 +1000,8 @@ compile_kernel "$ROOT_DIR/kernel/fs/xbfs_dir.c" "$KERNEL_BUILD_DIR/xbfs_dir.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_alloc.c" "$KERNEL_BUILD_DIR/xbfs_alloc.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_file_io.c" "$KERNEL_BUILD_DIR/xbfs_file_io.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_fd.c" "$KERNEL_BUILD_DIR/xbfs_fd.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_mount.c" "$KERNEL_BUILD_DIR/xbfs_mount.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_snapshot.c" "$KERNEL_BUILD_DIR/xbfs_snapshot.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat_codec.c" "$KERNEL_BUILD_DIR/fat_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
@@ -1031,6 +1050,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/control_observability_ops.c" "$KERNEL_B
 compile_kernel "$ROOT_DIR/kernel/runtime/control_storage_layout_ops.c" "$KERNEL_BUILD_DIR/control_storage_layout_ops.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/app_store.c" "$KERNEL_BUILD_DIR/app_store.o"
 compile_kernel "$ROOT_DIR/kernel/user/user.c" "$KERNEL_BUILD_DIR/user.o"
+compile_kernel "$ROOT_DIR/kernel/user/user_process.c" "$KERNEL_BUILD_DIR/user_process.o"
+compile_kernel "$ROOT_DIR/kernel/user/user_runtime.c" "$KERNEL_BUILD_DIR/user_runtime.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/model_arena.c" "$KERNEL_BUILD_DIR/model_arena.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/ai_cell.c" "$KERNEL_BUILD_DIR/ai_cell.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/cpu_ai_runtime.c" "$KERNEL_BUILD_DIR/cpu_ai_runtime.o"
@@ -1066,6 +1087,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_tcp_flow.c" "$KERNEL_BUIL
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_tcp_segment.c" "$KERNEL_BUILD_DIR/network_stack_tcp_segment.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_packet.c" "$KERNEL_BUILD_DIR/network_stack_packet.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_udp.c" "$KERNEL_BUILD_DIR/network_stack_udp.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_app.c" "$KERNEL_BUILD_DIR/network_stack_app.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_selftest.c" "$KERNEL_BUILD_DIR/network_stack_selftest.o"
 compile_kernel "$ROOT_DIR/kernel/net/network_config.c" "$KERNEL_BUILD_DIR/network_config.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/git_workspace.c" "$KERNEL_BUILD_DIR/git_workspace.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/agent_protocol.c" "$KERNEL_BUILD_DIR/agent_protocol.o"
@@ -1097,6 +1120,8 @@ compile_kernel "$ROOT_DIR/kernel/lib/string.c" "$KERNEL_BUILD_DIR/string.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/bpe_tokenizer.c" "$KERNEL_BUILD_DIR/bpe_tokenizer.o"
 compile_kernel "$ROOT_DIR/engine/src/xai_fs.c" "$KERNEL_BUILD_DIR/engine_xai_fs.o"
 compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer.o"
+compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer_staging.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer_staging.o"
+compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer_rewrite.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer_rewrite.o"
 compile_kernel "$ROOT_DIR/engine/src/xai_fs_writer_util.c" "$KERNEL_BUILD_DIR/engine_xai_fs_writer_util.o"
 compile_kernel "$ROOT_DIR/engine/src/sha256.c" "$KERNEL_BUILD_DIR/engine_sha256.o"
 # The accelerated compressor is the one file here that needs SIMD registers,

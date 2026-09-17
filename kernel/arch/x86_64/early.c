@@ -14,7 +14,6 @@
 #include <xaios/vmm.h>
 #include <xaios_engine/packed.h>
 
-#include "acpi.h"
 #include "early_module.h"
 #include "early_serial.h"
 #include "platform.h"
@@ -213,7 +212,6 @@ static uint32_t g_lapic_ready;
 static uint32_t g_lapic_x2apic;
 volatile uint64_t g_x86_lapic_timer_interrupts;
 volatile uint64_t g_ring3_return_value;
-static x86_64_acpi_info_t g_acpi;
 static xaios_boot_info_t g_boot_info_copy;
 static uint8_t g_xsave_original[UINT32_C(65536)] __attribute__((aligned(64)));
 static uint8_t g_xsave_test[UINT32_C(65536)] __attribute__((aligned(64)));
@@ -1114,32 +1112,6 @@ void x86_64_ap_entry(uint32_t ordinal) {
 #endif
 }
 
-static void parse_acpi(uint16_t serial_base, const xaios_boot_info_t *boot) {
-  if (!x86_64_acpi_parse(boot->acpi_rsdp, &g_acpi)) {
-    panic_halt(serial_base, "ACPI RSDP/root/MADT validation failed");
-  }
-  serial_puts(serial_base, "x86_64: ACPI root=");
-  serial_puts(serial_base, g_acpi.root_is_xsdt != 0U ? "XSDT" : "RSDT");
-  serial_puts(serial_base, " enabled_cpus=");
-  serial_dec(serial_base, g_acpi.enabled_cpus);
-  serial_puts(serial_base, " io_apics=");
-  serial_dec(serial_base, g_acpi.io_apics);
-  serial_puts(serial_base, " MADT=1 SRAT=");
-  serial_dec(serial_base, g_acpi.srat != 0U);
-  serial_puts(serial_base, " SLIT=");
-  serial_dec(serial_base, g_acpi.slit != 0U);
-  serial_puts(serial_base, " HMAT=");
-  serial_dec(serial_base, g_acpi.hmat != 0U);
-  serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: NUMA affinity processors=");
-  serial_dec(serial_base, g_acpi.processor_affinities);
-  serial_puts(serial_base, " memory=");
-  serial_dec(serial_base, g_acpi.memory_affinities);
-  serial_puts(serial_base, " slit_localities=");
-  serial_dec(serial_base, g_acpi.slit_localities);
-  serial_puts(serial_base, "\n");
-}
-
 static void validate_xsave(uint16_t serial_base) {
   uint32_t eax = 0U;
   uint32_t ebx = 0U;
@@ -1472,24 +1444,6 @@ static void patch_ap_trampoline(uint16_t serial_base, uint64_t base,
   __asm__ volatile("mfence" ::: "memory");
 }
 
-static void prepare_cpu_records(uint16_t serial_base) {
-  if (g_acpi.enabled_cpus == 0U) panic_halt(serial_base, "MADT CPU count");
-  uint64_t record_bytes =
-      (uint64_t)g_acpi.enabled_cpus * sizeof(x86_64_cpu_record_t);
-  g_cpu_records =
-      (x86_64_cpu_record_t *)early_alloc(record_bytes, UINT64_C(64));
-  if (g_cpu_records == 0) panic_halt(serial_base, "AP record allocation");
-  g_cpu_record_count = g_acpi.enabled_cpus;
-  for (uint64_t i = 0U; i < record_bytes; ++i) {
-    ((uint8_t *)g_cpu_records)[i] = 0U;
-  }
-  for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
-    if (!x86_64_acpi_cpu_apic_id(&g_acpi, i, &g_cpu_records[i].apic_id)) {
-      panic_halt(serial_base, "MADT CPU enumeration");
-    }
-  }
-}
-
 static void start_application_processors(uint16_t serial_base,
                                          const xaios_boot_info_t *boot) {
   if (boot->ap_trampoline == 0U || g_cpu_records == 0 ||
@@ -1749,8 +1703,9 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 44 early exceptions passed\n");
   parse_memory_map(serial_base, boot);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 45 memory map passed\n");
-  parse_acpi(serial_base, boot);
-  prepare_cpu_records(serial_base);
+  xaios_x86_early_acpi_parse(serial_base, boot);
+  xaios_x86_early_acpi_prepare_cpu_records(serial_base, &g_cpu_records,
+                                           &g_cpu_record_count);
   serial_puts(serial_base, "x86_64: ACPI topology and NUMA tables validated\n");
   install_page_tables(serial_base);
   if (xaios_x86_mem_page_tables_loaded() == 0U) {

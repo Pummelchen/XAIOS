@@ -2,10 +2,10 @@
 #define XAIOS_X86_64_EARLY_MODULE_H
 
 /* The private seam between kernel/arch/x86_64/early.c and the modules split
- * out of it (early_tlb.c, early_cpu.c, early_serial.c, early_mem.c and
- * early_pci.c). Every one of those files includes this header and nothing in
- * it is visible outside them: the x86_64 CPU record, the per-CPU TLB
- * bookkeeping, and the early.c primitives the moved code calls are shared
+ * out of it (early_tlb.c, early_cpu.c, early_serial.c, early_mem.c,
+ * early_pci.c and early_acpi.c). Every one of those files includes this header
+ * and nothing in it is visible outside them: the x86_64 CPU record, the per-CPU
+ * TLB bookkeeping, and the early.c primitives the moved code calls are shared
  * here, while the globals stay file-scope in whichever file owns them.
  * Declarations and type definitions only -- the functions are defined exactly
  * once, in the file the comment beside them names. */
@@ -107,6 +107,15 @@ void xaios_x86_early_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
 
 /* Defined in early_cpu.c. */
 void x86_64_early_cpu_build_placement_policy(uint16_t serial_base);
+
+/* Defined in early_acpi.c: parse the RSDP/root/MADT (and note SRAT/SLIT/HMAT),
+ * then allocate and enumerate the CPU records. The record storage stays owned
+ * by early.c, which passes the pointer and count it wants filled. */
+void xaios_x86_early_acpi_parse(uint16_t serial_base,
+                                const xaios_boot_info_t *boot);
+void xaios_x86_early_acpi_prepare_cpu_records(uint16_t serial_base,
+                                              x86_64_cpu_record_t **records,
+                                              uint32_t *record_count);
 
 /* The paging/PM primitives early.c and early_pci.c call; defined in
  * early_mem.c. */

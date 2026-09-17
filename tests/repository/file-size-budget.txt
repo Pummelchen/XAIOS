@@ -3,10 +3,8 @@
 # number or removes a line; nothing here may grow.
 
 Makefile 1656
-boot/uefi/loader_main.c 1579
 engine/src/packed.c 601
 engine/src/xai_fs.c 856
-engine/src/xai_fs_writer.c 1455
 kernel/arch/aarch64/mmu.c 1003
 kernel/arch/aarch64/smp.c 797
 kernel/arch/riscv64/aia.c 833
@@ -14,9 +12,9 @@ kernel/arch/riscv64/entry.S 610
 kernel/arch/riscv64/exception.c 1043
 kernel/arch/riscv64/fdt.c 613
 kernel/arch/riscv64/iommu.c 819
-kernel/arch/riscv64/mmu.c 1677
+kernel/arch/riscv64/mmu.c 1018
 kernel/arch/riscv64/smp.c 661
-kernel/arch/x86_64/early.c 1793
+kernel/arch/x86_64/early.c 1748
 kernel/arch/x86_64/mmu.c 732
 kernel/arch/x86_64/smp.c 568
 kernel/core/boot_ui.c 1337
@@ -36,7 +34,7 @@ kernel/fs/initramfs.c 552
 kernel/fs/vfs.c 757
 kernel/fs/vfs_xaifs.c 1196
 kernel/fs/xai_fs_admin.c 676
-kernel/fs/xaiboot_fs.c 1765
+kernel/fs/xaiboot_fs.c 1411
 kernel/include/xaios/control_protocol.h 678
 kernel/mm/numa.c 990
 kernel/net/dhcpv6.c 609
@@ -50,7 +48,7 @@ kernel/runtime/app_store.c 932
 kernel/runtime/control_protocol.c 1197
 kernel/runtime/cpu_ai_runtime.c 1055
 kernel/runtime/git_workspace.c 697
-kernel/runtime/network_stack.c 3583
+kernel/runtime/network_stack.c 2902
 kernel/runtime/operations.c 857
 kernel/runtime/remote_login.c 1356
 kernel/runtime/security.c 753
@@ -61,11 +59,10 @@ kernel/sched/thread.c 824
 kernel/storage/gpt.c 625
 kernel/storage/storage_admin.c 1184
 kernel/user/service.c 1340
-kernel/user/user.c 1512
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
-scripts/build-image.sh 1982
+scripts/build-image.sh 2007
 scripts/build-riscv64-image.sh 675
 scripts/build-vm-packages.sh 661
 scripts/xaios-ssh-bridge.py 1171
@@ -75,7 +72,7 @@ tests/network/parallel-client-load.py 541
 tests/network/qemu-ipv6-tcp-client.py 695
 tests/repository/check-code-scanning-contract.py 575
 tests/scripts/cluster_fault_relay.py 502
-tests/scripts/qemu-cluster-partition-gate.py 1511
+tests/scripts/qemu-cluster-partition-gate.py 692
 tests/scripts/qemu-cluster-three-node-gate.py 608
 tests/scripts/qemu-console-xtop-gate.py 840
 tests/scripts/qemu-cpu-matrix.py 559

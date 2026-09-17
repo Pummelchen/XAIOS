@@ -225,6 +225,8 @@ compile "$ROOT_DIR/kernel/arch/riscv64/sbi.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/fdt.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot_info.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/mmu.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/mmu_tlb.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/mmu_selftest.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/mmu_shootdown.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/smp.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/timer.c"
@@ -280,6 +282,8 @@ for source in "$ROOT_DIR/engine/src/architecture.c" \
     "$ROOT_DIR/engine/src/backend_avx2.c" \
     "$ROOT_DIR/engine/src/xai_fs.c" \
     "$ROOT_DIR/engine/src/xai_fs_writer.c" \
+    "$ROOT_DIR/engine/src/xai_fs_writer_staging.c" \
+    "$ROOT_DIR/engine/src/xai_fs_writer_rewrite.c" \
     "$ROOT_DIR/engine/src/xai_fs_writer_util.c" \
     "$ROOT_DIR/userspace/sshd/ssh_crypto.c" \
     "$ROOT_DIR/userspace/sshd/tweetnacl_subset.c"; do

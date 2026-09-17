@@ -1474,7 +1474,7 @@ hosted-test: engine-cli
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
 	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_codec.c \
 	  kernel/fs/xai_fs_admin.c \
-	  engine/src/xai_fs.c engine/src/xai_fs_writer.c engine/src/xai_fs_writer_util.c \
+	  engine/src/xai_fs.c engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c \
 	  engine/src/sha256.c userspace/sshd/ssh_crypto.c \
 	  userspace/sshd/tweetnacl_subset.c \
 	  tests/storage/test_xai_fs_admin.c \
@@ -1485,34 +1485,34 @@ hosted-test: engine-cli
 	  -o build/hosted/test-vfs
 	./build/hosted/test-vfs
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/dev/block_device.c \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/fs/xbfs_mount.c kernel/fs/xbfs_snapshot.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_mirror.c \
 	  -o build/hosted/test-mutable-fs-mirror
 	./build/hosted/test-mutable-fs-mirror
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/dev/block_device.c \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/fs/xbfs_mount.c kernel/fs/xbfs_snapshot.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_v6.c \
 	  -o build/hosted/test-xaiboot-fs-v6
 	./build/hosted/test-xaiboot-fs-v6
 	@# B-48: the metadata commit's cost, counted at the block device, so the
 	@# figure is what the disk saw rather than a claim about what it should be.
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/dev/block_device.c \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/fs/xbfs_mount.c kernel/fs/xbfs_snapshot.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_write_cost.c \
 	  -o build/hosted/test-xaiboot-fs-write-cost
 	./build/hosted/test-xaiboot-fs-write-cost
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/dev/block_device.c \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/fs/xbfs_mount.c kernel/fs/xbfs_snapshot.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_fragmentation.c \
 	  -o build/hosted/test-xaiboot-fs-fragmentation
 	./build/hosted/test-xaiboot-fs-fragmentation
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/dev/block_device.c \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/fs/xbfs_mount.c kernel/fs/xbfs_snapshot.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_extent_depth.c \
 	  -o build/hosted/test-xaiboot-fs-extent-depth
 	./build/hosted/test-xaiboot-fs-extent-depth
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/dev/block_device.c \
+	  -Ikernel/include kernel/fs/xaiboot_fs.c kernel/fs/xbfs_state.c kernel/fs/xbfs_node_codec.c kernel/fs/xbfs_util.c kernel/fs/xbfs_record.c kernel/fs/xbfs_metadata.c kernel/fs/xbfs_dir.c kernel/fs/xbfs_alloc.c kernel/fs/xbfs_file_io.c kernel/fs/xbfs_fd.c kernel/fs/xbfs_mount.c kernel/fs/xbfs_snapshot.c kernel/dev/block_device.c \
 	  tests/storage/test_xaiboot_fs_large_volume.c \
 	  -o build/hosted/test-xaiboot-fs-large-volume
 	./build/hosted/test-xaiboot-fs-large-volume
@@ -1575,7 +1575,7 @@ hosted-test: engine-cli
 	  -Iengine/include -Iengine/src -Iuserspace/include -Iuserspace/sshd \
 	  -Iuserspace/apps/terminal \
 	  -Ikernel/include engine/src/xai_fs.c \
-	  engine/src/xai_fs_writer.c engine/src/xai_fs_writer_util.c engine/src/model_file.c \
+	  engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c engine/src/model_file.c \
 	  engine/src/sha256.c \
 	  userspace/sshd/ssh_crypto.c userspace/sshd/tweetnacl_subset.c \
 	  tests/xai_fs/test_xai_fs_reader.c \

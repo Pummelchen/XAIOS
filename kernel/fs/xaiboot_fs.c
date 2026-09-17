@@ -7,6 +7,7 @@
 #include "xbfs_metadata_internal.h"
 #include "xbfs_file_io_internal.h"
 #include "xbfs_fd_internal.h"
+#include "xbfs_volume_internal.h"
 #include <xaios/spinlock.h>
 #include <xaios/virtio_blk.h>
 
@@ -151,8 +152,6 @@ typedef struct xaios_xbfs_journal_v3 {
 
 
 static xaios_xbfs_state_t g_xbfs;
-static uint32_t g_mounted;
-static uint32_t g_mount_flags;
 /* The counter storage lives in xbfs_state.c behind xbfs_stat_*; see
    xbfs_internal.h. Appends served without rewriting the file are counted
    apart from XBFS_STAT_WRITE, which still counts both, so a gate can tell
@@ -164,56 +163,27 @@ static uint32_t g_mount_flags;
 static xaios_spinlock_t g_xaiboot_fs_lock = XAIOS_SPINLOCK_INIT;
 
 /* The active geometry lives in xbfs_state.c behind xbfs_geometry_*; see
-   xbfs_internal.h. The version dispatch selects it. */
-static xaios_block_device_t *g_persistent_device;
-static uint64_t g_persistent_mount_count;
+   xbfs_internal.h. The version dispatch selects it. The persistent device,
+   its mount count and the mount flags live in xbfs_mount.c behind the setters
+   declared in xbfs_volume_internal.h. */
 
-static xaios_status_t restore_snapshot_node(xaios_xbfs_node_t *node);
 
 
 /* The five set_active_v2..v6 writers are now the single
    xbfs_geometry_select call at each dispatch site. The metadata/journal sector
    arithmetic that used to sit here is in xbfs_metadata.c. */
 
-xaios_status_t xbfs_blk_read(uint64_t sector, void *buf, uint64_t sz) {
-  if (g_persistent_device != 0) {
-    if (sector > UINT64_MAX / XBFS_SECTOR_SIZE) return XAIOS_ERR_INVALID;
-    return block_read(g_persistent_device, sector * XBFS_SECTOR_SIZE, buf, sz);
-  }
-  return virtio_block_read_sector(sector, buf, sz);
-}
-
-xaios_status_t xbfs_blk_write(uint64_t sector, const void *buf, uint64_t sz) {
-  if (g_persistent_device != 0) {
-    if (sector > UINT64_MAX / XBFS_SECTOR_SIZE) return XAIOS_ERR_INVALID;
-    return block_write(g_persistent_device, sector * XBFS_SECTOR_SIZE, buf, sz);
-  }
-  return virtio_block_write_sector(sector, buf, sz);
-}
-
-xaios_status_t xbfs_blk_flush(void) {
-  if (g_persistent_device != 0) {
-    return block_flush(g_persistent_device);
-  }
-  return virtio_block_flush();
-}
-
-uint64_t xbfs_blk_capacity(void) {
-  if (g_persistent_device != 0) {
-    return g_persistent_device->info.capacity_bytes / XBFS_SECTOR_SIZE;
-  }
-  return virtio_block_capacity_sectors();
-}
 
 /* The volume state an extracted module cannot reach directly.
  *
- * g_xbfs, the open-file table and the mount flags stay here. Two of these hand
- * back a pointer into live mutable state -- xbfs_node_row into the node table
- * and xbfs_block_bitmap into the block bitmap -- and each is good for the
- * duration of the call that asked for it and no longer: the caller must not
- * retain it, cache it or hand it to another translation unit. Everything else
- * is a value in or out. None of these takes the volume lock; every caller
- * already holds it, exactly as the static code these replaced did. */
+ * g_xbfs and the open-file table stay here; the mount flags and the persistent
+ * device are in xbfs_mount.c. Two of these hand back a pointer into live
+ * mutable state -- xbfs_node_row into the node table and xbfs_block_bitmap
+ * into the block bitmap -- and each is good for the duration of the call that
+ * asked for it and no longer: the caller must not retain it, cache it or hand
+ * it to another translation unit. Everything else is a value in or out. None
+ * of these takes the volume lock; every caller already holds it, exactly as
+ * the static code these replaced did. */
 xaios_xbfs_node_t *xbfs_node_row(uint32_t index) {
   return &g_xbfs.nodes[index];
 }
@@ -226,9 +196,21 @@ uint64_t xbfs_generation_get(void) { return g_xbfs.generation; }
 
 uint64_t xbfs_generation_take(void) { return g_xbfs.generation++; }
 
-uint32_t xbfs_mounted(void) { return g_mounted; }
+/* The volume state xbfs_mount.c and xbfs_snapshot.c read and write but do
+   not own: the stored checksum, the last committed generation, and a bump of
+   the live generation. All are values; none hands back a pointer into g_xbfs.
+   None takes the volume lock; every caller already holds it. */
+uint64_t xbfs_volume_checksum_get(void) { return g_xbfs.checksum; }
 
-uint32_t xbfs_mount_flags(void) { return g_mount_flags; }
+uint64_t xbfs_volume_committed_generation_get(void) {
+  return g_xbfs.committed_generation;
+}
+
+void xbfs_volume_committed_generation_set(uint64_t generation) {
+  g_xbfs.committed_generation = generation;
+}
+
+void xbfs_volume_generation_bump(void) { ++g_xbfs.generation; }
 
 
 
@@ -412,7 +394,7 @@ static int metadata_slot_probe(uint32_t slot, uint64_t *out_sequence) {
 }
 
 /* Load the newer of the two copies that is intact. */
-static xaios_status_t read_metadata(void) {
+xaios_status_t xbfs_volume_read_metadata(void) {
   uint64_t sequence[XBFS_METADATA_SLOTS] = {0U, 0U};
   int usable[XBFS_METADATA_SLOTS] = {0, 0};
   uint32_t chosen;
@@ -609,7 +591,7 @@ xaios_status_t xbfs_write_metadata(void) {
 
 
 
-static xaios_status_t validate_disk(uint64_t expected_checksum) {
+xaios_status_t xbfs_volume_validate(uint64_t expected_checksum) {
   xbfs_geometry_t geometry;
   xbfs_geometry_get(&geometry);
   if (!xbfs_bytes_eq(g_xbfs.magic, XBFS_MAGIC, XBFS_MAGIC_LEN) ||
@@ -657,7 +639,7 @@ static xaios_status_t validate_disk(uint64_t expected_checksum) {
   return XAIOS_OK;
 }
 
-static xaios_status_t format_volume(void) {
+xaios_status_t xbfs_volume_format(void) {
   xbfs_geometry_t geometry;
   xbfs_geometry_get(&geometry);
   xbfs_bytes_zero(&g_xbfs, sizeof(g_xbfs));
@@ -690,7 +672,7 @@ static xaios_status_t format_volume(void) {
   return xbfs_write_metadata();
 }
 
-static xaios_status_t migrate_volume_to_v5(void) {
+xaios_status_t xbfs_volume_migrate_to_v5(void) {
   if (xbfs_geometry_version() == XBFS_V5_VERSION) {
     return XAIOS_OK;
   }
@@ -738,195 +720,12 @@ static xaios_status_t migrate_volume_to_v5(void) {
   return XAIOS_OK;
 }
 
-
-static xaios_status_t mount_volume(uint32_t mount_flags) {
-  xbfs_geometry_select(XBFS_VERSION);
-  /* The in-image volume is sized to the boot image and has no room for a
-     mirror. Clear it explicitly: this global outlives a previous device
-     mount, and inheriting its setting here would send writes to a slot that
-     does not exist on this volume. */
-  xbfs_metadata_set_mirror_enabled(0U);
-  xbfs_metadata_shadow_set_valid(0U, 0U);
-  xbfs_metadata_shadow_set_valid(1U, 0U);
-  xbfs_metadata_set_slot(0U);
-  if (xbfs_blk_capacity() < xbfs_data_start_sector() + xbfs_geometry_data_sectors()) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_IO;
-  }
-
-  g_mount_flags = mount_flags;
-  if (read_metadata() != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_IO;
-  }
-  uint64_t saved_checksum = g_xbfs.checksum;
-  if (validate_disk(xbfs_metadata_verified_checksum()) == XAIOS_OK &&
-      saved_checksum == xbfs_metadata_verified_checksum()) {
-    xbfs_stat_bump(XBFS_STAT_BOOT_LOAD);
-    klog("xaibootfs: existing state loaded files=%lu directories=%lu blocks=%lu generation=%lu committed=%lu\n",
-         xbfs_node_count_by_type(XBFS_NODE_FILE), xbfs_node_count_by_type(XBFS_NODE_DIR),
-         xbfs_block_count_used(), g_xbfs.generation, g_xbfs.committed_generation);
-  } else {
-    klog("xaibootfs: no valid filesystem at sector=%lu; formatting\n",
-         XBFS_START_SECTOR);
-    if (format_volume() != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-  }
-
-  g_mounted = 1;
-  xbfs_stat_bump(XBFS_STAT_MOUNT);
-  if (xbfs_replay_journal() != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-
-  if ((g_mount_flags & XBFS_MOUNT_READ_WRITE) != 0U) {
-    xaios_xbfs_node_t *root = xbfs_find_node("/", 1);
-    if (root == 0) {
-      if (xbfs_create_dir("/") != XAIOS_OK) {
-        return XAIOS_ERR_IO;
-      }
-    } else if (root->active == 0) {
-      if (restore_snapshot_node(root) != XAIOS_OK) {
-        return XAIOS_ERR_IO;
-      }
-    } else if (root->type != XBFS_NODE_DIR) {
-      xbfs_stat_bump(XBFS_STAT_REJECT);
-      return XAIOS_ERR_INVALID;
-    }
-  }
-
-  klog("xaibootfs: mounted start=%lu metadata=%lu journal=%lu data=%lu sectors=%u nodes=%u policy=%s\n",
-       XBFS_START_SECTOR, (uint64_t)xbfs_geometry_metadata_sectors(), XBFS_JOURNAL_SECTORS,
-       xbfs_data_start_sector(), xbfs_geometry_data_sectors(), xbfs_geometry_max_nodes(),
-       (g_mount_flags & XBFS_MOUNT_READ_WRITE) != 0 ? "rw" : "ro");
-  return XAIOS_OK;
-}
-
-
-
-
-
-static xaios_status_t commit_snapshot(const char *label) {
-  (void)label;
-  if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
-    if (node->snapshot_active != 0 && node->snapshot_type == XBFS_NODE_FILE) {
-      xbfs_free_extents(node->snapshot_extents, node->snapshot_extent_count);
-    }
-    node->snapshot_active = 0;
-    node->snapshot_type = XBFS_NODE_FREE;
-    node->snapshot_size = 0;
-    node->snapshot_hash = 0;
-    node->snapshot_generation = 0;
-    node->snapshot_extent_count = 0;
-    xbfs_bytes_zero(node->snapshot_extents, sizeof(node->snapshot_extents));
-    if (node->active == 0) {
-      continue;
-    }
-    node->snapshot_active = 1;
-    node->snapshot_type = node->type;
-    node->snapshot_size = node->size;
-    node->snapshot_hash = node->content_hash;
-    node->snapshot_generation = node->generation;
-    if (node->type == XBFS_NODE_FILE) {
-      xaios_xbfs_extent_t snapshot_extents[XBFS_V6_MAX_EXTENTS];
-      uint32_t snapshot_extent_count = 0U;
-      xbfs_bytes_zero(snapshot_extents, sizeof(snapshot_extents));
-      if (xbfs_clone_extents(node->extents, node->extent_count, snapshot_extents,
-                        &snapshot_extent_count) != XAIOS_OK) {
-        return XAIOS_ERR_IO;
-      }
-      node->snapshot_extent_count = snapshot_extent_count;
-      xbfs_bytes_copy(node->snapshot_extents, snapshot_extents,
-                 sizeof(snapshot_extents));
-    }
-  }
-  g_xbfs.committed_generation = g_xbfs.generation;
-  xbfs_stat_bump(XBFS_STAT_COMMIT);
-  klog("xaibootfs: snapshot committed generation=%lu files=%lu directories=%lu blocks=%lu\n",
-       g_xbfs.committed_generation, xbfs_node_count_by_type(XBFS_NODE_FILE),
-       xbfs_node_count_by_type(XBFS_NODE_DIR), xbfs_block_count_used());
-  return xbfs_write_metadata();
-}
-
-static xaios_status_t restore_snapshot_node(xaios_xbfs_node_t *node) {
-  if (node->snapshot_active == 0) {
-    return XAIOS_OK;
-  }
-  if (node->active != 0 && node->type == XBFS_NODE_FILE) {
-    xbfs_free_extents(node->extents, node->extent_count);
-  }
-  node->active = 1;
-  node->type = node->snapshot_type;
-  node->size = node->snapshot_size;
-  node->content_hash = node->snapshot_hash;
-  node->generation = node->snapshot_generation;
-  node->extent_count = 0;
-  xbfs_bytes_zero(node->extents, sizeof(node->extents));
-  if (node->snapshot_type == XBFS_NODE_FILE) {
-    xaios_xbfs_extent_t restored[XBFS_V6_MAX_EXTENTS];
-    uint32_t restored_count = 0U;
-    xbfs_bytes_zero(restored, sizeof(restored));
-    if (xbfs_clone_extents(node->snapshot_extents, node->snapshot_extent_count,
-                      restored, &restored_count) != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-    node->extent_count = restored_count;
-    xbfs_bytes_copy(node->extents, restored, sizeof(restored));
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t rollback_snapshot(void) {
-  if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
-    if (node->snapshot_active == 0 && node->active != 0 &&
-        node->generation >= g_xbfs.committed_generation) {
-      if (node->type == XBFS_NODE_FILE) {
-        xbfs_free_extents(node->extents, node->extent_count);
-      }
-      node->active = 0;
-      node->extent_count = 0;
-      xbfs_bytes_zero(node->extents, sizeof(node->extents));
-    }
-  }
-  for (uint32_t pass = 0; pass < 2U; ++pass) {
-    for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-      xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
-      if (node->snapshot_active == 0) {
-        continue;
-      }
-      if ((pass == 0 && node->snapshot_type == XBFS_NODE_DIR) ||
-          (pass == 1 && node->snapshot_type == XBFS_NODE_FILE)) {
-        if (restore_snapshot_node(node) != XAIOS_OK) {
-          return XAIOS_ERR_IO;
-        }
-      }
-    }
-  }
-  ++g_xbfs.generation;
-  xbfs_stat_bump(XBFS_STAT_ROLLBACK);
-  klog("xaibootfs: snapshot rollback committed=%lu files=%lu directories=%lu blocks=%lu\n",
-       g_xbfs.committed_generation, xbfs_node_count_by_type(XBFS_NODE_FILE),
-       xbfs_node_count_by_type(XBFS_NODE_DIR), xbfs_block_count_used());
-  return xbfs_write_metadata();
-}
-
 static xaios_status_t xaiboot_fs_commit_locked(const char *label) {
-  return commit_snapshot(label);
+  return xbfs_snapshot_commit(label);
 }
 
 static xaios_status_t xaiboot_fs_rollback_locked(void) {
-  return rollback_snapshot();
+  return xbfs_snapshot_rollback();
 }
 
 static xaios_status_t xaiboot_fs_mkdir_locked(const char *path) {
@@ -993,145 +792,7 @@ uint64_t xaiboot_fs_list_count(void) { return xbfs_stat_get(XBFS_STAT_LIST); }
 uint64_t xaiboot_fs_stat_count(void) { return xbfs_stat_get(XBFS_STAT_STAT); }
 uint64_t xaiboot_fs_open_count(void) { return xbfs_stat_get(XBFS_STAT_OPEN); }
 uint64_t xaiboot_fs_close_count(void) { return xbfs_stat_get(XBFS_STAT_CLOSE); }
-uint64_t xaiboot_fs_persistent_mount_count(void) { return g_persistent_mount_count; }
 
-static xaios_status_t mount_failure(xaios_block_device_t *device,
-                                    xaios_status_t status) {
-  g_persistent_device = 0;
-  g_mounted = 0;
-  g_mount_flags = 0;
-  xbfs_geometry_select(XBFS_VERSION);
-  (void)block_device_close(device);
-  return status;
-}
-
-static xaios_status_t xaiboot_fs_mount_device_locked(const char *identifier) {
-  if (g_persistent_device != 0) return XAIOS_ERR_BUSY;
-  xaios_block_device_t *device = 0;
-  xaios_status_t status = block_device_open(identifier, &device);
-  if (status != XAIOS_OK) {
-    klog("xaibootfs: persistent block device not found id=%s\n",
-         identifier != 0 ? identifier : "(null)");
-    return status;
-  }
-  xaios_block_device_info_t info;
-  if (block_device_info(device, &info) != XAIOS_OK) {
-    (void)block_device_close(device);
-    return XAIOS_ERR_IO;
-  }
-  if (info.read_only != 0U ||
-      info.logical_sector_size != XBFS_SECTOR_SIZE ||
-      info.capacity_bytes % XBFS_SECTOR_SIZE != 0U ||
-      info.flush_supported == 0U) {
-    klog("xaibootfs: device rejected id=%s sector=%lu read_only=%u flush=%u\n",
-         identifier, info.logical_sector_size, info.read_only,
-         info.flush_supported);
-    (void)block_device_close(device);
-    return XAIOS_ERR_UNSUPPORTED;
-  }
-  xbfs_geometry_select(XBFS_V5_VERSION);
-  xbfs_metadata_shadow_set_valid(0U, 0U);
-  xbfs_metadata_shadow_set_valid(1U, 0U);
-  xbfs_metadata_set_slot(0U);
-  xbfs_metadata_set_sequence(0U);
-  /* The mirror is optional: a volume sized exactly for the old layout keeps
-     working single-copy rather than being refused. */
-  xbfs_metadata_set_mirror_enabled(
-      info.capacity_bytes / XBFS_SECTOR_SIZE >=
-              xbfs_metadata_mirror_start_sector() + xbfs_geometry_metadata_sectors()
-          ? 1U
-          : 0U);
-  if (info.capacity_bytes / XBFS_SECTOR_SIZE <
-      xbfs_data_start_sector() + XBFS_V5_DATA_SECTORS) {
-    klog("xaibootfs: persistent disk too small capacity=%lu needed=%lu\n",
-         info.capacity_bytes / XBFS_SECTOR_SIZE,
-         xbfs_data_start_sector() + XBFS_V5_DATA_SECTORS);
-    xbfs_geometry_select(XBFS_VERSION);
-    (void)block_device_close(device);
-    return XAIOS_ERR_IO;
-  }
-  g_persistent_device = device;
-  g_mounted = 0;
-  g_mount_flags = 0;
-  if (read_metadata() != XAIOS_OK) return mount_failure(device, XAIOS_ERR_IO);
-  uint64_t saved_checksum = g_xbfs.checksum;
-  uint32_t loaded_version = xbfs_geometry_version();
-  int valid_existing =
-      validate_disk(xbfs_metadata_verified_checksum()) == XAIOS_OK &&
-      saved_checksum == xbfs_metadata_verified_checksum();
-  if (valid_existing) {
-    xbfs_stat_bump(XBFS_STAT_BOOT_LOAD);
-    klog("xaibootfs: persistent loaded files=%lu dirs=%lu blocks=%lu gen=%lu\n",
-         xbfs_node_count_by_type(XBFS_NODE_FILE), xbfs_node_count_by_type(XBFS_NODE_DIR),
-         xbfs_block_count_used(), g_xbfs.generation);
-  } else {
-    if (!xbfs_metadata_header_is_blank()) {
-      klog("xaibootfs: persistent metadata invalid; refusing destructive format\n");
-      return mount_failure(device, XAIOS_ERR_INVALID);
-    }
-    /* Which version a new volume gets follows the disk rather than a flag
-       day. A device with room for v6 is formatted as v6 and gets a gigabyte
-       of data, a thousand nodes and files as large as the volume; a smaller
-       one is formatted as v5 exactly as before. Nothing existing changes
-       format, and no volume is rewritten in place -- the one operation on
-       this data nobody should have to trust. */
-    uint64_t sectors = info.capacity_bytes / XBFS_SECTOR_SIZE;
-    uint64_t v6_needed = XBFS_START_SECTOR + XBFS_V6_METADATA_SECTORS * 2U +
-                         XBFS_JOURNAL_SECTORS + 1U + XBFS_V6_DATA_SECTORS;
-    if (sectors >= v6_needed) {
-      xbfs_geometry_select(XBFS_V6_VERSION);
-      klog("xaibootfs: persistent disk no valid fs; formatting v6 "
-           "nodes=%u data_sectors=%u\n",
-           XBFS_V6_MAX_NODES, XBFS_V6_DATA_SECTORS);
-    } else {
-      xbfs_geometry_select(XBFS_V5_VERSION);
-      klog("xaibootfs: persistent disk no valid fs; formatting v5\n");
-    }
-    if (format_volume() != XAIOS_OK) {
-      return mount_failure(device, XAIOS_ERR_IO);
-    }
-  }
-  g_mounted = 1;
-  g_mount_flags = XBFS_MOUNT_READ_WRITE;
-  xbfs_stat_bump(XBFS_STAT_MOUNT);
-  ++g_persistent_mount_count;
-  if (xbfs_replay_journal() != XAIOS_OK) {
-    return mount_failure(device, XAIOS_ERR_IO);
-  }
-  if (valid_existing && loaded_version != XBFS_V5_VERSION &&
-      migrate_volume_to_v5() != XAIOS_OK) {
-    return mount_failure(device, XAIOS_ERR_IO);
-  }
-  xaios_xbfs_node_t *root = xbfs_find_node("/", 1);
-  if (root == 0) {
-    if (xbfs_create_dir("/") != XAIOS_OK) {
-      return mount_failure(device, XAIOS_ERR_IO);
-    }
-  }
-  if (xbfs_ensure_base_directories() != XAIOS_OK) {
-    return mount_failure(device, XAIOS_ERR_IO);
-  }
-  klog("xaibootfs: persistent mounted v5 nodes=%u sectors=%u\n",
-       xbfs_geometry_max_nodes(), xbfs_geometry_data_sectors());
-  return XAIOS_OK;
-}
-
-static xaios_status_t xaiboot_fs_mount_persistent_locked(uint32_t slot) {
-  char identifier[16] = "/dev/vblk";
-  uint32_t value = slot;
-  uint32_t digits = 1U;
-  while (value >= 10U) {
-    value /= 10U;
-    ++digits;
-  }
-  if (9U + digits + 1U > sizeof(identifier)) return XAIOS_ERR_INVALID;
-  identifier[9U + digits] = '\0';
-  for (uint32_t index = 0U; index < digits; ++index) {
-    identifier[9U + digits - 1U - index] = (char)('0' + slot % 10U);
-    slot /= 10U;
-  }
-  return xaiboot_fs_mount_device_locked(identifier);
-}
 
 /* Mark every block a file claims, and complain if two files claim one.
    
@@ -1353,7 +1014,7 @@ xaios_status_t xaiboot_fs_close(uint32_t fd) {
 
 xaios_status_t xaiboot_fs_mount_device(const char *identifier) {
   xaios_spin_lock(&g_xaiboot_fs_lock);
-  xaios_status_t result = xaiboot_fs_mount_device_locked(identifier);
+  xaios_status_t result = xbfs_mount_device_locked(identifier);
   xaios_spin_unlock(&g_xaiboot_fs_lock);
   return result;
 }
@@ -1363,29 +1024,14 @@ xaios_status_t xaiboot_fs_mount_device(const char *identifier) {
    than from whatever the previous mount happened to leave behind. */
 xaios_status_t xaiboot_fs_unmount(void) {
   xaios_spin_lock(&g_xaiboot_fs_lock);
-  if (g_persistent_device == 0) {
-    xaios_spin_unlock(&g_xaiboot_fs_lock);
-    return XAIOS_ERR_INVALID;
-  }
-  (void)xbfs_blk_flush();
-  xaios_block_device_t *device = g_persistent_device;
-  g_persistent_device = 0;
-  g_mounted = 0;
-  g_mount_flags = 0;
-  xbfs_metadata_shadow_set_valid(0U, 0U);
-  xbfs_metadata_shadow_set_valid(1U, 0U);
-  xbfs_metadata_set_slot(0U);
-  xbfs_metadata_set_sequence(0U);
-  xbfs_metadata_set_mirror_enabled(0U);
-  xbfs_geometry_select(XBFS_VERSION);
-  (void)block_device_close(device);
+  xaios_status_t result = xbfs_mount_unmount_locked();
   xaios_spin_unlock(&g_xaiboot_fs_lock);
-  return XAIOS_OK;
+  return result;
 }
 
 xaios_status_t xaiboot_fs_mount_persistent(uint32_t slot) {
   xaios_spin_lock(&g_xaiboot_fs_lock);
-  xaios_status_t result = xaiboot_fs_mount_persistent_locked(slot);
+  xaios_status_t result = xbfs_mount_persistent_locked(slot);
   xaios_spin_unlock(&g_xaiboot_fs_lock);
   return result;
 }
@@ -1400,15 +1046,15 @@ xaios_xbfs_fsck_result_t xaiboot_fs_fsck(void) {
 void xaiboot_fs_self_test(void) {
   kassert(sizeof(xaios_xbfs_journal_t) == XBFS_SECTOR_SIZE);
   kassert(sizeof(xaios_xbfs_disk_t) <= XBFS_METADATA_SECTORS * XBFS_SECTOR_SIZE);
-  g_mounted = 0;
-  g_mount_flags = 0;
-  g_persistent_device = 0;
+  xbfs_mount_set_mounted(0);
+  xbfs_mount_set_flags(0);
+  xbfs_mount_set_device(0);
   xbfs_geometry_select(XBFS_VERSION);
   xbfs_stat_reset_all();
   xbfs_reset_open_files();
 
-  kassert(mount_volume(XBFS_MOUNT_READ_WRITE) == XAIOS_OK);
-  kassert(format_volume() == XAIOS_OK);
+  kassert(xbfs_mount_volume(XBFS_MOUNT_READ_WRITE) == XAIOS_OK);
+  kassert(xbfs_volume_format() == XAIOS_OK);
   kassert(xbfs_ensure_base_directories() == XAIOS_OK);
   xaios_xbfs_node_t *base_node = xbfs_find_node("/tmp", 1);
   kassert(base_node != 0 && base_node->type == XBFS_NODE_DIR);
@@ -1478,7 +1124,7 @@ void xaiboot_fs_self_test(void) {
   kassert(xaiboot_fs_close((uint32_t)fd) == XAIOS_OK);
   kassert(xaiboot_fs_open("/missing/nope", XAIOS_XBFS_OPEN_READ) ==
           (int64_t)XAIOS_ERR_NOT_FOUND);
-  kassert(commit_snapshot("mfs-snapshot-v2") == XAIOS_OK);
+  kassert(xbfs_snapshot_commit("mfs-snapshot-v2") == XAIOS_OK);
 
   kassert(xbfs_write_file_locked("/state/services/source-index.state",
                      k_service_restarting,
@@ -1489,8 +1135,8 @@ void xaiboot_fs_self_test(void) {
   kassert(xbfs_write_pending_journal_file("/state/services/replayed.state",
                                      k_replayed_state,
                                      sizeof(k_replayed_state)) == XAIOS_OK);
-  g_mounted = 0;
-  kassert(mount_volume(XBFS_MOUNT_READ_WRITE) == XAIOS_OK);
+  xbfs_mount_set_mounted(0);
+  kassert(xbfs_mount_volume(XBFS_MOUNT_READ_WRITE) == XAIOS_OK);
   kassert(xbfs_read_file("/state/services/replayed.state", buffer, sizeof(buffer),
                     &size) == XAIOS_OK);
   kassert(size == sizeof(k_replayed_state));
@@ -1498,7 +1144,7 @@ void xaiboot_fs_self_test(void) {
   xaios_xbfs_fsck_result_t snapshot_fsck = xaiboot_fs_fsck();
   kassert(snapshot_fsck.valid != 0);
 
-  kassert(rollback_snapshot() == XAIOS_OK);
+  kassert(xbfs_snapshot_rollback() == XAIOS_OK);
   kassert(xbfs_read_file("/state/services/source-index.state", buffer,
                     sizeof(buffer), &size) == XAIOS_OK);
   kassert(size == sizeof(k_service_running));

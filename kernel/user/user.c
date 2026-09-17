@@ -1,91 +1,17 @@
-#include <xaios/assert.h>
-#include <xaios/arch_cpu.h>
-#include <xaios/context.h>
-#include <xaios/elf_loader.h>
-#include <xaios/kheap.h>
-#include <xaios/klog.h>
-#include <xaios/pmm.h>
-#include <xaios/scheduler.h>
-#include <xaios/smp.h>
-#include <xaios/spinlock.h>
-#include <xaios/syscall.h>
-#include <xaios/timer.h>
-#include <xaios/thread.h>
-#include <xaios/user.h>
-#include <xaios/vmm.h>
+/*
+ * User process loading, EL0 argument marshalling and task dispatch.
+ *
+ * Split out of kernel/user/user.c, which was 1512 lines. The loading, argument
+ * and dispatch paths are the ones that touch the EL0 ABI; they hand everything
+ * else to the process-table and accounting modules.
+ */
 
-#define PAGE_SIZE UINT64_C(4096)
-#define USER_STACK_PAGES UINT64_C(64)
-#define XAIOS_TRANSIENT_PID_FIRST 32U
+#include "user_internal.h"
 
-/* Monotonic, never reused. Zero is reserved for "no owner", so the counter
-   skips it on wrap. */
-static uint32_t g_owner_token_next = 1U;
-
-static uint32_t user_next_owner_token(void) {
-  uint32_t token = g_owner_token_next++;
-  if (g_owner_token_next == 0U) g_owner_token_next = 1U;
-  return token;
-}
-
-static void bytes_zero(void *buffer, uint64_t size) {
-  uint8_t *bytes = (uint8_t *)buffer;
-  for (uint64_t i = 0; i < size; ++i) {
-    bytes[i] = 0;
-  }
-}
-
-static void bytes_copy(void *dst, const void *src, uint64_t size) {
-  uint8_t *out = (uint8_t *)dst;
-  const uint8_t *in = (const uint8_t *)src;
-  for (uint64_t i = 0; i < size; ++i) {
-    out[i] = in[i];
-  }
-}
-
-static xaios_user_process_t g_process_table[XAIOS_MAX_USER_PROCESSES];
-static xaios_user_process_t **g_current_process_by_cpu;
-static uint32_t g_current_process_capacity;
-static xaios_user_process_t *g_boot_current_process;
-
-static xaios_user_process_t **current_process_slot(void) {
-  uint32_t cpu_id = smp_cpu_id();
-  if (g_current_process_by_cpu != 0 && cpu_id < g_current_process_capacity) {
-    return &g_current_process_by_cpu[cpu_id];
-  }
-  return &g_boot_current_process;
-}
-
-#define g_current_process (*current_process_slot())
-
-typedef struct xaios_cpu_usage_record {
-  uint32_t cpu_id;
-  uint32_t active_pid;
-  uint32_t sequence;
-  uint32_t reserved;
-  uint64_t busy_ns;
-  uint64_t active_since_ns;
-} xaios_cpu_usage_record_t;
-
-static xaios_cpu_usage_record_t *g_cpu_usage;
-static uint32_t g_cpu_usage_count;
-static uint32_t g_cpu_usage_capacity;
-static xaios_spinlock_t g_cpu_usage_lock;
-static uint64_t g_cpu_usage_started_ns;
-static uint64_t g_process_transition_count;
-static uint64_t g_process_loaded_count;
-static uint64_t g_process_runnable_count;
-static uint64_t g_process_running_count;
-static uint64_t g_process_waiting_count;
-static uint64_t g_process_exited_count;
-static uint64_t g_process_failed_count;
-static uint64_t g_process_reclaim_count;
-static uint64_t g_process_scheduled_count;
-static uint64_t g_process_wait_count;
-static uint64_t g_process_wake_count;
-static uint32_t g_transient_process_busy;
-static uint32_t g_transient_process_owner_cpu;
-static uint32_t g_transient_process_depth;
+/* In the port's assembly, and named for the system rather than for the one
+   port that had it first -- see kernel/arch/aarch64/entry.S (B-109). */
+extern uint64_t xaios_enter_user(uint64_t entry, uint64_t stack,
+                                   uint64_t argc, uint64_t argv);
 
 typedef struct xaios_async_process_context {
   xaios_user_process_t process;
@@ -93,628 +19,12 @@ typedef struct xaios_async_process_context {
   void *opaque;
 } xaios_async_process_context_t;
 
-/* In the port's assembly, and named for the system rather than for the one
-   port that had it first -- see kernel/arch/aarch64/entry.S (B-109). */
-extern uint64_t xaios_enter_user(uint64_t entry, uint64_t stack,
-                                   uint64_t argc, uint64_t argv);
-
-static void copy_process(xaios_user_process_t *dst,
-                         const xaios_user_process_t *src) {
-  dst->pid = src->pid;
-  dst->owner_token = src->owner_token;
-  dst->parent_pid = src->parent_pid;
-  dst->name = src->name;
-  dst->state = src->state;
-  dst->exit_code = src->exit_code;
-  dst->capability_mask = src->capability_mask;
-  dst->syscall_count = src->syscall_count;
-  dst->rejected_syscall_count = src->rejected_syscall_count;
-  dst->entry = src->entry;
-  dst->stack_top = src->stack_top;
-  dst->argv_user = src->argv_user;
-  dst->argc = src->argc;
-  dst->reserved_args = src->reserved_args;
-  dst->stack_guard_low = src->stack_guard_low;
-  dst->stack_guard_high = src->stack_guard_high;
-  dst->mapped_low = src->mapped_low;
-  dst->mapped_high = src->mapped_high;
-  dst->scheduler_ticks = src->scheduler_ticks;
-  dst->started_ns = src->started_ns;
-  dst->runtime_ns = src->runtime_ns;
-  dst->running_since_ns = src->running_since_ns;
-  dst->resident_pages = src->resident_pages;
-  dst->running_cpu_id = src->running_cpu_id;
-  dst->runtime_sequence = src->runtime_sequence;
-  bytes_copy(&dst->aspace, &src->aspace, sizeof(xaios_process_aspace_t));
-}
-
-static const char *process_state_name(xaios_user_process_state_t state) {
-  switch (state) {
-  case XAIOS_USER_PROCESS_EMPTY:
-    return "empty";
-  case XAIOS_USER_PROCESS_LOADED:
-    return "loaded";
-  case XAIOS_USER_PROCESS_RUNNABLE:
-    return "runnable";
-  case XAIOS_USER_PROCESS_RUNNING:
-    return "running";
-  case XAIOS_USER_PROCESS_WAITING:
-    return "waiting";
-  case XAIOS_USER_PROCESS_EXITED:
-    return "exited";
-  case XAIOS_USER_PROCESS_FAILED:
-    return "failed";
-  default:
-    return "unknown";
-  }
-}
-
-static void reset_process_slot(xaios_user_process_t *process) {
-  process->pid = 0;
-  process->parent_pid = 0;
-  process->name = 0;
-  process->state = XAIOS_USER_PROCESS_EMPTY;
-  process->exit_code = 0;
-  process->expected_exit_code = 0;
-  process->capability_mask = 0;
-  process->syscall_count = 0;
-  process->rejected_syscall_count = 0;
-  process->entry = 0;
-  process->stack_top = 0;
-  process->argv_user = 0;
-  process->argc = 0;
-  process->reserved_args = 0;
-  process->stack_guard_low = 0;
-  process->stack_guard_high = 0;
-  process->mapped_low = 0;
-  process->mapped_high = 0;
-  process->scheduler_ticks = 0;
-  process->started_ns = 0;
-  process->runtime_ns = 0;
-  process->running_since_ns = 0;
-  process->resident_pages = 0;
-  process->running_cpu_id = UINT32_MAX;
-  process->runtime_sequence = 0;
-  bytes_zero(&process->aspace, sizeof(xaios_process_aspace_t));
-}
-
-/* The records are appended in the order CPUs turn up and searched linearly:
-   there are at most as many as the platform has CPUs, and an unsorted
-   append is what lets a CPU register after the table exists without a
-   reader ever seeing it half-moved. */
-static xaios_cpu_usage_record_t *find_cpu_usage(uint32_t cpu_id) {
-  uint32_t count = __atomic_load_n(&g_cpu_usage_count, __ATOMIC_ACQUIRE);
-  for (uint32_t i = 0U; i < count; ++i) {
-    if (g_cpu_usage[i].cpu_id == cpu_id) return &g_cpu_usage[i];
-  }
-  return 0;
-}
-
-/* A CPU's record, made on first use if it has none.
- *
- * The table used to be built once, from the CPUs online when the process
- * table was initialised, and that is every CPU on AArch64 and x86-64 -- their
- * secondaries are up before then. RISC-V starts its secondaries later, at the
- * scheduler rendezvous, so the table held one record and the process monitor
- * reported a four-hart machine as having one CPU. A CPU that runs a process
- * is a CPU, whenever it arrived; it gets its record then. */
-static xaios_cpu_usage_record_t *cpu_usage_for(uint32_t cpu_id) {
-  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
-  if (usage != 0 || g_cpu_usage == 0) return usage;
-  xaios_spin_lock(&g_cpu_usage_lock);
-  usage = find_cpu_usage(cpu_id);
-  if (usage == 0 && g_cpu_usage_count < g_cpu_usage_capacity) {
-    usage = &g_cpu_usage[g_cpu_usage_count];
-    bytes_zero(usage, sizeof(*usage));
-    usage->cpu_id = cpu_id;
-    __atomic_store_n(&g_cpu_usage_count, g_cpu_usage_count + 1U,
-                     __ATOMIC_RELEASE);
-  }
-  xaios_spin_unlock(&g_cpu_usage_lock);
-  return usage;
-}
-
-static void process_runtime_write_begin(xaios_user_process_t *process) {
-  __sync_fetch_and_add(&process->runtime_sequence, 1U);
-  __sync_synchronize();
-}
-
-static void process_runtime_write_end(xaios_user_process_t *process) {
-  __sync_synchronize();
-  __sync_fetch_and_add(&process->runtime_sequence, 1U);
-}
-
-static void cpu_usage_write_begin(xaios_cpu_usage_record_t *usage) {
-  __sync_fetch_and_add(&usage->sequence, 1U);
-  __sync_synchronize();
-}
-
-static void cpu_usage_write_end(xaios_cpu_usage_record_t *usage) {
-  __sync_synchronize();
-  __sync_fetch_and_add(&usage->sequence, 1U);
-}
-
-static uint64_t process_runtime_read(const xaios_user_process_t *process,
-                                     uint64_t now_ns) {
-  uint64_t runtime;
-  uint64_t running_since;
-  uint32_t before;
-  uint32_t after;
-  do {
-    before = __atomic_load_n(&process->runtime_sequence, __ATOMIC_ACQUIRE);
-    if ((before & 1U) != 0U) {
-      /* A writer is mid-update. Force the retry through a defined value
-         rather than letting the loop test read an unwritten `after`. */
-      after = before;
-      continue;
-    }
-    runtime = process->runtime_ns;
-    running_since = process->running_since_ns;
-    after = __atomic_load_n(&process->runtime_sequence, __ATOMIC_ACQUIRE);
-  } while (before != after || (after & 1U) != 0U);
-  if (running_since != 0U && now_ns > running_since) {
-    runtime += now_ns - running_since;
-  }
-  return runtime;
-}
-
-static uint64_t cpu_usage_read(const xaios_cpu_usage_record_t *usage,
-                               uint64_t now_ns, uint32_t *active_pid) {
-  uint64_t busy;
-  uint64_t active_since;
-  uint32_t active;
-  uint32_t before;
-  uint32_t after;
-  do {
-    before = __atomic_load_n(&usage->sequence, __ATOMIC_ACQUIRE);
-    if ((before & 1U) != 0U) {
-      /* Same defined-retry as the runtime reader above. */
-      after = before;
-      continue;
-    }
-    busy = usage->busy_ns;
-    active_since = usage->active_since_ns;
-    active = usage->active_pid;
-    after = __atomic_load_n(&usage->sequence, __ATOMIC_ACQUIRE);
-  } while (before != after || (after & 1U) != 0U);
-  if (active_since != 0U && now_ns > active_since) {
-    busy += now_ns - active_since;
-  }
-  if (active_pid != 0) {
-    *active_pid = active;
-  }
-  return busy;
-}
-
-static void track_process_mapping(xaios_user_process_t *process, uint64_t start,
-                                  uint64_t end) {
-  if (process->mapped_low == 0 || start < process->mapped_low) {
-    process->mapped_low = start;
-  }
-  if (end > process->mapped_high) {
-    process->mapped_high = end;
-  }
-}
-
-static xaios_status_t validate_process_transition(xaios_user_process_state_t from,
-                                                 xaios_user_process_state_t to) {
-  if (from == XAIOS_USER_PROCESS_EMPTY && to == XAIOS_USER_PROCESS_LOADED) {
-    return XAIOS_OK;
-  }
-  if (from == XAIOS_USER_PROCESS_LOADED &&
-      (to == XAIOS_USER_PROCESS_RUNNABLE || to == XAIOS_USER_PROCESS_RUNNING)) {
-    return XAIOS_OK;
-  }
-  if (from == XAIOS_USER_PROCESS_RUNNABLE &&
-      (to == XAIOS_USER_PROCESS_RUNNING || to == XAIOS_USER_PROCESS_WAITING ||
-       to == XAIOS_USER_PROCESS_FAILED)) {
-    return XAIOS_OK;
-  }
-  if (from == XAIOS_USER_PROCESS_WAITING &&
-      (to == XAIOS_USER_PROCESS_RUNNABLE || to == XAIOS_USER_PROCESS_FAILED)) {
-    return XAIOS_OK;
-  }
-  if (from == XAIOS_USER_PROCESS_RUNNING &&
-      (to == XAIOS_USER_PROCESS_RUNNABLE || to == XAIOS_USER_PROCESS_WAITING ||
-       to == XAIOS_USER_PROCESS_EXITED || to == XAIOS_USER_PROCESS_FAILED)) {
-    return XAIOS_OK;
-  }
-  return XAIOS_ERR_INVALID;
-}
-
-/* These totals are incremented from whichever CPU the process is running on,
-   and this file already keeps the per-process counters beside them atomic. A
-   plain increment loses counts when two CPUs transition at once, which now
-   actually happens; the boot gates check these totals against thresholds, so
-   an undercount reads as a failure that never occurred. */
-static void transition_process(xaios_user_process_t *process,
-                               xaios_user_process_state_t state,
-                               int exit_code) {
-  kassert(process != 0);
-  if (process->state == state && process->exit_code == exit_code) {
-    return;
-  }
-  kassert(validate_process_transition(process->state, state) == XAIOS_OK);
-
-  process->state = state;
-  process->exit_code = exit_code;
-  __sync_fetch_and_add(&g_process_transition_count, 1U);
-
-  switch (state) {
-  case XAIOS_USER_PROCESS_LOADED:
-    __sync_fetch_and_add(&g_process_loaded_count, 1U);
-    break;
-  case XAIOS_USER_PROCESS_RUNNABLE:
-    __sync_fetch_and_add(&g_process_runnable_count, 1U);
-    break;
-  case XAIOS_USER_PROCESS_RUNNING:
-    __sync_fetch_and_add(&g_process_running_count, 1U);
-    break;
-  case XAIOS_USER_PROCESS_WAITING:
-    __sync_fetch_and_add(&g_process_waiting_count, 1U);
-    break;
-  case XAIOS_USER_PROCESS_EXITED:
-    __sync_fetch_and_add(&g_process_exited_count, 1U);
-    break;
-  case XAIOS_USER_PROCESS_FAILED:
-    __sync_fetch_and_add(&g_process_failed_count, 1U);
-    break;
-  default:
-    break;
-  }
-
-  klog("user: process pid=%u name=%s state=%s exit_code=%u transitions=%lu\n",
-       process->pid, process->name != 0 ? process->name : "(none)",
-       process_state_name(state), (unsigned)exit_code,
-       g_process_transition_count);
-}
-
-void user_process_table_init(void) {
-  for (uint32_t i = 0; i < XAIOS_MAX_USER_PROCESSES; ++i) {
-    reset_process_slot(&g_process_table[i]);
-  }
-  g_current_process_capacity = smp_capacity();
-  g_current_process_by_cpu = (xaios_user_process_t **)kheap_calloc(
-      (uint64_t)g_current_process_capacity * sizeof(*g_current_process_by_cpu),
-      64U);
-  /* A capacity of zero is not a machine with no CPUs; it is this running
-     before the CPU count is known. The per-CPU bindings then fall back to a
-     single global, which works until two things want different ones -- and
-     then a worker finishing on any CPU clears the binding of the process
-     running on every other. Said out loud rather than tolerated. */
-  klog("user: process table for %u cpus, storage=%s\n",
-       g_current_process_capacity,
-       g_current_process_by_cpu != 0 ? "allocated" : "none");
-  kassert(g_current_process_capacity != 0U);
-  kassert(g_current_process_by_cpu != 0);
-  g_boot_current_process = 0;
-  g_process_transition_count = 0;
-  g_process_loaded_count = 0;
-  g_process_runnable_count = 0;
-  g_process_running_count = 0;
-  g_process_waiting_count = 0;
-  g_process_exited_count = 0;
-  g_process_failed_count = 0;
-  g_process_reclaim_count = 0;
-  g_process_scheduled_count = 0;
-  g_process_wait_count = 0;
-  g_process_wake_count = 0;
-  g_transient_process_busy = 0U;
-  g_transient_process_owner_cpu = UINT32_MAX;
-  g_transient_process_depth = 0U;
-  /* Room for every CPU the platform can have; records for the ones online
-     now, and the rest register themselves when they first run a process. */
-  g_cpu_usage_capacity = smp_capacity();
-  if (g_cpu_usage_capacity < smp_online_count()) {
-    g_cpu_usage_capacity = smp_online_count();
-  }
-  g_cpu_usage_count = 0U;
-  xaios_spin_init(&g_cpu_usage_lock);
-  g_cpu_usage = (xaios_cpu_usage_record_t *)kheap_calloc(
-      (uint64_t)g_cpu_usage_capacity * sizeof(xaios_cpu_usage_record_t),
-      64U);
-  kassert(g_cpu_usage_capacity == 0U || g_cpu_usage != 0);
-  for (uint32_t ordinal = 0; ordinal < smp_online_count(); ++ordinal) {
-    uint32_t cpu_id = 0;
-    kassert(smp_cpu_id_at(ordinal, &cpu_id) == XAIOS_OK);
-    kassert(cpu_usage_for(cpu_id) != 0);
-  }
-  g_cpu_usage_started_ns = timer_now_ns();
-  klog("user: process table initialized slots=%u cpu_usage_records=%u "
-       "cpu_usage_capacity=%u\n",
-       XAIOS_MAX_USER_PROCESSES, g_cpu_usage_count, g_cpu_usage_capacity);
-}
-
-void user_process_lifecycle_self_test(void) {
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_EMPTY,
-                                      XAIOS_USER_PROCESS_LOADED) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_LOADED,
-                                      XAIOS_USER_PROCESS_RUNNABLE) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_RUNNABLE,
-                                      XAIOS_USER_PROCESS_RUNNING) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_RUNNING,
-                                      XAIOS_USER_PROCESS_WAITING) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_WAITING,
-                                      XAIOS_USER_PROCESS_RUNNABLE) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_RUNNING,
-                                      XAIOS_USER_PROCESS_EXITED) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_RUNNING,
-                                      XAIOS_USER_PROCESS_FAILED) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_EMPTY,
-                                      XAIOS_USER_PROCESS_RUNNING) ==
-          XAIOS_ERR_INVALID);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_RUNNABLE,
-                                      XAIOS_USER_PROCESS_EXITED) ==
-          XAIOS_ERR_INVALID);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_EXITED,
-                                      XAIOS_USER_PROCESS_RUNNING) ==
-          XAIOS_ERR_INVALID);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_FAILED,
-                                      XAIOS_USER_PROCESS_RUNNING) ==
-          XAIOS_ERR_INVALID);
-  klog("user: process lifecycle invalid/failed transition self-test passed\n");
-}
-
-void user_scheduler_self_test(void) {
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_LOADED,
-                                      XAIOS_USER_PROCESS_RUNNABLE) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_RUNNABLE,
-                                      XAIOS_USER_PROCESS_WAITING) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_WAITING,
-                                      XAIOS_USER_PROCESS_RUNNABLE) == XAIOS_OK);
-  kassert(validate_process_transition(XAIOS_USER_PROCESS_EMPTY,
-                                      XAIOS_USER_PROCESS_WAITING) ==
-          XAIOS_ERR_INVALID);
-  klog("scheduler: lifecycle self-test passed\n");
-}
-
-const xaios_user_process_t *user_current_process(void) {
-  return g_current_process;
-}
-
-xaios_status_t user_bind_current_process(uint32_t pid) {
-  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES) {
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  if (process->pid != pid || process->state == XAIOS_USER_PROCESS_EMPTY ||
-      process->aspace.l3_count == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  g_current_process = process;
-  return XAIOS_OK;
-}
-
-void user_clear_current_process(void) { g_current_process = 0; }
-
-/* Every CPU's binding at once, for the case where one of them is not what the
-   running program thinks it is.
-   "missing-capability" with pid=0 says the binding on this CPU is empty; it
-   does not say whether it was cleared, never set, or is simply not the CPU
-   the program is running on -- and on a port where the trap path could get
-   the hart id wrong, the third would look exactly like the first two. */
-void user_current_process_debug(void) {
-  klog("user:   binding table capacity=%u storage=%s cpu_now=%u boot_slot=%u\n",
-       g_current_process_capacity,
-       g_current_process_by_cpu != 0 ? "present" : "MISSING", smp_cpu_id(),
-       g_boot_current_process != 0 ? g_boot_current_process->pid : 0U);
-  for (uint32_t cpu = 0U; cpu < g_current_process_capacity; ++cpu) {
-    const xaios_user_process_t *bound =
-        g_current_process_by_cpu != 0 ? g_current_process_by_cpu[cpu] : 0;
-    klog("user:   cpu=%u bound_pid=%u name=%s\n", cpu,
-         bound != 0 ? bound->pid : 0U,
-         bound != 0 && bound->name != 0 ? bound->name : "(none)");
-  }
-}
-
-xaios_status_t user_process_has_capability(uint64_t capability) {
-  if (g_current_process == 0 ||
-      (g_current_process->capability_mask & capability) != capability) {
-    return XAIOS_ERR_INVALID;
-  }
-  return XAIOS_OK;
-}
-
-void user_process_note_syscall(uint32_t rejected) {
-  if (g_current_process != 0) {
-    __sync_fetch_and_add(&g_current_process->syscall_count, 1U);
-    if (rejected != 0) {
-      __sync_fetch_and_add(&g_current_process->rejected_syscall_count, 1U);
-    }
-  }
-}
-
-uint64_t user_process_note_exit(int exit_code) {
-  if (g_current_process != 0) {
-    user_process_runtime_stop(g_current_process->pid, smp_cpu_id(),
-                              timer_now_ns());
-    /* A process that exits the way it was told to has not failed. The
-       hosted C99 probes exist to exit 23 and to abort, the kernel asserts
-       that they do, and the process table called both of them failures --
-       so a machine on which everything had passed reported two failed
-       tasks. */
-    transition_process(g_current_process,
-                       exit_code == g_current_process->expected_exit_code
-                           ? XAIOS_USER_PROCESS_EXITED
-                           : XAIOS_USER_PROCESS_FAILED,
-                       exit_code);
-  }
-  return XAIOS_USER_EXIT_RETURN_MAGIC | ((uint64_t)(uint32_t)exit_code);
-}
-
-uint64_t user_process_note_fault(void) {
-  if (g_current_process != 0) {
-    klog("user: process fault pid=%u image=%s exit=%d\n",
-         g_current_process->pid,
-         g_current_process->name != 0 ? g_current_process->name : "unknown",
-         XAIOS_USER_FAULT_EXIT_CODE);
-  }
-  return user_process_note_exit(XAIOS_USER_FAULT_EXIT_CODE);
-}
-
-void user_process_runtime_start(uint32_t pid, uint32_t cpu_id,
-                                uint64_t now_ns) {
-  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || now_ns == 0U) {
-    return;
-  }
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  xaios_cpu_usage_record_t *usage = cpu_usage_for(cpu_id);
-  if (process->pid != pid || usage == 0) {
-    return;
-  }
-
-  process_runtime_write_begin(process);
-  if (process->running_since_ns == 0U) {
-    process->running_since_ns = now_ns;
-    process->running_cpu_id = cpu_id;
-  }
-  process_runtime_write_end(process);
-
-  cpu_usage_write_begin(usage);
-  if (usage->active_pid == 0U) {
-    usage->active_pid = pid;
-    usage->active_since_ns = now_ns;
-  }
-  cpu_usage_write_end(usage);
-}
-
-void user_process_runtime_stop(uint32_t pid, uint32_t cpu_id,
-                               uint64_t now_ns) {
-  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || now_ns == 0U) {
-    return;
-  }
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
-  if (process->pid != pid || usage == 0) {
-    return;
-  }
-
-  process_runtime_write_begin(process);
-  if (process->running_since_ns != 0U && now_ns > process->running_since_ns) {
-    process->runtime_ns += now_ns - process->running_since_ns;
-  }
-  process->running_since_ns = 0U;
-  process->running_cpu_id = cpu_id;
-  process_runtime_write_end(process);
-
-  cpu_usage_write_begin(usage);
-  if (usage->active_pid == pid) {
-    if (usage->active_since_ns != 0U && now_ns > usage->active_since_ns) {
-      usage->busy_ns += now_ns - usage->active_since_ns;
-    }
-    usage->active_pid = 0U;
-    usage->active_since_ns = 0U;
-  }
-  cpu_usage_write_end(usage);
-}
-
-void user_thread_runtime_start(uint32_t pid, uint32_t cpu_id,
-                               uint64_t now_ns) {
-  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || now_ns == 0U) return;
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  xaios_cpu_usage_record_t *usage = cpu_usage_for(cpu_id);
-  if (process->pid != pid || usage == 0) return;
-
-  cpu_usage_write_begin(usage);
-  if (usage->active_pid == 0U) {
-    usage->active_pid = pid;
-    usage->active_since_ns = now_ns;
-  }
-  cpu_usage_write_end(usage);
-}
-
-void user_thread_runtime_stop(uint32_t pid, uint32_t cpu_id,
-                              uint64_t started_ns, uint64_t now_ns) {
-  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES || started_ns == 0U ||
-      now_ns <= started_ns) {
-    return;
-  }
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  xaios_cpu_usage_record_t *usage = find_cpu_usage(cpu_id);
-  if (process->pid != pid || usage == 0) return;
-
-  __sync_fetch_and_add(&process->runtime_ns, now_ns - started_ns);
-  cpu_usage_write_begin(usage);
-  if (usage->active_pid == pid) {
-    if (usage->active_since_ns != 0U && now_ns > usage->active_since_ns) {
-      usage->busy_ns += now_ns - usage->active_since_ns;
-    }
-    usage->active_pid = 0U;
-    usage->active_since_ns = 0U;
-  }
-  cpu_usage_write_end(usage);
-}
-
-/* Every CPU that is online has a record, whether or not it has run a process
-   yet. Registering on first use alone left a hart that had not been handed a
-   process out of the table, so a four-hart machine reported three CPUs
-   depending on what the scheduler had done so far -- an answer that varied
-   with timing is not a count. */
-static void cpu_usage_sync_online(void) {
-  uint32_t online = smp_online_count();
-  for (uint32_t ordinal = 0U; ordinal < online; ++ordinal) {
-    uint32_t cpu_id = 0U;
-    if (smp_cpu_id_at(ordinal, &cpu_id) == XAIOS_OK) (void)cpu_usage_for(cpu_id);
-  }
-}
-
-uint32_t user_cpu_usage_count(void) {
-  cpu_usage_sync_online();
-  return __atomic_load_n(&g_cpu_usage_count, __ATOMIC_ACQUIRE);
-}
-
-xaios_status_t user_cpu_usage_snapshot(
-    uint32_t ordinal, uint64_t now_ns,
-    xaios_cpu_usage_snapshot_t *snapshot) {
-  if (snapshot == 0 || ordinal >= user_cpu_usage_count() || now_ns == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  const xaios_cpu_usage_record_t *usage = &g_cpu_usage[ordinal];
-  snapshot->cpu_id = usage->cpu_id;
-  snapshot->busy_ns = cpu_usage_read(usage, now_ns, &snapshot->active_pid);
-  snapshot->elapsed_ns = now_ns > g_cpu_usage_started_ns
-                             ? now_ns - g_cpu_usage_started_ns
-                             : 0U;
-  return XAIOS_OK;
-}
-
-uint64_t user_cpu_busy_total(uint64_t now_ns) {
-  uint64_t total = 0U;
-  for (uint32_t ordinal = 0; ordinal < g_cpu_usage_count; ++ordinal) {
-    uint64_t busy = cpu_usage_read(&g_cpu_usage[ordinal], now_ns, 0);
-    if (UINT64_MAX - total < busy) {
-      return UINT64_MAX;
-    }
-    total += busy;
-  }
-  return total;
-}
-
-static void user_process_idle_common(uint64_t deadline_ns, int wake_on_event) {
-  xaios_user_process_t *process = g_current_process;
-  uint32_t cpu_id = smp_cpu_id();
-  uint64_t started_ns = timer_now_ns();
-  if (deadline_ns <= started_ns) return;
-  if (process != 0) {
-    user_process_runtime_stop(process->pid, cpu_id, started_ns);
-  }
-  if (wake_on_event != 0) {
-    timer_idle_until_event(deadline_ns);
-  } else {
-    timer_idle_until(deadline_ns);
-  }
-  if (process != 0) {
-    user_process_runtime_start(process->pid, cpu_id, timer_now_ns());
-  }
-}
-
-void user_process_idle_until(uint64_t deadline_ns) {
-  user_process_idle_common(deadline_ns, 0);
-}
-
-void user_process_idle_until_event(uint64_t deadline_ns) {
-  user_process_idle_common(deadline_ns, 1);
-}
+#define USER_TASK_STACK_BYTES (16U * 1024U)
+/* The pid a dispatching context adopts while it waits. Above the process table
+ * on purpose: the scheduler's per-pid runtime accounting is a process table
+ * lookup, and a runner is not a process. */
+#define USER_TASK_RUNNER_PID_BASE UINT32_C(20000)
+#define USER_TASK_WAIT_NS UINT64_C(2000000000)
 
 static uint64_t argument_length(const char *text) {
   uint64_t length = 0U;
@@ -775,7 +85,7 @@ xaios_status_t user_process_set_arguments(xaios_user_process_t *process,
   process->argv_user = cursor;
   process->argc = argc;
   if (process->pid != 0U && process->pid <= XAIOS_MAX_USER_PROCESSES) {
-    xaios_user_process_t *slot = &g_process_table[process->pid - 1U];
+    xaios_user_process_t *slot = &g_user_process_table[process->pid - 1U];
     if (slot->pid == process->pid &&
         slot->state != XAIOS_USER_PROCESS_EMPTY) {
       slot->stack_top = process->stack_top;
@@ -784,6 +94,16 @@ xaios_status_t user_process_set_arguments(xaios_user_process_t *process,
     }
   }
   return XAIOS_OK;
+}
+
+static void track_process_mapping(xaios_user_process_t *process, uint64_t start,
+                                  uint64_t end) {
+  if (process->mapped_low == 0 || start < process->mapped_low) {
+    process->mapped_low = start;
+  }
+  if (end > process->mapped_high) {
+    process->mapped_high = end;
+  }
 }
 
 xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
@@ -795,9 +115,9 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
     return XAIOS_ERR_INVALID;
   }
 
-  reset_process_slot(process);
+  user_process_reset_slot(process);
   process->pid = pid;
-  process->owner_token = user_next_owner_token();
+  process->owner_token = user_process_next_owner_token();
   process->name = file->path;
   process->capability_mask = capability_mask;
 
@@ -843,10 +163,10 @@ xaios_status_t user_load_process(const xaios_initramfs_file_t *file,
     return XAIOS_ERR_INVALID;
   }
 
-  xaios_user_process_t *slot = &g_process_table[pid - 1U];
+  xaios_user_process_t *slot = &g_user_process_table[pid - 1U];
   copy_process(slot, process);
   slot->state = XAIOS_USER_PROCESS_EMPTY;
-  transition_process(slot, XAIOS_USER_PROCESS_LOADED, 0);
+  user_process_transition(slot, XAIOS_USER_PROCESS_LOADED, 0);
   copy_process(process, slot);
   klog("user: loaded %s ELF pid=%u caps=0x%lx entry=0x%lx stack=0x%lx aspace_pages=%u\n",
        process->name, process->pid, process->capability_mask, process->entry,
@@ -861,99 +181,26 @@ xaios_status_t user_load_init(const xaios_initramfs_file_t *file,
                            process);
 }
 
-xaios_status_t user_process_snapshot_at(uint32_t pid, uint64_t now_ns,
-                                        xaios_user_process_t *process) {
-  if (process == 0 || pid == 0 || pid > XAIOS_MAX_USER_PROCESSES ||
-      now_ns == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  const xaios_user_process_t *slot = &g_process_table[pid - 1U];
-  if (slot->pid != pid || slot->state == XAIOS_USER_PROCESS_EMPTY) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  copy_process(process, slot);
-  process->runtime_ns = process_runtime_read(slot, now_ns);
-  return XAIOS_OK;
-}
-
-xaios_status_t user_process_snapshot(uint32_t pid,
-                                     xaios_user_process_t *process) {
-  return user_process_snapshot_at(pid, timer_now_ns(), process);
-}
-
-xaios_status_t user_process_make_runnable(uint32_t pid, uint32_t parent_pid) {
-  if (pid == 0 || pid > XAIOS_MAX_USER_PROCESSES || parent_pid == pid) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  if (process->pid != pid) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  process->parent_pid = parent_pid;
-  transition_process(process, XAIOS_USER_PROCESS_RUNNABLE, 0);
-  klog("scheduler: process pid=%u parent=%u runnable name=%s\n", process->pid,
-       process->parent_pid, process->name != 0 ? process->name : "(none)");
-  return XAIOS_OK;
-}
-
-xaios_status_t user_process_wait(uint32_t pid) {
-  if (pid == 0 || pid > XAIOS_MAX_USER_PROCESSES) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  if (process->pid != pid) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  transition_process(process, XAIOS_USER_PROCESS_WAITING, process->exit_code);
-  __sync_fetch_and_add(&g_process_wait_count, 1U);
-  klog("scheduler: process pid=%u waiting waits=%lu\n", pid,
-       g_process_wait_count);
-  return XAIOS_OK;
-}
-
-xaios_status_t user_process_wake(uint32_t pid) {
-  if (pid == 0 || pid > XAIOS_MAX_USER_PROCESSES) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  if (process->pid != pid) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  transition_process(process, XAIOS_USER_PROCESS_RUNNABLE, process->exit_code);
-  __sync_fetch_and_add(&g_process_wake_count, 1U);
-  klog("scheduler: process pid=%u woken wakes=%lu\n", pid,
-       g_process_wake_count);
-  return XAIOS_OK;
-}
-
 int user_process_run(const xaios_user_process_t *process) {
   kassert(process != 0);
   kassert(process->pid != 0 && process->pid <= XAIOS_MAX_USER_PROCESSES);
-  g_current_process = &g_process_table[process->pid - 1U];
+  g_current_process = &g_user_process_table[process->pid - 1U];
   if (g_current_process->pid != process->pid ||
       g_current_process->state == XAIOS_USER_PROCESS_EMPTY) {
     copy_process(g_current_process, process);
   }
   uint64_t entry = g_current_process->entry;
   uint64_t stack = g_current_process->stack_top;
-  transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
+  user_process_transition(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
   ++g_current_process->scheduler_ticks;
-  __sync_fetch_and_add(&g_process_scheduled_count, 1U);
+  __sync_fetch_and_add(&g_user_process_scheduled_count, 1U);
   user_process_runtime_start(g_current_process->pid, smp_cpu_id(),
                              timer_now_ns());
 
   klog("scheduler: dispatch pid=%u parent=%u name=%s ticks=%lu scheduled=%lu\n",
        g_current_process->pid, g_current_process->parent_pid,
        g_current_process->name != 0 ? g_current_process->name : "(none)",
-       g_current_process->scheduler_ticks, g_process_scheduled_count);
+       g_current_process->scheduler_ticks, g_user_process_scheduled_count);
 
   klog("user: entering EL0 %s pid=%u entry=0x%lx stack=0x%lx\n",
        g_current_process->name, g_current_process->pid, entry, stack);
@@ -967,16 +214,9 @@ int user_process_run(const xaios_user_process_t *process) {
 
   klog("user: kernel resumed after EL0 pid=%u state=%s exit_code=%u transitions=%lu\n",
        g_current_process->pid, process_state_name(g_current_process->state),
-       (unsigned)exit_code, g_process_transition_count);
+       (unsigned)exit_code, g_user_process_transition_count);
   return exit_code;
 }
-
-#define USER_TASK_STACK_BYTES (16U * 1024U)
-/* The pid a dispatching context adopts while it waits. Above the process table
- * on purpose: the scheduler's per-pid runtime accounting is a process table
- * lookup, and a runner is not a process. */
-#define USER_TASK_RUNNER_PID_BASE UINT32_C(20000)
-#define USER_TASK_WAIT_NS UINT64_C(2000000000)
 
 /* The kernel continuation of a user task.
  *
@@ -992,7 +232,7 @@ static void user_task_kernel_entry(void) {
     scheduler_unregister(pid);
     for (;;) xaios_cpu_relax();
   }
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
+  xaios_user_process_t *process = &g_user_process_table[pid - 1U];
   uint32_t runner_pid = USER_TASK_RUNNER_PID_BASE + pid;
 
   if (user_bind_current_process(pid) != XAIOS_OK) {
@@ -1009,7 +249,7 @@ static void user_task_kernel_entry(void) {
   kassert((encoded & XAIOS_USER_EXIT_RETURN_MASK) ==
           XAIOS_USER_EXIT_RETURN_MAGIC);
   int exit_code = (int)(uint32_t)encoded;
-  transition_process(process, XAIOS_USER_PROCESS_EXITED, exit_code);
+  user_process_transition(process, XAIOS_USER_PROCESS_EXITED, exit_code);
   klog("user: scheduled task exited pid=%u exit_code=%d\n", (unsigned)pid,
        exit_code);
 
@@ -1042,13 +282,13 @@ int user_process_run_scheduled(const xaios_user_process_t *process,
   uint32_t pid = process->pid;
   uint32_t runner_pid = USER_TASK_RUNNER_PID_BASE + pid;
 
-  g_current_process = &g_process_table[pid - 1U];
+  g_current_process = &g_user_process_table[pid - 1U];
   if (g_current_process->pid != pid ||
       g_current_process->state == XAIOS_USER_PROCESS_EMPTY) {
     copy_process(g_current_process, process);
   }
-  transition_process(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
-  __sync_fetch_and_add(&g_process_scheduled_count, 1U);
+  user_process_transition(g_current_process, XAIOS_USER_PROCESS_RUNNING, 0);
+  __sync_fetch_and_add(&g_user_process_scheduled_count, 1U);
   user_process_runtime_start(pid, cpu, timer_now_ns());
 
   void *stack = kheap_alloc(USER_TASK_STACK_BYTES, 16U);
@@ -1195,7 +435,8 @@ xaios_status_t user_process_start_async(
   uint32_t pid = 0U;
   for (uint32_t candidate = XAIOS_TRANSIENT_PID_FIRST;
        candidate <= XAIOS_MAX_USER_PROCESSES; ++candidate) {
-    if (g_process_table[candidate - 1U].state == XAIOS_USER_PROCESS_EMPTY) {
+    if (g_user_process_table[candidate - 1U].state ==
+        XAIOS_USER_PROCESS_EMPTY) {
       pid = candidate;
       break;
     }
@@ -1240,273 +481,4 @@ xaios_status_t user_process_start_async(
   klog("user: async child pid=%u parent=%u thread=%lu name=%s\n", pid,
        parent_pid, *thread_id, context->process.name);
   return XAIOS_OK;
-}
-
-xaios_status_t user_process_run_transient_args(
-    const xaios_initramfs_file_t *file, uint64_t capability_mask,
-    uint32_t argc, const char *const argv[], int *exit_code) {
-  const xaios_user_process_t *parent = user_current_process();
-  xaios_user_process_t child;
-  uint32_t child_pid = 0U;
-  uint32_t parent_pid;
-  uint32_t cpu_id;
-  uint32_t owns_transient_lock = 0U;
-  xaios_status_t status = XAIOS_ERR_NO_MEMORY;
-
-  if (file == 0 || exit_code == 0 || parent == 0 || parent->pid == 0U ||
-      argc == 0U || argv == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  parent_pid = parent->pid;
-  cpu_id = smp_cpu_id();
-  if (__sync_lock_test_and_set(&g_transient_process_busy, 1U) == 0U) {
-    g_transient_process_owner_cpu = cpu_id;
-    g_transient_process_depth = 1U;
-    owns_transient_lock = 1U;
-  } else if (g_transient_process_owner_cpu == cpu_id &&
-             g_transient_process_depth < XAIOS_MAX_USER_PROCESSES) {
-    ++g_transient_process_depth;
-  } else {
-    return XAIOS_ERR_BUSY;
-  }
-  for (uint32_t pid = XAIOS_TRANSIENT_PID_FIRST;
-       pid <= XAIOS_MAX_USER_PROCESSES; ++pid) {
-    if (g_process_table[pid - 1U].state == XAIOS_USER_PROCESS_EMPTY) {
-      child_pid = pid;
-      break;
-    }
-  }
-  if (child_pid == 0U) {
-    goto out;
-  }
-
-  status = user_load_process(file, child_pid, capability_mask, &child);
-  if (status != XAIOS_OK) {
-    user_switch_address_space(parent_pid);
-    goto out;
-  }
-  status = user_process_set_arguments(&child, argc, argv);
-  if (status != XAIOS_OK) {
-    user_process_reclaim_address_space(&child);
-    user_switch_address_space(parent_pid);
-    (void)user_process_reap(child_pid);
-    goto out;
-  }
-  status = user_process_make_runnable(child_pid, parent_pid);
-  if (status != XAIOS_OK) {
-    user_process_reclaim_address_space(&child);
-    user_switch_address_space(parent_pid);
-    (void)user_process_reap(child_pid);
-    goto out;
-  }
-  kassert(user_process_snapshot(child_pid, &child) == XAIOS_OK);
-
-  user_process_runtime_stop(parent_pid, cpu_id, timer_now_ns());
-  *exit_code = user_process_run(&child);
-
-  user_process_reclaim_address_space(&child);
-  kassert(user_bind_current_process(parent_pid) == XAIOS_OK);
-  user_switch_address_space(parent_pid);
-  user_process_runtime_start(parent_pid, cpu_id, timer_now_ns());
-
-  kassert(user_process_reap(child_pid) == XAIOS_OK);
-  status = XAIOS_OK;
-
-out:
-  kassert(g_transient_process_owner_cpu == cpu_id &&
-          g_transient_process_depth != 0U);
-  --g_transient_process_depth;
-  if (owns_transient_lock != 0U) {
-    kassert(g_transient_process_depth == 0U);
-    g_transient_process_owner_cpu = UINT32_MAX;
-    __sync_lock_release(&g_transient_process_busy);
-  }
-  return status;
-}
-
-xaios_status_t user_process_run_transient(
-    const xaios_initramfs_file_t *file, uint64_t capability_mask,
-    int *exit_code) {
-  const char *argv[1];
-  if (file == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  argv[0] = file->path;
-  return user_process_run_transient_args(file, capability_mask, 1U, argv,
-                                         exit_code);
-}
-
-void user_process_reclaim_address_space(const xaios_user_process_t *process) {
-  if (process == 0) {
-    return;
-  }
-  if (process->pid != 0U &&
-      xaios_user_thread_drain(process->pid, UINT64_C(5000000000)) !=
-          XAIOS_OK) {
-    klog("user: address-space reclaim deferred pid=%u active threads remain\n",
-         process->pid);
-    return;
-  }
-  syscall_release_process_resources(process->owner_token);
-
-  /* Use ELF loader reclaim for processes with per-process address spaces */
-  if (process->aspace.l3_count > 0) {
-    uint32_t reclaimed_pages = process->aspace.page_count;
-    elf_loader_reclaim((xaios_process_aspace_t *)&process->aspace,
-                       process->mapped_low, process->mapped_high);
-    if (process->pid != 0U && process->pid <= XAIOS_MAX_USER_PROCESSES &&
-        g_process_table[process->pid - 1U].pid == process->pid) {
-      xaios_user_process_t *slot = &g_process_table[process->pid - 1U];
-      slot->resident_pages = 0U;
-      bytes_zero(&slot->aspace, sizeof(slot->aspace));
-    }
-    __sync_fetch_and_add(&g_process_reclaim_count, 1U);
-    klog("user: reclaimed aspace pid=%u pages=%u\n",
-         process->pid, reclaimed_pages);
-    return;
-  }
-
-  /* Legacy reclaim: walk mapped range and free pages from global tables */
-  if (process->mapped_low == 0 ||
-      process->mapped_high <= process->mapped_low) {
-    return;
-  }
-
-  for (uint64_t va = process->mapped_low; va < process->mapped_high;
-       va += PAGE_SIZE) {
-    uint64_t physical = 0;
-    uint32_t flags = 0;
-    if (vmm_translate(va, &physical, &flags) == XAIOS_OK &&
-        (flags & XAIOS_VMM_USER) != 0) {
-      kassert(vmm_unmap_page(va) == XAIOS_OK);
-      pmm_free_page((void *)(uintptr_t)physical);
-    }
-  }
-  __sync_fetch_and_add(&g_process_reclaim_count, 1U);
-  klog("user: reclaimed address space pid=%u range=[0x%lx,0x%lx)\n",
-       process->pid, process->mapped_low, process->mapped_high);
-}
-
-xaios_status_t user_process_reap(uint32_t pid) {
-  xaios_user_process_t *process;
-  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES) {
-    return XAIOS_ERR_INVALID;
-  }
-  process = &g_process_table[pid - 1U];
-  if (process->pid != pid || process->aspace.l3_count != 0U ||
-      (process->state != XAIOS_USER_PROCESS_LOADED &&
-       process->state != XAIOS_USER_PROCESS_EXITED &&
-       process->state != XAIOS_USER_PROCESS_FAILED)) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (g_current_process == process) {
-    return XAIOS_ERR_BUSY;
-  }
-  reset_process_slot(process);
-  klog("user: reaped transient process pid=%u\n", pid);
-  return XAIOS_OK;
-}
-
-xaios_status_t user_process_expect_exit_code(uint32_t pid, int exit_code) {
-  if (pid == 0U || pid > XAIOS_MAX_USER_PROCESSES) return XAIOS_ERR_INVALID;
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  if (process->pid != pid) return XAIOS_ERR_NOT_FOUND;
-  process->expected_exit_code = exit_code;
-  return XAIOS_OK;
-}
-
-xaios_status_t user_process_terminate(uint32_t pid, int exit_code) {
-  xaios_user_process_t snapshot;
-  xaios_user_process_t *process;
-  if (pid <= 2U || pid > XAIOS_MAX_USER_PROCESSES) return XAIOS_ERR_INVALID;
-  process = &g_process_table[pid - 1U];
-  if (process->pid != pid || process == user_current_process())
-    return XAIOS_ERR_BUSY;
-  if (process->state != XAIOS_USER_PROCESS_LOADED &&
-      process->state != XAIOS_USER_PROCESS_RUNNABLE &&
-      process->state != XAIOS_USER_PROCESS_WAITING)
-    return XAIOS_ERR_BUSY;
-  copy_process(&snapshot, process);
-  if (process->state == XAIOS_USER_PROCESS_RUNNABLE ||
-      process->state == XAIOS_USER_PROCESS_WAITING)
-    transition_process(process, XAIOS_USER_PROCESS_FAILED, exit_code);
-  user_process_reclaim_address_space(&snapshot);
-  return user_process_reap(pid);
-}
-
-void user_switch_address_space(uint32_t pid) {
-  if (pid == 0 || pid > XAIOS_MAX_USER_PROCESSES) {
-    vmm_switch_user_aspace(0, 0);
-    return;
-  }
-  xaios_user_process_t *process = &g_process_table[pid - 1U];
-  if (process->aspace.l3_count > 0) {
-    vmm_switch_user_aspace(process->aspace.l3_phys, process->aspace.l3_count);
-  }
-}
-
-uint64_t user_process_transition_count(void) {
-  return g_process_transition_count;
-}
-
-uint64_t user_process_loaded_count(void) {
-  return g_process_loaded_count;
-}
-
-uint64_t user_process_runnable_count(void) {
-  return g_process_runnable_count;
-}
-
-uint64_t user_process_running_count(void) {
-  return g_process_running_count;
-}
-
-uint64_t user_process_waiting_count(void) {
-  return g_process_waiting_count;
-}
-
-uint64_t user_process_exited_count(void) {
-  return g_process_exited_count;
-}
-
-uint64_t user_process_failed_count(void) {
-  return g_process_failed_count;
-}
-
-uint64_t user_process_current_failed_count(void) {
-  uint64_t failed = 0U;
-  for (uint32_t i = 0U; i < XAIOS_MAX_USER_PROCESSES; ++i) {
-    if (g_process_table[i].state == XAIOS_USER_PROCESS_FAILED) ++failed;
-  }
-  return failed;
-}
-
-uint64_t user_process_reclaim_count(void) {
-  return g_process_reclaim_count;
-}
-
-uint64_t user_process_scheduled_count(void) {
-  return g_process_scheduled_count;
-}
-
-uint64_t user_process_wait_count(void) {
-  return g_process_wait_count;
-}
-
-uint64_t user_process_wake_count(void) {
-  return g_process_wake_count;
-}
-
-uint64_t user_process_active_count(void) {
-  uint64_t active = 0;
-  for (uint32_t i = 0; i < XAIOS_MAX_USER_PROCESSES; ++i) {
-    xaios_user_process_state_t state = g_process_table[i].state;
-    if (state == XAIOS_USER_PROCESS_LOADED ||
-        state == XAIOS_USER_PROCESS_RUNNABLE ||
-        state == XAIOS_USER_PROCESS_RUNNING ||
-        state == XAIOS_USER_PROCESS_WAITING) {
-      ++active;
-    }
-  }
-  return active;
 }

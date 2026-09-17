@@ -38,6 +38,7 @@ rm -f "$BUILD_DIR"/*.o "$BUILD_DIR/loader.elf"
 # anywhere. An image with no relocations is marked relocations-stripped and
 # must load at its ImageBase, which firmware is free to refuse.
 for source in boot/uefi/loader_main.c boot/uefi/system_volume_loader.c \
+    boot/uefi/loader_platform.c boot/uefi/loader_image.c \
     kernel/runtime/sha256.c userspace/sshd/ssh_crypto.c \
     userspace/sshd/tweetnacl_subset.c; do
   object="$BUILD_DIR/$(basename "${source%.c}").o"

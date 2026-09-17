@@ -36,13 +36,13 @@
 #include <xaios/timer.h>
 #include <xaios/vmm.h>
 
-/* What this file used to declare for itself and now shares with
-   mmu_shootdown.c -- the remote-shootdown test that was the bottom third of
-   this file. The page size, the hart ceiling, the firmware-hart and
-   page-fault-probe declarations the test needs, and the named entry points it
-   calls into the shootdown machinery below are all in there, included from
-   both sides so that nothing is defined twice. */
-#include "mmu_shootdown.h"
+/* What this file used to declare for itself and now shares with the modules
+   beside it -- mmu_tlb.c, mmu_selftest.c and the remote-shootdown test in
+   mmu_shootdown.c. The page size, the hart ceiling, the firmware-hart and
+   page-fault-probe declarations, and the named entry points each side calls
+   are declared once, in mmu_shootdown.h and mmu_internal.h, and included from
+   every side so that nothing is defined twice. */
+#include "mmu_internal.h"
 
 extern char __kernel_start[];
 extern char __kernel_end[];
@@ -191,255 +191,11 @@ static uint32_t pte_to_flags(uint64_t entry) {
   return flags;
 }
 
-/* ---------------------------------------------------------------------------
- * Remote TLB shootdown.
- *
- * `sfence.vma` fences the hart that executes it and no other. That is not a
- * QEMU detail or a cautious reading -- it is the definition of the
- * instruction, and there is no supervisor-mode instruction that fences a hart
- * this one is not running on. So until this existed, every fence in this file
- * was a fence of one TLB: the kernel cleared a page table entry, fenced
- * itself, freed the page, and the other harts went on translating through the
- * entry that had been cleared. A write through such a stale translation lands
- * in whatever the allocator handed out next. It is silent, it is late, and
- * when it surfaces it does not look like a paging bug.
- *
- * The other two architectures already close this. x86-64 sends an
- * inter-processor interrupt and waits for each CPU to acknowledge a
- * generation (x86_64_platform_invalidate_page_all). AArch64 does not have the
- * problem at all: `tlbi vaae1is` is broadcast by the hardware across the inner
- * shareable domain. RISC-V's answer is neither -- it is firmware's, through
- * the RFENCE extension, which is the same shape as HSM for starting a hart
- * and IPI for waking one, and for the same reason: the work is machine-mode
- * work and supervisor mode asks for it. That is also why there is no
- * acknowledgement counter here to match x86-64's. The ecall does not return
- * until firmware says every named hart has fenced; the wait is the call.
- *
- * The hart mask is the part worth being careful about. SBI takes a bitmap and
- * a base, and bit N means hart (base + N) -- not hart N. Hart ids are
- * firmware's to choose and this project has already been bitten by assuming
- * they are dense: booting through EDK2 leaves one hart already started, so the
- * machine comes up with ids 0, 2, 3, and code that indexed by id was wrong. A
- * shootdown that gets the base wrong fences some other hart and reports
- * success, which is the worst failure available -- the kernel would believe it
- * had done the thing it had not done. So the mask is built from the hart ids
- * of the online CPUs, grouped into 64-hart windows around the lowest id in
- * each group, and never assumed to start at zero.
- * ------------------------------------------------------------------------ */
 
-/* Completed shootdown operations: fences that reached at least one other
-   hart. Not the number of ecalls -- a machine whose hart ids are spread wider
-   than 64 takes several ecalls for one logical shootdown -- and not the
-   number attempted, because a fence firmware refused proves nothing. */
-static uint64_t g_tlb_shootdown_count;
-/* Remote harts fenced, summed over every shootdown. The pair is what makes
-   the self-test's assertion mean anything: a count of operations alone cannot
-   tell "fenced three harts twice" from "fenced nobody twice". */
-static uint64_t g_tlb_remote_hart_fences;
-/* Firmware refusals, counted rather than ignored. Without this a kernel whose
-   every remote fence was rejected would report exactly the same shootdown
-   count as one where they all worked. */
-static uint64_t g_tlb_remote_fence_errors;
-/* The negative control, and nothing but the self-test writes it.
- *
- * "The remote hart no longer translates the address" is a claim about
- * hardware that could be true for reasons having nothing to do with this
- * code: an implementation is free to drop a translation whenever it likes, so
- * an assertion that only ever sees the fixed kernel cannot tell a working
- * shootdown from a machine that never held the entry. The self-test therefore
- * withdraws a mapping twice -- once with this set, which is exactly the kernel
- * that existed before this change, and once without -- and compares. If the
- * suppressed withdrawal already stops the remote hart translating, the machine
- * cannot demonstrate the bug and the test says so rather than claiming a proof
- * it does not have. */
-static uint32_t g_tlb_shootdown_suppressed;
-
-uint64_t riscv64_platform_tlb_shootdown_count(void) {
-  return __atomic_load_n(&g_tlb_shootdown_count, __ATOMIC_ACQUIRE);
-}
-
-uint64_t riscv64_platform_tlb_remote_hart_fences(void) {
-  return __atomic_load_n(&g_tlb_remote_hart_fences, __ATOMIC_ACQUIRE);
-}
-
-uint64_t riscv64_platform_tlb_remote_fence_errors(void) {
-  return __atomic_load_n(&g_tlb_remote_fence_errors, __ATOMIC_ACQUIRE);
-}
-
-/* Said once, not once per fence: firmware without RFENCE cannot be worked
-   around from supervisor mode, and a line per unmap would bury the boot. */
-static uint32_t g_rfence_warned;
-
-/* The mask and base of the last window fenced, kept so the self-test can
-   print what was actually sent rather than what the reader assumes. A
-   shootdown that names the wrong harts succeeds silently -- firmware has no
-   way to know the caller meant somebody else -- so the numbers that decide
-   whether the gap handling is right are worth having in the boot log. */
-static uint64_t g_tlb_last_mask;
-static uint64_t g_tlb_last_base;
-static uint32_t g_tlb_last_windows;
-
-uint64_t riscv64_platform_tlb_last_mask(void) { return g_tlb_last_mask; }
-uint64_t riscv64_platform_tlb_last_base(void) { return g_tlb_last_base; }
-uint32_t riscv64_platform_tlb_last_windows(void) { return g_tlb_last_windows; }
-
-/* The fence itself. A `size` of zero means the whole address space, which is
- * how the specification spells it and what the global callers want.
- *
- * Returns the number of remote harts named, which is zero on a machine that
- * is still single-hart. That early exit is not an optimisation for its own
- * sake: vmm_init maps thousands of pages before any secondary exists, and an
- * ecall each to reach nobody would be a real cost for no correctness. */
-static uint32_t tlb_remote_fence(uint64_t start, uint64_t size) {
-  if (g_tlb_shootdown_suppressed != 0U) return 0U;
-  if (smp_online_count() <= 1U) return 0U;
-  if (sbi_rfence_available() == 0) {
-    if (__atomic_exchange_n(&g_rfence_warned, 1U, __ATOMIC_ACQ_REL) == 0U) {
-      klog("vmm: WARNING firmware offers no SBI RFENCE extension; a kernel "
-           "mapping withdrawn on one hart stays live in every other hart's "
-           "TLB and supervisor mode cannot fix that\n");
-    }
-    return 0U;
-  }
-
-  uint64_t harts[VMM_MAX_HARTS];
-  uint32_t pending[VMM_MAX_HARTS];
-  uint32_t count = 0U;
-  uint32_t self = smp_cpu_id();
-  uint32_t capacity = smp_capacity();
-  if (capacity > VMM_MAX_HARTS) capacity = VMM_MAX_HARTS;
-  for (uint32_t cpu = 0U; cpu < capacity && count < VMM_MAX_HARTS; ++cpu) {
-    if (cpu == self) continue;
-    /* Online CPUs only. A hart that was never started, or that refused to,
-       is not one firmware will accept in a mask: SBI answers
-       SBI_ERR_INVALID_PARAM for the whole call, so a single absent hart would
-       cancel the fence for every present one. */
-    if (smp_cpu_state(cpu) == 0) continue;
-    harts[count] = (uint64_t)riscv64_hart_of_cpu(cpu);
-    pending[count] = 1U;
-    ++count;
-  }
-  if (count == 0U) return 0U;
-
-  /* Grouped into windows rather than assuming one call covers everything.
-     Sixty-four harts fit in a mask; ids 0 and 200 do not, however few harts
-     there are. Each pass takes the lowest id still unfenced as the base and
-     sweeps up everything within 63 of it. */
-  uint32_t remaining = count;
-  uint32_t fenced = 0U;
-  uint32_t windows = 0U;
-  while (remaining != 0U) {
-    uint64_t base = UINT64_C(0xFFFFFFFFFFFFFFFF);
-    for (uint32_t i = 0U; i < count; ++i) {
-      if (pending[i] != 0U && harts[i] < base) base = harts[i];
-    }
-    uint64_t mask = 0U;
-    uint32_t in_window = 0U;
-    for (uint32_t i = 0U; i < count; ++i) {
-      if (pending[i] == 0U) continue;
-      uint64_t offset = harts[i] - base;
-      if (offset >= 64U) continue;
-      mask |= UINT64_C(1) << offset;
-      pending[i] = 0U;
-      ++in_window;
-    }
-    /* The lowest pending id is always in its own window, so this is never
-       zero; the guard is here so a future change that breaks that invariant
-       hangs a boot loudly rather than spinning forever in the unmap path. */
-    if (in_window == 0U) break;
-    remaining -= in_window;
-    ++windows;
-    g_tlb_last_mask = mask;
-    g_tlb_last_base = base;
-    int64_t error = sbi_remote_sfence_vma(mask, base, start, size);
-    if (error != 0) {
-      __atomic_add_fetch(&g_tlb_remote_fence_errors, 1U, __ATOMIC_RELAXED);
-      klog("vmm: SBI remote fence refused mask=0x%lx base=%lu error=0x%lx\n",
-           mask, base, (uint64_t)error);
-      continue;
-    }
-    __atomic_add_fetch(&g_tlb_remote_hart_fences, (uint64_t)in_window,
-                       __ATOMIC_RELAXED);
-    fenced += in_window;
-  }
-  /* Counted only when firmware actually fenced somebody. A shootdown that
-     every window refused is not a shootdown, and counting it would let the
-     self-test's assertion pass on a machine where nothing happened. */
-  if (fenced != 0U) {
-    __atomic_add_fetch(&g_tlb_shootdown_count, 1U, __ATOMIC_RELAXED);
-  }
-  g_tlb_last_windows = windows;
-  return fenced;
-}
-
-/* The three entry points mmu_shootdown.c needs, named rather than handed out
-   as pointers into the state above. The shootdown self-test is the only caller
-   of any of them, and the mapping paths in this file keep calling the static
-   functions directly: nothing on the hot path goes through a wrapper. */
+/* The paging mode this hart ended up in, named for the shootdown self-test
+   rather than handed out as a pointer. The fence and suppression entry points
+   that test also calls moved to mmu_tlb.c with the state they read. */
 uint32_t riscv64_mmu_root_level(void) { return g_root_level; }
-
-uint32_t riscv64_mmu_remote_fence(uint64_t start, uint64_t size) {
-  return tlb_remote_fence(start, size);
-}
-
-void riscv64_mmu_set_remote_fence_suppressed(uint32_t suppressed) {
-  __atomic_store_n(&g_tlb_shootdown_suppressed, suppressed, __ATOMIC_RELEASE);
-}
-
-static void flush_all(void) {
-  __asm__ volatile("sfence.vma zero, zero" ::: "memory");
-}
-
-/* The global fence, on every hart. Kept apart from flush_all because not
-   every caller of flush_all wants it: switching this hart's user directory
-   changes only this hart's translations, and broadcasting that would be an
-   ecall per context switch to fence harts whose directories were untouched. */
-static void flush_all_everywhere(void) {
-  flush_all();
-  (void)tlb_remote_fence(0U, 0U);
-}
-
-static void flush_one(uint64_t virtual_address) {
-  __asm__ volatile("sfence.vma %0, zero" : : "r"(virtual_address) : "memory");
-  /* Every caller of this edits a table some other hart walks: kernel leaves
-     live in the shared hierarchy that is mirrored into each hart's root, and
-     a process's leaf tables are reached from every hart's own user directory
-     by pointer. So the address is withdrawn from this hart and then from the
-     others, in that order -- the local fence first because it cannot fail and
-     costs nothing, the remote one second because it is an ecall that blocks
-     until firmware says every named hart has fenced. */
-  (void)tlb_remote_fence(virtual_address, PAGE_SIZE);
-}
-
-/* The fence that covers a leaf of the given level, which for anything above
-   4 KiB is the global one.
- *
- * `sfence.vma` with an address names one virtual page. The specification is
- * explicit that this is not enough for a superpage: an implementation is
- * permitted to keep translations for the other pages the superpage covers,
- * and is permitted to cache the *absence* of a translation, so both making a
- * 2 MiB leaf valid and taking one away can leave stale entries behind for
- * every address in it except the one named. QEMU flushes generously and never
- * showed this; real hardware is under no such obligation, and the failure it
- * would produce -- a store landing in the memory a mapping used to describe
- * -- is silent and arrives late.
- *
- * The cost is a global fence on operations that are rare by construction:
- * the boot map, which runs before anything can have a stale entry, and the
- * large-page interface, which nothing calls in a loop. 4 KiB mappings, which
- * are the ones on the process-loading path, keep the narrow fence. */
-static void flush_leaf(uint64_t virtual_address, uint32_t level) {
-  if (level == 0U) {
-    flush_one(virtual_address);
-    return;
-  }
-  /* Global, and on every hart. The paragraph above argues the global part;
-     the remote part is the same argument one level out -- a superpage the
-     kernel has withdrawn is withdrawn from one TLB unless firmware is asked
-     to fence the rest, and a stale gibibyte is a worse stale than a stale
-     page. */
-  flush_all_everywhere();
-}
 
 /* Walk to the entry that would describe `virtual_address` at `target_level`,
    creating intermediate tables when asked. Level 0 is a 4 KiB page, 1 is
@@ -479,7 +235,7 @@ static uint64_t *walk(uint64_t *root, uint64_t virtual_address,
         split[i] = pte_for(covered + (uint64_t)i * child_span, leaf_bits);
       }
       *entry = pte_for((uint64_t)(uintptr_t)split, 0U);
-      flush_all();
+      riscv64_mmu_flush_all();
     }
     table = (uint64_t *)(uintptr_t)pte_physical(*entry);
   }
@@ -538,6 +294,32 @@ static uint64_t *current_root(void) {
   __asm__ volatile("csrr %0, satp" : "=r"(satp));
   if ((satp >> 60) == 0U) return g_kernel_root;
   return (uint64_t *)(uintptr_t)((satp & ((UINT64_C(1) << 44) - 1U)) << 12);
+}
+
+/* The structural questions the MMU self-test in mmu_selftest.c asks of the
+   shared kernel root, answered into the caller's own locals. The test used to
+   read these entries through `walk` itself; a named probe is what crosses now,
+   never a pointer into this file's state. */
+uint32_t riscv64_mmu_leaf_present(uint64_t virtual_address, uint32_t level) {
+  uint64_t *entry = walk(g_kernel_root, virtual_address, level, 0);
+  return (entry != 0 && (*entry & PTE_V) != 0U && (*entry & PTE_LEAF) != 0U)
+             ? 1U
+             : 0U;
+}
+
+/* Whether that leaf is an entry of the root table itself rather than of a
+   table below it. Only Sv39 enters at the level a 1 GiB leaf lives on, so this
+   is the one check that distinguishes the two paging modes structurally. */
+uint32_t riscv64_mmu_leaf_in_root(uint64_t virtual_address, uint32_t level) {
+  uint64_t *entry = walk(g_kernel_root, virtual_address, level, 0);
+  if (entry == 0) return 0U;
+  return entry == &g_kernel_root[index_at(virtual_address, level)] ? 1U : 0U;
+}
+
+/* Whether this hart translates through the shared kernel root rather than the
+   per-hart copy build_per_hart_roots made. */
+uint32_t riscv64_mmu_on_shared_root(void) {
+  return current_root() == g_kernel_root ? 1U : 0U;
 }
 
 /* A kernel mapping that added or replaced an entry at one of the two copied
@@ -662,7 +444,7 @@ static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
   }
   *entry = pte_for(physical_address, flags_to_pte(flags));
   if (root == g_kernel_root) sync_kernel_hierarchy(virtual_address);
-  flush_leaf(virtual_address, level);
+  riscv64_mmu_flush_leaf(virtual_address, level);
   return XAIOS_OK;
 }
 
@@ -699,7 +481,7 @@ static xaios_status_t unmap_at_level(uint64_t *root, uint64_t virtual_address,
    * The split case still needs mirroring too, and the clear cannot be undone
    * by doing both, so this one call now covers both paths. */
   if (root == g_kernel_root) sync_kernel_hierarchy(virtual_address);
-  flush_leaf(virtual_address, level);
+  riscv64_mmu_flush_leaf(virtual_address, level);
   return XAIOS_OK;
 }
 
@@ -899,7 +681,7 @@ void vmm_init(const xaios_boot_info_t *boot) {
        explicitly rather than relying on it, then point the hardware one
        level down. */
     __asm__ volatile("csrw satp, zero" : : : "memory");
-    flush_all();
+    riscv64_mmu_flush_all();
     g_kernel_root = (uint64_t *)(uintptr_t)pte_physical(g_root[0]);
     g_root_level = 2U;
     g_satp_mode = SATP_MODE_SV39;
@@ -922,7 +704,7 @@ void vmm_init(const xaios_boot_info_t *boot) {
 }
 
 void vmm_activate_kernel(void) {
-  flush_all();
+  riscv64_mmu_flush_all();
   /* Supervisor access to user pages, which is off after reset.
    *
    * Without this the kernel cannot read or write a single byte of a user
@@ -938,7 +720,7 @@ void vmm_activate_kernel(void) {
   __asm__ volatile("csrs sstatus, %0" : : "r"(UINT64_C(1) << 18) : "memory");
   __asm__ volatile("csrw satp, %0" : : "r"(riscv64_hart_satp(smp_cpu_id()))
                    : "memory");
-  flush_all();
+  riscv64_mmu_flush_all();
 }
 
 /* RISC-V's memory model makes these fences rather than cache maintenance.
@@ -1152,7 +934,7 @@ xaios_status_t vmm_map_user_page(uint64_t virtual_address,
   uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[slot];
   l3[index_at(virtual_address, 0U)] =
       pte_for(physical_address, flags_to_pte(flags | XAIOS_VMM_USER));
-  flush_one(virtual_address);
+  riscv64_mmu_flush_one(virtual_address);
   return XAIOS_OK;
 }
 
@@ -1167,7 +949,7 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
     uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[slot];
     l3[index_at(virtual_address, 0U)] = 0U;
   }
-  flush_one(virtual_address);
+  riscv64_mmu_flush_one(virtual_address);
   return XAIOS_OK;
 }
 
@@ -1184,7 +966,7 @@ xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
 void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
   uint32_t cpu = smp_cpu_id();
   if (cpu >= g_hart_table_count || g_hart_tables[cpu].user_directory == 0) {
-    flush_all();
+    riscv64_mmu_flush_all();
     return;
   }
   uint64_t *directory = g_hart_tables[cpu].user_directory;
@@ -1203,7 +985,7 @@ void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
           pte_for(l3_tables[USER_CODE_WINDOWS], 0U);
     }
   }
-  flush_all();
+  riscv64_mmu_flush_all();
 }
 
 void vmm_destroy_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
@@ -1213,454 +995,13 @@ void vmm_destroy_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
      that ran that process reached them through its own directory; a fence of
      one TLB here leaves the others translating into freed memory, which is
      precisely the corruption this whole mechanism exists to stop. */
-  flush_all_everywhere();
+  riscv64_mmu_flush_all_everywhere();
   for (uint32_t i = 0U; i < l3_count; ++i) {
     if (l3_tables[i] != 0U) {
       pmm_free_page((void *)(uintptr_t)l3_tables[i]);
       l3_tables[i] = 0U;
     }
   }
-}
-
-/* Where the large-page self-test does its work.
- *
- * Three gibibyte-aligned windows, chosen against four constraints at once,
- * which is why they are not the addresses x86-64 uses. They have to be
- * representable in Sv39 -- a 39-bit address space reaches 256 GiB, so
- * x86-64's 0x7000000000 (448 GiB) and 0x8000000000 (512 GiB) simply do not
- * exist on more than half the harts QEMU implements. They have to be clear
- * of the userspace window, which is the last gibibyte below 256 GiB. They
- * have to be clear of the identity map, which covers whatever RAM the machine
- * reports and is capped at XAIOS_USER_BASE. And they have to be a gibibyte
- * apart, so that the 2 MiB test and the 1 GiB test cannot see each other's
- * tables: they share a level-2 slot otherwise, and the gigantic map would
- * then be refused by the collision check for a reason that has nothing to do
- * with what is being tested.
- *
- * 192-194 GiB satisfies all four on any machine this kernel can boot on
- * today. It stops being true on a machine with 192 GiB of RAM, so the test
- * does not assume it -- it asks first, and says so if the window is occupied,
- * rather than mapping over the identity map and failing somewhere else. */
-#define SELF_TEST_LARGE_VA UINT64_C(0x3000000000)    /* 192 GiB */
-#define SELF_TEST_GIGANTIC_VA UINT64_C(0x3040000000) /* 193 GiB */
-#define SELF_TEST_SPLIT_VA UINT64_C(0x3080000000)    /* 194 GiB */
-/* Above the first top-level slot, which only Sv48 has. */
-#define SELF_TEST_HIGH_VA UINT64_C(0x8000000000) /* 512 GiB */
-
-#define SELF_TEST_LARGE_SIGNATURE UINT64_C(0x5849414f53324d49)    /* XAIOS2MI */
-#define SELF_TEST_GIGANTIC_SIGNATURE UINT64_C(0x5849414f53314749) /* XAIOS1GI */
-
-/* 2 MiB and 1 GiB mappings, in whichever paging mode this hart gave us.
- *
- * The two modes are not two spellings of the same test. Sv48 walks four
- * levels and Sv39 three, and because `index_at` is the same arithmetic
- * either way, Sv39's root table *is* the table Sv48 reaches through root slot
- * zero. So a 1 GiB leaf -- a level-2 entry -- is an entry in a table one step
- * below the root under Sv48 and an entry in the root itself under Sv39. That
- * is the only structural difference between the modes in this file and it is
- * exactly the difference a gigantic page lands on, which is why the test
- * asserts where the leaf ended up rather than only that translation worked.
- *
- * Every check here has a second witness where one is available, because the
- * cheap version of this test proves very little. A walk that agrees with a
- * walk is one function agreeing with itself: `vmm_translate` and `walk` read
- * the same tables, so a table built wrongly reads back wrongly and
- * consistently. The mappings are therefore also dereferenced -- a signature
- * written through the identity map and read back through the alias, then
- * written through the alias and read back through the identity map -- which
- * is the hardware's own opinion of the leaf, taken from the same page-table
- * walker a fault would use.
- *
- * What this does not prove, said plainly because it is a limit of *when* it
- * runs rather than of what it checks: nothing here says anything about any
- * TLB but this hart's. vmm_init happens long before any secondary hart has
- * been started, so there is no other TLB in existence to observe -- and this
- * comment used to end by recording that the port had no remote fence at all,
- * which was true and is no longer. The fences do reach every hart now
- * (tlb_remote_fence), and riscv64_tlb_shootdown_self_test measures that at
- * the first moment in the boot when a second hart exists: it has a remote
- * hart read an address, withdraws it, and requires that hart to fault. The
- * mirroring checks below cover the page *tables* reaching every hart, which
- * is a different question and the one that had a bug in it. */
-static void vmm_large_page_self_test(void) {
-  const char *mode = (g_root_level == 2U) ? "sv39" : "sv48";
-
-  /* The windows have to be empty before anything is mapped into them. A
-     machine large enough for the identity map to reach 192 GiB would
-     otherwise have this test quietly replace part of its own RAM mapping,
-     and the failure would appear later and elsewhere. */
-  static const uint64_t windows[3] = {SELF_TEST_LARGE_VA,
-                                      SELF_TEST_GIGANTIC_VA,
-                                      SELF_TEST_SPLIT_VA};
-  for (uint32_t i = 0U; i < 3U; ++i) {
-    if (vmm_translate(windows[i], 0, 0) == XAIOS_OK) {
-      vmm_panic("large-page self-test window %lx is already mapped; this "
-                "machine is too large for the addresses the test picked",
-                windows[i]);
-    }
-  }
-
-  /* Every mapping made below goes into the shared kernel root, and this hart
-     is not running on the shared kernel root -- it is running on its own
-     copy, built by build_per_hart_roots. So each `vmm_translate` after a map
-     is also a check that sync_kernel_hierarchy mirrored the new top-level
-     entry into this hart's copy, which is the failure mode where one hart
-     sees a kernel mapping and the others fault on it. That only means
-     anything if the two roots really are different pages, so say so. */
-  if (current_root() == g_kernel_root) {
-    vmm_panic("large-page self-test is running on the shared kernel root, so "
-              "its per-hart mirroring checks would prove nothing");
-  }
-
-  void *page = pmm_alloc_page();
-  if (page == 0) vmm_panic("large-page self-test has no page to alias");
-  uint64_t physical = (uint64_t)(uintptr_t)page;
-  volatile uint64_t *identity = (volatile uint64_t *)(uintptr_t)physical;
-  uint64_t observed = 0U;
-  uint32_t flags = 0U;
-
-  /* --- 2 MiB --- */
-  /* Aliased onto real memory rather than onto an arbitrary physical address,
-     because a leaf pointing at nothing can only be inspected, never used. The
-     2 MiB block containing an allocator page is inside RAM by construction:
-     RAM starts at a 2 MiB boundary and the page came from inside it. Only the
-     one page's worth of that block is ever touched. */
-  uint64_t large_pa = physical & ~(XAIOS_VMM_LARGE_PAGE_SIZE - 1U);
-  uint64_t large_offset = physical - large_pa;
-  *identity = SELF_TEST_LARGE_SIGNATURE;
-
-  if (vmm_map_large_page(SELF_TEST_LARGE_VA, large_pa,
-                         XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) != XAIOS_OK) {
-    vmm_panic("could not map a 2 MiB leaf at %lx", SELF_TEST_LARGE_VA);
-  }
-  /* Collision-safe, as the other two architectures are. Same physical
-     address and fewer flags: still a refusal, because the caller does not get
-     to find out by accident that something was already there. */
-  if (vmm_map_large_page(SELF_TEST_LARGE_VA, large_pa, XAIOS_VMM_PRESENT) !=
-      XAIOS_ERR_BUSY) {
-    vmm_panic("a second 2 MiB map over a live one was not refused");
-  }
-  /* The last byte of the leaf, not the first: an entry whose span was
-     computed wrongly still translates its own base address correctly. */
-  if (vmm_translate(SELF_TEST_LARGE_VA + XAIOS_VMM_LARGE_PAGE_SIZE - 1U,
-                    &observed, &flags) != XAIOS_OK ||
-      observed != large_pa + XAIOS_VMM_LARGE_PAGE_SIZE - 1U) {
-    vmm_panic("2 MiB leaf translated its last byte to %lx not %lx", observed,
-              large_pa + XAIOS_VMM_LARGE_PAGE_SIZE - 1U);
-  }
-  if (vmm_validate_range_flags(SELF_TEST_LARGE_VA, XAIOS_VMM_LARGE_PAGE_SIZE,
-                               XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE,
-                               XAIOS_VMM_USER | XAIOS_VMM_EXECUTABLE) !=
-      XAIOS_OK) {
-    vmm_panic("2 MiB leaf did not validate as writable, non-user, "
-              "non-executable across its whole span");
-  }
-  /* Structural: it has to be a leaf at level 1, not a table of 4 KiB pages
-     that happens to describe the same memory. Both translate identically. */
-  uint64_t *large_entry = walk(g_kernel_root, SELF_TEST_LARGE_VA, 1U, 0);
-  if (large_entry == 0 || (*large_entry & PTE_V) == 0U ||
-      (*large_entry & PTE_LEAF) == 0U) {
-    vmm_panic("the 2 MiB mapping is not a leaf at level 1");
-  }
-  /* The hardware's opinion, through the alias. */
-  volatile uint64_t *large_alias =
-      (volatile uint64_t *)(uintptr_t)(SELF_TEST_LARGE_VA + large_offset);
-  if (*large_alias != SELF_TEST_LARGE_SIGNATURE) {
-    vmm_panic("read through a 2 MiB leaf gave %lx not %lx", *large_alias,
-              SELF_TEST_LARGE_SIGNATURE);
-  }
-  *large_alias = ~SELF_TEST_LARGE_SIGNATURE;
-  if (*identity != ~SELF_TEST_LARGE_SIGNATURE) {
-    vmm_panic("a write through a 2 MiB leaf did not reach the memory it "
-              "claims to describe");
-  }
-  if (vmm_unmap_large_page(SELF_TEST_LARGE_VA) != XAIOS_OK) {
-    vmm_panic("could not unmap the 2 MiB leaf at %lx", SELF_TEST_LARGE_VA);
-  }
-  if (vmm_translate(SELF_TEST_LARGE_VA, 0, 0) == XAIOS_OK) {
-    vmm_panic("a 2 MiB leaf still translates after being unmapped");
-  }
-  /* A second, independent witness that the entry is gone rather than merely
-     unreachable: unmap reports not-found for an address it has nothing to
-     remove at. This is deliberately the opposite of vmm_unmap_page, which
-     answers OK for an absent page because shared code unmaps guard pages that
-     were never mapped; the difference is pinned here so that it stays a
-     decision. */
-  if (vmm_unmap_large_page(SELF_TEST_LARGE_VA) != XAIOS_ERR_NOT_FOUND) {
-    vmm_panic("unmapping an absent 2 MiB leaf did not report not-found");
-  }
-  klog("vmm: 2 MiB large-page map/unmap self-test passed mode=%s\n", mode);
-
-  /* --- 1 GiB --- */
-  uint64_t gigantic_pa = physical & ~(XAIOS_VMM_GIGANTIC_PAGE_SIZE - 1U);
-  uint64_t gigantic_offset = physical - gigantic_pa;
-  *identity = SELF_TEST_GIGANTIC_SIGNATURE;
-
-  if (vmm_map_gigantic_page(SELF_TEST_GIGANTIC_VA, gigantic_pa,
-                            XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) !=
-      XAIOS_OK) {
-    vmm_panic("could not map a 1 GiB leaf at %lx", SELF_TEST_GIGANTIC_VA);
-  }
-  if (vmm_map_gigantic_page(SELF_TEST_GIGANTIC_VA, gigantic_pa,
-                            XAIOS_VMM_PRESENT) != XAIOS_ERR_BUSY) {
-    vmm_panic("a second 1 GiB map over a live one was not refused");
-  }
-  if (vmm_translate(SELF_TEST_GIGANTIC_VA + XAIOS_VMM_GIGANTIC_PAGE_SIZE - 1U,
-                    &observed, &flags) != XAIOS_OK ||
-      observed != gigantic_pa + XAIOS_VMM_GIGANTIC_PAGE_SIZE - 1U) {
-    vmm_panic("1 GiB leaf translated its last byte to %lx not %lx", observed,
-              gigantic_pa + XAIOS_VMM_GIGANTIC_PAGE_SIZE - 1U);
-  }
-  /* Where the leaf actually sits, which is the whole reason both modes have
-     to be exercised. Sv39 enters at level 2, so a 1 GiB leaf is an entry in
-     the root table the hardware is pointed at; Sv48 enters at level 3, so the
-     same leaf is one level further down. A test that only asked whether
-     translation worked would pass identically on a kernel that had the two
-     confused, because `walk` starts from g_root_level and would follow
-     whichever shape it built. */
-  uint64_t *gigantic_entry = walk(g_kernel_root, SELF_TEST_GIGANTIC_VA, 2U, 0);
-  if (gigantic_entry == 0 || (*gigantic_entry & PTE_V) == 0U ||
-      (*gigantic_entry & PTE_LEAF) == 0U) {
-    vmm_panic("the 1 GiB mapping is not a leaf at level 2");
-  }
-  uint64_t *root_slot =
-      &g_kernel_root[index_at(SELF_TEST_GIGANTIC_VA, 2U)];
-  uint32_t leaf_in_root = (gigantic_entry == root_slot) ? 1U : 0U;
-  if (g_root_level == 2U && leaf_in_root == 0U) {
-    vmm_panic("sv39: a 1 GiB leaf is not in the root table it must be in");
-  }
-  if (g_root_level != 2U && leaf_in_root != 0U) {
-    vmm_panic("sv48: a 1 GiB leaf landed in the root table, which is a "
-              "level-3 table and cannot hold one");
-  }
-  volatile uint64_t *gigantic_alias =
-      (volatile uint64_t *)(uintptr_t)(SELF_TEST_GIGANTIC_VA +
-                                       gigantic_offset);
-  if (*gigantic_alias != SELF_TEST_GIGANTIC_SIGNATURE) {
-    vmm_panic("read through a 1 GiB leaf gave %lx not %lx", *gigantic_alias,
-              SELF_TEST_GIGANTIC_SIGNATURE);
-  }
-  *gigantic_alias = ~SELF_TEST_GIGANTIC_SIGNATURE;
-  if (*identity != ~SELF_TEST_GIGANTIC_SIGNATURE) {
-    vmm_panic("a write through a 1 GiB leaf did not reach the memory it "
-              "claims to describe");
-  }
-  if (vmm_unmap_gigantic_page(SELF_TEST_GIGANTIC_VA) != XAIOS_OK) {
-    vmm_panic("could not unmap the 1 GiB leaf at %lx", SELF_TEST_GIGANTIC_VA);
-  }
-  if (vmm_translate(SELF_TEST_GIGANTIC_VA, 0, 0) == XAIOS_OK) {
-    vmm_panic("a 1 GiB leaf still translates after being unmapped");
-  }
-  klog("vmm: 1 GiB gigantic-page self-test passed mode=%s leaf_in_root=%u\n",
-       mode, leaf_in_root);
-
-  /* --- splitting a gigantic leaf --- */
-  /* This is the part with no counterpart on the other two architectures, and
-     it is the part most likely to be wrong here. AArch64 and x86-64 refuse to
-     map a small page inside a large one; this walk splits the large one
-     instead, because vmm_init covers the device window in gibibyte leaves and
-     kmain then maps that window a page at a time -- refusing meant the kernel
-     could not unmap a device page it had itself mapped.
-     A split is only safe if it is total. Every entry of the replacement table
-     has to be filled from the leaf before the leaf is replaced, or addresses
-     that resolved a moment ago stop resolving, and the ones that stop are the
-     ones nobody was looking at. So the checks below are about the addresses
-     the caller did *not* ask about. */
-  void *override_page = pmm_alloc_page();
-  if (override_page == 0) {
-    vmm_panic("large-page split self-test has no page to override with");
-  }
-  uint64_t override_physical = (uint64_t)(uintptr_t)override_page;
-  /* The far neighbour is chosen in a different 2 MiB child than the page
-     under test, rather than fixed at offset zero and the page required to be
-     elsewhere.
-     
-     The check needs two things from one gibibyte: the child holding the 4 KiB
-     override, and some other child that a partial split would have lost. It
-     used to take offset zero for the second and panic when the page landed in
-     that same first 2 MiB -- reasoning that the allocator hands out pages
-     above the kernel image, which starts 2 MiB into RAM. That holds under
-     -kernel and not under EDK2, where firmware owns the bottom of RAM and the
-     first free page sits low in its gibibyte, so the machine booted on one
-     firmware and died on a cyan screen on the other over where a page landed.
-     Requiring a better page cannot work either: pages come out sequentially,
-     so crossing 2 MiB would take five hundred of them.
-     
-     Picking the child instead is exact rather than lucky. Any child but the
-     one the override is in will do, and there are 512 of them. */
-  const uint64_t child_index = gigantic_offset / XAIOS_VMM_LARGE_PAGE_SIZE;
-  const uint64_t far_child = (child_index == 0U) ? 1U : 0U;
-  const uint64_t far_va =
-      SELF_TEST_SPLIT_VA + far_child * XAIOS_VMM_LARGE_PAGE_SIZE;
-  const uint64_t far_expected =
-      gigantic_pa + far_child * XAIOS_VMM_LARGE_PAGE_SIZE;
-
-  if (vmm_map_gigantic_page(SELF_TEST_SPLIT_VA, gigantic_pa,
-                            XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) !=
-      XAIOS_OK) {
-    vmm_panic("could not map the 1 GiB leaf the split test splits");
-  }
-  uint64_t inner_va = SELF_TEST_SPLIT_VA + gigantic_offset + PAGE_SIZE;
-  uint64_t near_va = SELF_TEST_SPLIT_VA + gigantic_offset;
-  if (vmm_translate(inner_va, &observed, 0) != XAIOS_OK) {
-    vmm_panic("split self-test's inner address %lx is not inside the gigantic "
-              "leaf at all", inner_va);
-  }
-  if (observed != physical + PAGE_SIZE) {
-    vmm_panic("split self-test's inner address started out at %lx not %lx",
-              observed, physical + PAGE_SIZE);
-  }
-  /* One 4 KiB page inside the gibibyte, pointed somewhere else. Reaching it
-     costs two splits: level 2 to a table of 2 MiB leaves, then level 1 to a
-     table of 4 KiB pages. */
-  if (vmm_map_page(inner_va, override_physical,
-                   XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) != XAIOS_OK) {
-    vmm_panic("could not map a 4 KiB page inside a 1 GiB leaf");
-  }
-  if (vmm_translate(inner_va, &observed, 0) != XAIOS_OK) {
-    vmm_panic("a 4 KiB page mapped inside a gigantic leaf does not translate");
-  }
-  if (observed != override_physical) {
-    vmm_panic("a 4 KiB page inside a split gigantic leaf translated to %lx "
-              "not %lx", observed, override_physical);
-  }
-  /* The neighbour in the same 2 MiB table: the level-1 to level-0 split has
-     to have filled it. Checked by reading the signature back, not only by
-     translating, so a table filled with plausible-looking wrong entries is
-     caught too. */
-  if (vmm_translate(near_va, &observed, 0) != XAIOS_OK) {
-    vmm_panic("splitting a gigantic leaf left its neighbour %lx unmapped",
-              near_va);
-  }
-  if (observed != physical) {
-    vmm_panic("splitting a gigantic leaf moved its neighbour to %lx not %lx",
-              observed, physical);
-  }
-  if (*(volatile uint64_t *)(uintptr_t)near_va != ~SELF_TEST_GIGANTIC_SIGNATURE) {
-    vmm_panic("the neighbour of a split page reads the wrong memory");
-  }
-  /* The neighbour in a different 2 MiB table: the level-2 to level-1 split
-     has to have filled that one too, and it is the one a partial split would
-     lose, because nothing ever walked through it. */
-  if (vmm_translate(far_va, &observed, 0) != XAIOS_OK) {
-    vmm_panic("splitting a gigantic leaf left a distant 2 MiB window "
-              "unmapped at %lx", far_va);
-  }
-  if (observed != far_expected) {
-    vmm_panic("splitting a gigantic leaf moved a distant 2 MiB window to %lx "
-              "not %lx", observed, far_expected);
-  }
-  /* Removing the whole gibibyte removes the tables the split produced with
-     it. The tables themselves are not returned to the allocator -- three
-     pages for the life of the boot, which is the same thing every other
-     table this file allocates does. */
-  if (vmm_unmap_gigantic_page(SELF_TEST_SPLIT_VA) != XAIOS_OK) {
-    vmm_panic("could not unmap a gigantic leaf that had been split");
-  }
-  if (vmm_translate(SELF_TEST_SPLIT_VA, 0, 0) == XAIOS_OK ||
-      vmm_translate(inner_va, 0, 0) == XAIOS_OK) {
-    vmm_panic("a split gigantic leaf still translates after being unmapped");
-  }
-  pmm_free_page(override_page);
-  klog("vmm: gigantic-page split self-test passed mode=%s\n", mode);
-
-  /* --- Sv48 only: above the first top-level slot --- */
-  /* AArch64 has the same test and the same reason for it. Every address this
-     kernel uses on Sv39 lives under one root entry, so a walk that assumed
-     slot zero would work everywhere and fail on the first machine that used a
-     second. Sv48 is where that can be asked, because its root covers 512 GiB
-     a slot; Sv39's whole address space is 512 GiB, so the question does not
-     exist there and this is skipped rather than faked.
-     It is also the only place `sync_kernel_hierarchy` takes its l0 != 0
-     branch, which mirrors a whole root slot into every hart's root instead of
-     mirroring one entry of the copied low table. */
-  if (g_root_level == 3U) {
-    if (vmm_translate(SELF_TEST_HIGH_VA, 0, 0) == XAIOS_OK) {
-      vmm_panic("sv48 high-slot window %lx is already mapped",
-                SELF_TEST_HIGH_VA);
-    }
-    if (vmm_map_gigantic_page(SELF_TEST_HIGH_VA, gigantic_pa,
-                              XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) !=
-        XAIOS_OK) {
-      vmm_panic("could not map a 1 GiB leaf above the first root slot");
-    }
-    if (vmm_translate(SELF_TEST_HIGH_VA + gigantic_offset, &observed, 0) !=
-        XAIOS_OK) {
-      vmm_panic("a 1 GiB leaf above the first root slot does not translate; "
-                "this hart's root did not receive it");
-    }
-    if (observed != physical) {
-      vmm_panic("a 1 GiB leaf above the first root slot translated to %lx "
-                "not %lx", observed, physical);
-    }
-    if (*(volatile uint64_t *)(uintptr_t)(SELF_TEST_HIGH_VA +
-                                          gigantic_offset) !=
-        ~SELF_TEST_GIGANTIC_SIGNATURE) {
-      vmm_panic("a 1 GiB leaf above the first root slot reads the wrong "
-                "memory");
-    }
-    if (vmm_unmap_gigantic_page(SELF_TEST_HIGH_VA) != XAIOS_OK) {
-      vmm_panic("could not unmap a 1 GiB leaf above the first root slot");
-    }
-    if (vmm_translate(SELF_TEST_HIGH_VA, 0, 0) == XAIOS_OK) {
-      vmm_panic("a 1 GiB leaf above the first root slot still translates "
-                "after being unmapped");
-    }
-    klog("vmm: gigantic page above the first root slot passed va=0x%lx\n",
-         SELF_TEST_HIGH_VA);
-  }
-
-  pmm_free_page(page);
-}
-
-void riscv64_isa_self_test(void);
-
-void vmm_self_test(void) {
-  /* A mapping made, read back through the same walk a fault would take, and
-     removed again. Proving translate agrees with map is the whole point:
-     they are separate walks over the same tables, and a kernel where they
-     disagree fails only when something dereferences the difference. */
-  uint64_t probe = XAIOS_USER_BASE - XAIOS_VMM_LARGE_PAGE_SIZE;
-  void *page = pmm_alloc_page();
-  if (page == 0) vmm_panic("vmm self-test has no page to map");
-  uint64_t physical = (uint64_t)(uintptr_t)page;
-
-  if (vmm_map_page(probe, physical, XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE) !=
-      XAIOS_OK) {
-    vmm_panic("vmm self-test could not map %lx", probe);
-  }
-  uint64_t observed = 0U;
-  uint32_t flags = 0U;
-  if (vmm_translate(probe, &observed, &flags) != XAIOS_OK ||
-      observed != physical) {
-    vmm_panic("vmm self-test translate mismatch: %lx not %lx", observed,
-              physical);
-  }
-  if ((flags & XAIOS_VMM_WRITABLE) == 0U) {
-    vmm_panic("vmm self-test lost the writable flag");
-  }
-  *(volatile uint64_t *)(uintptr_t)probe = UINT64_C(0x5849414f53525634);
-  if (*(volatile uint64_t *)(uintptr_t)probe != UINT64_C(0x5849414f53525634)) {
-    vmm_panic("vmm self-test wrote through a mapping and read back nothing");
-  }
-  if (vmm_unmap_page(probe) != XAIOS_OK) {
-    vmm_panic("vmm self-test could not unmap %lx", probe);
-  }
-  if (vmm_translate(probe, 0, 0) == XAIOS_OK) {
-    vmm_panic("vmm self-test unmapped a page that still translates");
-  }
-  pmm_free_page(page);
-  klog("vmm: self-test passed (map, translate, write, unmap)\n");
-  /* The large and gigantic leaves the shared interface promises, which this
-     port implemented and nothing ever checked. Run after the 4 KiB case
-     because it depends on it: every assertion below reads its result back
-     through the same translate that has just been shown to agree with map. */
-  vmm_large_page_self_test();
-  /* What only this architecture has, checked once its page tables are
-     live -- the satp mode is part of what is being reported, and a
-     reading taken before translation is on says nothing. Shared code
-     stays unaware of it, which is the rule. */
-  riscv64_isa_self_test();
 }
 
 /* Whether translation is on, which the spinlock implementation asks before
