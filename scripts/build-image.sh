@@ -721,6 +721,7 @@ else
   $KERNEL_BUILD_DIR/early_pci.o
   $KERNEL_BUILD_DIR/early_serial.o
   $KERNEL_BUILD_DIR/early_acpi.o
+  $KERNEL_BUILD_DIR/early_fpu.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -747,6 +748,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/nvme.o
   $KERNEL_BUILD_DIR/nvme_queue.o
   $KERNEL_BUILD_DIR/nvme_completion.o
+  $KERNEL_BUILD_DIR/nvme_admin.o
+  $KERNEL_BUILD_DIR/nvme_selftest.o
   $KERNEL_BUILD_DIR/ahci.o
   $KERNEL_BUILD_DIR/virtio_transport.o
   $KERNEL_BUILD_DIR/block_device.o
@@ -776,6 +779,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/xbfs_fd.o
   $KERNEL_BUILD_DIR/xbfs_mount.o
   $KERNEL_BUILD_DIR/xbfs_snapshot.o
+  $KERNEL_BUILD_DIR/xbfs_format.o
+  $KERNEL_BUILD_DIR/xbfs_selfcheck.o
   $KERNEL_BUILD_DIR/fat.o
   $KERNEL_BUILD_DIR/fat_codec.o
   $KERNEL_BUILD_DIR/vfs.o
@@ -861,6 +866,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/network_stack_tcp_segment.o
   $KERNEL_BUILD_DIR/network_stack_packet.o
   $KERNEL_BUILD_DIR/network_stack_udp.o
+  $KERNEL_BUILD_DIR/network_stack_udp_rx.o
+  $KERNEL_BUILD_DIR/network_stack_icmp.o
   $KERNEL_BUILD_DIR/network_stack_app.o
   $KERNEL_BUILD_DIR/network_stack_selftest.o
   $KERNEL_BUILD_DIR/network_config.o
@@ -950,6 +957,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_mem.c" "$KERNEL_BUILD_DIR/ear
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_pci.c" "$KERNEL_BUILD_DIR/early_pci.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_serial.c" "$KERNEL_BUILD_DIR/early_serial.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_acpi.c" "$KERNEL_BUILD_DIR/early_acpi.o"
+compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_fpu.c" "$KERNEL_BUILD_DIR/early_fpu.o"
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/platform.c" "$KERNEL_BUILD_DIR/platform.o"
@@ -962,6 +970,8 @@ compile_kernel "$ROOT_DIR/kernel/arch/aarch64/topology.c" "$KERNEL_BUILD_DIR/top
 compile_kernel "$ROOT_DIR/kernel/dev/nvme.c" "$KERNEL_BUILD_DIR/nvme.o"
 compile_kernel "$ROOT_DIR/kernel/dev/nvme_queue.c" "$KERNEL_BUILD_DIR/nvme_queue.o"
 compile_kernel "$ROOT_DIR/kernel/dev/nvme_completion.c" "$KERNEL_BUILD_DIR/nvme_completion.o"
+compile_kernel "$ROOT_DIR/kernel/dev/nvme_admin.c" "$KERNEL_BUILD_DIR/nvme_admin.o"
+compile_kernel "$ROOT_DIR/kernel/dev/nvme_selftest.c" "$KERNEL_BUILD_DIR/nvme_selftest.o"
 compile_kernel "$ROOT_DIR/kernel/dev/ahci.c" "$KERNEL_BUILD_DIR/ahci.o"
 if [ "$TARGET_ARCH" = aarch64 ]; then
   # aarch64 can meet virtio on either transport, so both are built and a
@@ -1002,6 +1012,8 @@ compile_kernel "$ROOT_DIR/kernel/fs/xbfs_file_io.c" "$KERNEL_BUILD_DIR/xbfs_file
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_fd.c" "$KERNEL_BUILD_DIR/xbfs_fd.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_mount.c" "$KERNEL_BUILD_DIR/xbfs_mount.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_snapshot.c" "$KERNEL_BUILD_DIR/xbfs_snapshot.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_format.c" "$KERNEL_BUILD_DIR/xbfs_format.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_selfcheck.c" "$KERNEL_BUILD_DIR/xbfs_selfcheck.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat_codec.c" "$KERNEL_BUILD_DIR/fat_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
@@ -1087,6 +1099,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_tcp_flow.c" "$KERNEL_BUIL
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_tcp_segment.c" "$KERNEL_BUILD_DIR/network_stack_tcp_segment.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_packet.c" "$KERNEL_BUILD_DIR/network_stack_packet.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_udp.c" "$KERNEL_BUILD_DIR/network_stack_udp.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_udp_rx.c" "$KERNEL_BUILD_DIR/network_stack_udp_rx.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_icmp.c" "$KERNEL_BUILD_DIR/network_stack_icmp.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_app.c" "$KERNEL_BUILD_DIR/network_stack_app.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_selftest.c" "$KERNEL_BUILD_DIR/network_stack_selftest.o"
 compile_kernel "$ROOT_DIR/kernel/net/network_config.c" "$KERNEL_BUILD_DIR/network_config.o"
@@ -1829,7 +1843,7 @@ set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 printf '%s\n' "Building userspace /bin/ssh child client ELF..."
 SSH_CLIENT_RESPONSE_FILE="$INIT_BUILD_DIR/ssh-client-objects.rsp"
 : > "$SSH_CLIENT_RESPONSE_FILE"
-for ssh_client_src in ssh.c ssh_client.c ssh_sftp.c ssh_client_scp.c ssh_client_kex.c ssh_client_handshake.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
+for ssh_client_src in ssh.c ssh_client.c ssh_sftp.c ssh_client_scp.c ssh_client_kex.c ssh_client_handshake.c ssh_client_auth.c ssh_client_command.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
   ssh_client_obj="$INIT_BUILD_DIR/ssh-client-${ssh_client_src%.c}.o"
   ssh_client_path="$ROOT_DIR/userspace/apps/$ssh_client_src"
   if [ "$ssh_client_src" != "ssh.c" ]; then

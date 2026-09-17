@@ -36,14 +36,11 @@
  * allocation and never holds a pointer into the pool. The UDP flow table and
  * the UDP transmit/expire data plane -- find, allocate, expire and transmit --
  * live in network_stack_udp.c, reached through the cursor-plus-commit accessors
- * declared in network_stack_udp.h. The two UDP receive handlers and the receive
- * syscall stayed here: the syscall is mostly listener-backlog work, and the
- * handlers mutate a table row through the cursor the header describes. The
- * receive dispatch inside
+ * declared in network_stack_udp.h. The receive dispatch inside
  * network_poll_tick_locked() still waits: it is interleaved with the poll tail
- * and reaches both flow tables, the descriptors, the rings and the ping state
- * from inside the loop, so it wants more accessors than either of these cuts
- * did.
+ * and reaches both flow tables, the descriptors and the rings from inside the
+ * loop, and its early returns leave the whole function, so it wants more
+ * accessors than either of these cuts did.
  *
  * The two cuts after those are leaves of that state block. The
  * application/external-session plane -- the synthetic IPv4 frames the loopback
@@ -61,9 +58,26 @@
  * file's retransmit counter (net_stack_tcp_sliding_window_self_test(), which
  * therefore stayed here), and the same sequence accessor.
  *
+ * The two cuts after those took the parts that were already written against
+ * accessors, and left the state block alone. The UDP receive plane -- the two
+ * frame handlers that answer a datagram and the receive call that drains a
+ * listener's backlog -- lives in network_stack_udp_rx.c: it was built on the
+ * cursor-plus-commit UDP rows and the listener rows, so only two counter
+ * increments cross, and network_stack_udp_rx.h declares those. The
+ * link-reply/ping plane -- ARP replies, the ICMP and ICMPv6 echo and
+ * neighbour replies, and the ping request/status/expiry state -- lives in
+ * network_stack_icmp.c, reached through network_stack_icmp.h; its three
+ * handlers were the branches of the receive dispatch that answer a peer, the
+ * caller passes the interface MAC in, and the one branch that returned from
+ * the whole poll reports that as its non-zero return so the poll tail is
+ * still skipped exactly where it was.
+ *
  * The rest of this file -- the TCP flow table, its counters, the receive
  * dispatch and the poll tail -- is still file-scope state, and the
- * row-copying accessors are the pattern the next cut should follow.
+ * row-copying accessors are the pattern the next cut should follow. The TCP
+ * frame handlers hold a live pointer into the flow table across hundreds of
+ * lines, so they stay with it until that table's own cursor-plus-commit cut is
+ * made deliberately rather than alongside something else.
  *
  * The layout, for navigation:
  *
@@ -78,6 +92,8 @@
  *   IPv6 address state             moved to network_stack_v6.c
  *   queue bindings, packet pool    moved to network_stack_packet.c
  *   UDP table and data plane       moved to network_stack_udp.c
+ *   UDP receive plane              moved to network_stack_udp_rx.c
+ *   link replies and ping          moved to network_stack_icmp.c
  *   app/external session plane     moved to network_stack_app.c
  *   boot self-test                 moved to network_stack_selftest.c
  *   public API                     the entry points a syscall reaches
@@ -86,10 +102,12 @@
 #include <xaios/arp.h>
 
 #include "network_stack_app.h"
+#include "network_stack_icmp.h"
 #include "network_stack_listener.h"
 #include "network_stack_packet.h"
 #include "network_stack_selftest.h"
 #include "network_stack_udp.h"
+#include "network_stack_udp_rx.h"
 #include "network_stack_v6.h"
 #include "network_stack_wire.h"
 #include "network_stack_tcp.h"
@@ -175,9 +193,6 @@ static void network_unlock(void) { xaios_reentrant_unlock(&g_network_guard); }
    lock order is a real cost -- it produced an inversion during the work -- so
    the registry is back under the stack's own guard, and the readers keep the
    coverage the split gave them. */
-static void listener_lock(void) { network_lock(); }
-
-static void listener_unlock(void) { network_unlock(); }
 
 /* The resolver lives inside this stack and must share its guard; see the
    declaration in network_stack.h. */
@@ -210,6 +225,13 @@ void net_stack_local_mac_set(const uint8_t mac[6]) {
 }
 
 static uint32_t g_persistent_initialized;
+
+/* The moved ping code cannot see the flag above, so it asks for the value.
+   This is the same plain read it made in place; it is read-only, so it takes
+   no lock and changes no critical section. Declared in
+   network_stack_icmp.h. */
+uint32_t net_stack_persistent_ready(void) { return g_persistent_initialized; }
+
 static uint64_t g_poll_tick_count;
 /* Polls taken by the CPU carrying the network tick, counted apart from the
    ones a syscall makes. See network_tick_poll_count() in the header. */
@@ -222,22 +244,17 @@ static uint64_t g_poll_gap_max_ns;
 static uint64_t g_poll_gap_outage_count;
 static uint32_t g_poll_gap_record_lines;
 static uint32_t g_tcp_drain_cursor;
-static uint64_t g_icmp_reply_count;
-static uint64_t g_arp_reply_count;
-static uint64_t g_icmpv6_reply_count;
-static uint64_t g_ndp_reply_count;
 static uint64_t g_ipv6_rx_count;
+
+/* The IPv6 receive increment the moved UDP receive handler makes. Caller
+   holds the guard; this is the plain `++` it replaced. Declared in
+   network_stack_udp_rx.h. */
+void net_stack_note_ipv6_rx(void) { ++g_ipv6_rx_count; }
+
 /* The IPv6 address state -- the link-local, SLAAC and public addresses, the
    default router and the on-link prefix -- now lives in network_stack_v6.c
    behind the accessors declared in network_stack_v6.h. Nothing here hands out
    a pointer into it; every reader gets a copy. */
-
-static xaios_network_ping_status_t g_ping;
-static uint64_t g_ping_sent_ns;
-static uint16_t g_ping_sequence;
-
-#define NETWORK_PING_IDENTIFIER UINT16_C(0x5841)
-#define NETWORK_PING_TIMEOUT_NS UINT64_C(3000000000)
 
 static uint64_t g_tcp_handshake_count;
 static uint64_t g_tcp_reset_count;
@@ -252,6 +269,12 @@ static uint64_t g_tcp_closed_count;
 void net_tcp_note_closed(void) { ++g_tcp_closed_count; }
 void net_tcp_note_retransmit(void) { ++g_tcp_retransmit_count; }
 static uint64_t g_flow_core_mismatch_count;
+
+/* The queue/core mismatch increment the moved UDP receive handlers make; the
+   counter stays here with the rest of the stack's counters. Caller holds the
+   guard, and this is the plain `++` it replaced. Declared in
+   network_stack_udp_rx.h. */
+void net_stack_note_flow_core_mismatch(void) { ++g_flow_core_mismatch_count; }
 
 static uint64_t g_tcp_latency_samples[NETWORK_MAX_SAMPLES];
 static uint32_t g_tcp_latency_count;
@@ -694,161 +717,6 @@ void network_stack_init(void) {
 /* network_stack_bind_queue() and network_stack_release_queue() moved to
    network_stack_packet.c with the binding table they own. */
 
-xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
-                                            uint64_t frame_len) {
-  if (frame == 0 || frame_len < 34U) {
-    net_udp_note_dropped();
-    net_udp_note_malformed();
-    net_note_packet_drop();
-    return XAIOS_ERR_INVALID;
-  }
-
-  uint64_t start = timer_now_ns();
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  uint16_t payload_len = 0;
-  uint32_t src_address = 0;
-  uint32_t dst_address = 0;
-
-  if (net_wire_parse_udp(frame, frame_len, &src_port, &dst_port, &payload_len,
-                &src_address, &dst_address) == 0) {
-    net_udp_note_dropped();
-    net_udp_note_malformed();
-    net_note_packet_drop();
-    return XAIOS_ERR_INVALID;
-  }
-
-  if (src_port == 0 || dst_port == 0 || payload_len == 0) {
-    net_udp_note_dropped();
-    net_note_packet_drop();
-    return XAIOS_ERR_INVALID;
-  }
-
-  network_udp_flow_t existing_row;
-  int have_existing = net_udp_flow_find_v4(dst_port, src_port, dst_address,
-                                           src_address, &existing_row);
-  network_queue_binding_t binding;
-  int have_binding =
-      have_existing != 0
-          ? net_queue_binding_find(existing_row.queue_id, &binding)
-          : net_queue_binding_select(dst_port, src_port, dst_address,
-                                     src_address, &binding);
-  if (have_binding == 0) {
-    net_udp_note_dropped();
-    net_note_packet_drop();
-    return XAIOS_ERR_NOT_FOUND;
-  }
-
-  uint32_t packet =
-      net_packet_alloc(binding.queue_id, frame_len, start, src_port, dst_port,
-                       src_address, dst_address, 0, 0);
-  if (packet == 0) {
-    net_udp_note_dropped();
-    return XAIOS_ERR_NO_MEMORY;
-  }
-
-  network_udp_flow_t flow_row;
-  uint32_t flow_index = 0U;
-  if (!net_udp_flow_alloc(binding.queue_id, binding.cell_id, dst_port, src_port,
-                          dst_address, src_address, 0, 0, start, &flow_row,
-                          &flow_index)) {
-    net_udp_note_dropped();
-    net_packet_mark_dropped(packet);
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  if (flow_row.queue_id != binding.queue_id ||
-      flow_row.cell_id != binding.cell_id) {
-    ++g_flow_core_mismatch_count;
-    net_packet_mark_dropped(packet);
-    return XAIOS_ERR_BUSY;
-  }
-  ++flow_row.packets_rx;
-  net_udp_note_rx();
-  for (uint32_t i = 0; i < 6U; ++i) {
-    flow_row.remote_mac[i] = frame[6U + i];
-  }
-  flow_row.remote_mac_valid = 1;
-  /* The row is written back here, before the listener block below can return
-     early: the old code held a pointer into the table, so these increments
-     were visible on every path out of the function. */
-  net_udp_flow_commit(flow_index, &flow_row);
-  
-  /* Deliver UDP payload to flow rx_buf */
-  if (flow_row.rx_buf != 0 && payload_len > 8) {
-    const network_ip4_header_t *ip4 =
-        (const network_ip4_header_t *)(frame + 14U);
-    uint64_t ip_hdr_bytes = (uint64_t)(ip4->version_ihl & 0x0FU) * 4U;
-    const uint8_t *udp_payload = frame + 14U + ip_hdr_bytes + 8U;
-    uint32_t data_len = (uint32_t)(payload_len - 8U);
-    xaios_ip_addr_t peer_addr;
-    peer_addr.family = XAIOS_IP_FAMILY_V4;
-    for (uint32_t i = 0; i < 4U; ++i) {
-      peer_addr.addr[i] = frame[26U + i];
-    }
-    for (uint32_t i = 4U; i < 16U; ++i) {
-      peer_addr.addr[i] = 0;
-    }
-    /* The row is copied out under the guard, so no pointer into the registry
-       is held across udp_listener_enqueue(), which takes the same reentrant
-       guard again. */
-    listener_lock();
-    network_listener_ex_t listener_row;
-    uint32_t listener_backlog = 0U;
-    int listener_found = 0;
-    for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
-      if (!network_listener_slot_read(i, &listener_row)) continue;
-      if (listener_row.port == dst_port &&
-          listener_row.protocol == NETWORK_IP_PROTO_UDP) {
-        listener_backlog = listener_row.backlog_count;
-        listener_found = 1;
-        break;
-      }
-    }
-    if (listener_found != 0) {
-      /* A datagram that does not fit is dropped here, whole, and counted; it is
-         never queued in part. The test is against `sockbuf_available`, the flow
-         ring's *free space*, so this is backpressure as much as a size policy:
-         a large datagram is admitted on an empty ring and refused once the ring
-         is partly full. It is not the check that bounds how large a datagram
-         can be.
-       *
-         The frame is what bounds that. `network_device_rx_poll` reads into a
-         `NETWORK_BUFFER_SIZE` (1520) buffer and this function's caller rejects
-         a reassembled frame longer than that, so `net_wire_parse_udp` can only ever see
-         a UDP length inside a 1520-byte frame and the largest deliverable
-         datagram is 1520 - 14 - 20 - 8 = 1478 bytes of payload.
-       *
-         The receive path below is therefore safe for a caller that asks for a
-         full-size buffer: admission is against free space (at most
-         SOCKET_BUFFER_SIZE) and the syscall caps a read at SOCKET_BUFFER_SIZE,
-         both of which are at or above the 1478 the frame can produce, so no
-         clamp can occur. A caller that asks for less than the datagram's length
-         is truncated silently and told nothing. A truncation flag is what would
-         make that last case honest, and it is a syscall change rather than a
-         stack one. */
-      if (listener_backlog >= NETWORK_LISTENER_BACKLOG ||
-          data_len > sockbuf_available(flow_row.rx_buf) ||
-          sockbuf_write(flow_row.rx_buf, udp_payload, data_len) != data_len ||
-          !udp_listener_enqueue(dst_port, flow_row.flow_id, src_port, &peer_addr,
-                                (uint16_t)data_len)) {
-        listener_unlock();
-        net_udp_note_dropped();
-        net_packet_mark_dropped(packet);
-        return XAIOS_ERR_BUSY;
-      }
-    }
-    listener_unlock();
-  }
-  
-  net_packet_mark_tx(packet);
-  ++flow_row.packets_tx;
-  net_udp_note_tx();
-  net_udp_flow_commit(flow_index, &flow_row);
-  net_packet_mark_complete(packet);
-  net_udp_record_latency(timer_now_ns() - start);
-  return XAIOS_OK;
-}
-
 static void tcp_drain_pending(void) {
   uint32_t start_index = g_tcp_drain_cursor;
   g_tcp_drain_cursor =
@@ -1125,88 +993,6 @@ int network_stack_socket_ready(uint64_t sockfd, uint8_t protocol,
   }
   network_unlock();
   return ready;
-}
-
-/* The receive syscall stayed here while the rest of the UDP data plane moved
-   to network_stack_udp.c: it is mostly the listener backlog, which the
-   listener module owns, and it only needs the flow's rx_buf, which
-   net_udp_flow_find_by_id() copies out. */
-static uint32_t network_stack_udp_recv_unlocked(uint64_t sockfd, uint8_t *buffer,
-                                uint32_t buffer_size,
-                                xaios_ip_addr_t *source_addr,
-                                uint16_t *source_port,
-                                uint32_t *flow_id) {
-  listener_lock();
-  network_listener_ex_t listener_row;
-  uint32_t listener_index = 0U;
-  int listener_found = 0;
-  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
-    if (!network_listener_slot_read(i, &listener_row)) continue;
-    if (listener_row.sockfd == sockfd &&
-        listener_row.protocol == NETWORK_IP_PROTO_UDP) {
-      listener_index = i;
-      listener_found = 1;
-      break;
-    }
-  }
-  if (listener_found == 0 || listener_row.backlog_count == 0 || buffer == 0 ||
-      buffer_size == 0) {
-    { listener_unlock(); return 0; }
-  }
-
-  listener_accept_entry_t entry = listener_row.backlog[0];
-  for (uint32_t i = 1; i < listener_row.backlog_count; ++i) {
-    listener_row.backlog[i - 1U] = listener_row.backlog[i];
-  }
-  --listener_row.backlog_count;
-  network_listener_slot_write(listener_index, &listener_row);
-
-  network_udp_flow_t udp_flow;
-  if (net_udp_flow_find_by_id(entry.flow_id, &udp_flow) &&
-      udp_flow.rx_buf != 0) {
-    uint32_t read_limit = entry.payload_len;
-    if (read_limit > buffer_size) {
-      read_limit = buffer_size;
-    }
-    uint32_t bytes_read = sockbuf_read(udp_flow.rx_buf, buffer, read_limit);
-    if (entry.payload_len > bytes_read) {
-      sockbuf_discard(udp_flow.rx_buf,
-                      (uint32_t)entry.payload_len - bytes_read);
-    }
-    if (source_addr != 0) {
-      *source_addr = entry.peer_addr;
-    }
-    if (source_port != 0) {
-      *source_port = entry.peer_port;
-    }
-    if (flow_id != 0) {
-      *flow_id = entry.flow_id;
-    }
-    /* The unlocked variant: this function already runs under the network
-       guard, and calling the public wrapper from here would take that guard
-       from inside a listener-guard section, inverting the order the two
-       guards are documented to keep. Reentrancy hid this while there was
-       only one guard. */
-    /* The datagram has already been handed to the caller, so there is
-       nothing to refuse here; an exhausted table costs this socket its
-       reply path and says so in the log (B-47). */
-    (void)network_stack_map_socket_unlocked(sockfd, entry.flow_id,
-                                            NETWORK_IP_PROTO_UDP);
-    { listener_unlock(); return bytes_read; }
-  }
-  { listener_unlock(); return 0; }
-  listener_unlock();
-}
-
-uint32_t network_stack_udp_recv(uint64_t sockfd, uint8_t *buffer,
-                                uint32_t buffer_size,
-                                xaios_ip_addr_t *source_addr,
-                                uint16_t *source_port,
-                                uint32_t *flow_id) {
-  network_lock();
-  uint32_t result = network_stack_udp_recv_unlocked(sockfd, buffer, buffer_size, source_addr, source_port, flow_id);
-  network_unlock();
-  return result;
 }
 
 xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
@@ -1566,142 +1352,6 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
   ++g_tcp_reset_count;
   net_packet_mark_dropped(packet);
   return XAIOS_ERR_INVALID;
-}
-
-xaios_status_t network_stack_process_udp_frame_v6(const uint8_t *frame,
-                                                  uint64_t frame_len) {
-  if (frame == 0 || frame_len < 62U) {
-    net_udp_note_dropped();
-    net_udp_note_malformed();
-    net_note_packet_drop();
-    return XAIOS_ERR_INVALID;
-  }
-
-  uint64_t start = timer_now_ns();
-  uint16_t src_port = 0;
-  uint16_t dst_port = 0;
-  uint16_t payload_len = 0;
-  xaios_ip_addr_t src_addr;
-  xaios_ip_addr_t dst_addr;
-  xaios_ip_addr_zero(&src_addr);
-  xaios_ip_addr_zero(&dst_addr);
-
-  if (net_wire_parse_udp_v6(frame, frame_len, &src_port, &dst_port, &payload_len,
-                   &src_addr, &dst_addr) == 0) {
-    net_udp_note_dropped();
-    net_udp_note_malformed();
-    net_note_packet_drop();
-    return XAIOS_ERR_INVALID;
-  }
-  if (src_port == 0 || dst_port == 0 || payload_len == 0) {
-    net_udp_note_dropped();
-    net_note_packet_drop();
-    return XAIOS_ERR_INVALID;
-  }
-
-  network_udp_flow_t existing_row;
-  int have_existing = net_udp_flow_find_v6(dst_port, src_port, &dst_addr,
-                                           &src_addr, &existing_row);
-  network_queue_binding_t binding;
-  int have_binding =
-      have_existing != 0
-          ? net_queue_binding_find(existing_row.queue_id, &binding)
-          : net_queue_binding_select(dst_port, src_port,
-                                     xaios_ip_addr_hash(&dst_addr),
-                                     xaios_ip_addr_hash(&src_addr), &binding);
-  if (have_binding == 0) {
-    net_udp_note_dropped();
-    net_note_packet_drop();
-    return XAIOS_ERR_NOT_FOUND;
-  }
-
-  /* The legacy IPv4 projections the old code copied out of the packet
-     descriptor: 0 for a v6 packet, exactly the value the descriptor held. */
-  uint32_t legacy_src_address = 0U;
-  uint32_t legacy_dst_address = 0U;
-  if (src_addr.family == XAIOS_IP_FAMILY_V4) {
-    legacy_src_address = xaios_ip_addr_to_ipv4(&src_addr);
-    legacy_dst_address = xaios_ip_addr_to_ipv4(&dst_addr);
-  }
-
-  uint32_t packet =
-      net_packet_alloc(binding.queue_id, frame_len, start, src_port, dst_port,
-                       legacy_src_address, legacy_dst_address, &src_addr,
-                       &dst_addr);
-  if (packet == 0) {
-    net_udp_note_dropped();
-    return XAIOS_ERR_NO_MEMORY;
-  }
-
-  network_udp_flow_t flow_row;
-  uint32_t flow_index = 0U;
-  if (!net_udp_flow_alloc(binding.queue_id, binding.cell_id, dst_port, src_port,
-                          legacy_dst_address, legacy_src_address, &dst_addr,
-                          &src_addr, start, &flow_row, &flow_index)) {
-    net_udp_note_dropped();
-    net_packet_mark_dropped(packet);
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  /* The IPv6 address fields are set by net_udp_flow_alloc(), before the
-     queue/core mismatch test below, exactly where the old handler wrote them
-     onto the table row. */
-  if (flow_row.queue_id != binding.queue_id ||
-      flow_row.cell_id != binding.cell_id) {
-    ++g_flow_core_mismatch_count;
-    net_packet_mark_dropped(packet);
-    return XAIOS_ERR_BUSY;
-  }
-  ++flow_row.packets_rx;
-  net_udp_note_rx();
-  ++g_ipv6_rx_count;
-  for (uint32_t i = 0; i < 6U; ++i) {
-    flow_row.remote_mac[i] = frame[6U + i];
-  }
-  flow_row.remote_mac_valid = 1;
-  net_udp_flow_commit(flow_index, &flow_row);
-  
-  /* Deliver UDP payload to flow rx_buf */
-  if (flow_row.rx_buf != 0 && payload_len > 8) {
-    /* IPv6 header is 40 bytes at offset 14 */
-    const uint8_t *udp_payload = frame + 14U + 40U + 8U;
-    uint32_t data_len = (uint32_t)(payload_len - 8U);
-    /* Same as the IPv4 path: the row is copied out under the guard, so no
-       pointer into the registry crosses udp_listener_enqueue(). */
-    listener_lock();
-    network_listener_ex_t listener_row;
-    uint32_t listener_backlog = 0U;
-    int listener_found = 0;
-    for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
-      if (!network_listener_slot_read(i, &listener_row)) continue;
-      if (listener_row.port == dst_port &&
-          listener_row.protocol == NETWORK_IP_PROTO_UDP) {
-        listener_backlog = listener_row.backlog_count;
-        listener_found = 1;
-        break;
-      }
-    }
-    if (listener_found != 0) {
-      if (listener_backlog >= NETWORK_LISTENER_BACKLOG ||
-          data_len > sockbuf_available(flow_row.rx_buf) ||
-          sockbuf_write(flow_row.rx_buf, udp_payload, data_len) != data_len ||
-          !udp_listener_enqueue(dst_port, flow_row.flow_id, src_port, &src_addr,
-                                (uint16_t)data_len)) {
-        listener_unlock();
-        net_udp_note_dropped();
-        net_packet_mark_dropped(packet);
-        return XAIOS_ERR_BUSY;
-      }
-    }
-    listener_unlock();
-  }
-  
-  net_packet_mark_tx(packet);
-  ++flow_row.packets_tx;
-  net_udp_note_tx();
-  net_udp_flow_commit(flow_index, &flow_row);
-  net_packet_mark_complete(packet);
-  net_udp_record_latency(timer_now_ns() - start);
-  return XAIOS_OK;
 }
 
 xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
@@ -2443,18 +2093,8 @@ void network_init_persistent(void) {
   g_persistent_initialized = 1;
   g_poll_tick_count = 0;
   g_tick_poll_count = 0;
-  g_icmp_reply_count = 0;
-  g_arp_reply_count = 0;
-  g_icmpv6_reply_count = 0;
-  g_ndp_reply_count = 0;
+  net_icmp_reset();
   g_ipv6_rx_count = 0;
-  g_ping.state = XAIOS_NETWORK_PING_IDLE;
-  g_ping.target_ip = 0U;
-  g_ping.attempts = 0U;
-  g_ping.round_trip_ns = 0U;
-  g_ping.last_error = XAIOS_OK;
-  g_ping_sent_ns = 0U;
-  g_ping_sequence = 0U;
   /* RFC 4861 has a host solicit a router on startup rather than wait for the
      next unsolicited advertisement, which may be minutes away or never come.
      Without this the stack has a link-local address and no global one, and
@@ -2531,42 +2171,6 @@ xaios_status_t network_stack_local_public_ipv6(xaios_ip_addr_t *address) {
   return XAIOS_OK;
 }
 
-xaios_status_t network_stack_ping_start(uint32_t target_ip) {
-  uint8_t frame[50];
-  uint8_t gateway_mac[6];
-  if (g_persistent_initialized == 0U || target_ip == 0U)
-    return XAIOS_ERR_INVALID;
-  if (g_ping.state == XAIOS_NETWORK_PING_PENDING) return XAIOS_ERR_BUSY;
-  network_config_gateway_mac(gateway_mac);
-  for (uint32_t i = 0U; i < sizeof(frame); ++i) frame[i] = 0U;
-  for (uint32_t i = 0U; i < 6U; ++i) {
-    frame[i] = gateway_mac[i];
-    frame[6U + i] = g_local_mac[i];
-  }
-  net_wire_write_be16(frame + 12U, NETWORK_ETHERTYPE_IPV4);
-  ipv4_build_header(frame + 14U, 36U, XAIOS_IPV4_PROTO_ICMP,
-                    network_config_local_ipv4(), target_ip);
-  uint8_t *icmp = frame + 34U;
-  icmp[0] = XAIOS_ICMP_ECHO_REQUEST;
-  icmp[1] = 0U;
-  net_wire_write_be16(icmp + 4U, NETWORK_PING_IDENTIFIER);
-  ++g_ping_sequence;
-  net_wire_write_be16(icmp + 6U, g_ping_sequence);
-  icmp[8] = 'X'; icmp[9] = 'A'; icmp[10] = 'I'; icmp[11] = 'O';
-  icmp[12] = 'S'; icmp[13] = 'P'; icmp[14] = 'N'; icmp[15] = 'G';
-  net_wire_write_be16(icmp + 2U, ipv4_checksum(icmp, 16U));
-  xaios_status_t status = network_device_tx(frame, sizeof(frame));
-  g_ping.state = status == XAIOS_OK ? XAIOS_NETWORK_PING_PENDING
-                                     : XAIOS_NETWORK_PING_FAILED;
-  g_ping.target_ip = target_ip;
-  g_ping.attempts = 1U;
-  g_ping.round_trip_ns = 0U;
-  g_ping.last_error = status;
-  g_ping_sent_ns = timer_now_ns();
-  return status == XAIOS_OK ? XAIOS_ERR_BUSY : status;
-}
-
-xaios_network_ping_status_t network_stack_ping_status(void) { return g_ping; }
 
 static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
                                        uint16_t ethertype) {
@@ -2685,11 +2289,7 @@ static void network_poll_tick_locked(void) {
   network_note_poll_gap(now_ns);
   ntp_tick(now_ns);
   net_v6_expire_public(now_ns);
-  if (g_ping.state == XAIOS_NETWORK_PING_PENDING && now_ns >= g_ping_sent_ns &&
-      now_ns - g_ping_sent_ns >= NETWORK_PING_TIMEOUT_NS) {
-    g_ping.state = XAIOS_NETWORK_PING_TIMEOUT;
-    g_ping.last_error = XAIOS_ERR_IO;
-  }
+  net_ping_expire(now_ns);
   uint8_t rx_buf[NETWORK_BUFFER_SIZE];
   ++g_poll_tick_count;
   /* Take everything the device has queued rather than one frame per call. The
@@ -2715,22 +2315,7 @@ static void network_poll_tick_locked(void) {
   }
   uint16_t ethertype = net_wire_read_u16_be(rx_buf + 12U);
   if (ethertype == 0x0806U) {
-    if (frame_len >= 42U && net_wire_read_u16_be(rx_buf + 20U) == XAIOS_ARP_OP_REPLY) {
-      arp_process_reply(rx_buf, frame_len);
-    } else if (frame_len >= 42U &&
-               net_wire_read_u16_be(rx_buf + 20U) == XAIOS_ARP_OP_REQUEST) {
-      uint32_t target_ip = net_wire_read_u32_be(rx_buf + 38U);
-      if (target_ip == network_config_local_ipv4()) {
-        uint8_t reply_frame[64];
-        uint64_t reply_len = 0;
-        if (arp_build_reply(reply_frame, &reply_len, g_local_mac,
-                            network_config_local_ipv4(), rx_buf + 6,
-                            net_wire_read_u32_be(rx_buf + 28U)) == XAIOS_OK) {
-          network_device_tx(reply_frame, reply_len);
-          ++g_arp_reply_count;
-        }
-      }
-    }
+    net_arp_handle_frame(rx_buf, frame_len, g_local_mac);
   } else if (ethertype == NETWORK_ETHERTYPE_IPV4) {
     if (frame_len < 34U ||
         !network_reassemble_incoming(rx_buf, &frame_len, ethertype)) {
@@ -2747,32 +2332,8 @@ static void network_poll_tick_locked(void) {
       return;
     }
     if (protocol == XAIOS_IPV4_PROTO_ICMP) {
-      const uint8_t *icmp = rx_buf + 34U;
-      if (frame_len >= 42U && icmp[0] == XAIOS_ICMP_ECHO_REPLY &&
-          net_wire_read_u16_be(icmp + 4U) == NETWORK_PING_IDENTIFIER &&
-          net_wire_read_u16_be(icmp + 6U) == g_ping_sequence &&
-          net_wire_read_u32_be(rx_buf + 26U) == g_ping.target_ip &&
-          ipv4_checksum(icmp, net_wire_read_u16_be(rx_buf + 16U) - 20U) == 0U &&
-          g_ping.state == XAIOS_NETWORK_PING_PENDING) {
-        g_ping.state = XAIOS_NETWORK_PING_REPLIED;
-        g_ping.round_trip_ns = now_ns >= g_ping_sent_ns
-                                  ? now_ns - g_ping_sent_ns : 0U;
-        g_ping.last_error = XAIOS_OK;
+      if (net_icmp_handle_ipv4(rx_buf, frame_len, now_ns, g_local_mac) != 0) {
         return;
-      }
-      uint16_t identifier = 0;
-      uint16_t sequence = 0;
-      if (icmp_process_echo_request(rx_buf, frame_len, &identifier,
-                                     &sequence) == XAIOS_OK) {
-        uint8_t reply_buf[NETWORK_BUFFER_SIZE];
-        uint64_t reply_len = 0;
-        if (icmp_build_echo_reply(reply_buf, &reply_len, g_local_mac,
-                                   rx_buf + 6, network_config_local_ipv4(),
-                                   net_wire_read_u32_be(rx_buf + 26U), rx_buf,
-                                   frame_len) == XAIOS_OK) {
-          network_device_tx(reply_buf, reply_len);
-          ++g_icmp_reply_count;
-        }
       }
     } else if (protocol == NETWORK_IP_PROTO_UDP) {
       network_stack_process_udp_frame(rx_buf, frame_len);
@@ -2787,54 +2348,7 @@ static void network_poll_tick_locked(void) {
     }
     uint8_t next_header = rx_buf[20U]; /* byte 6 of IPv6 at offset 14 */
     if (next_header == XAIOS_IPV6_NEXT_ICMPV6) {
-      if (frame_len >= XAIOS_ICMPV6_MIN_FRAME) {
-        uint8_t icmpv6_type = rx_buf[XAIOS_ICMPV6_OFFSET];
-        if (icmpv6_type == XAIOS_ICMPV6_ECHO_REQUEST) {
-          xaios_ip_addr_t echo_src;
-          xaios_ip_addr_t echo_dst;
-          uint16_t identifier = 0;
-          uint16_t sequence = 0;
-          if (icmpv6_process_echo_request(rx_buf, frame_len, &identifier,
-                                           &sequence, &echo_src,
-                                           &echo_dst) == XAIOS_OK) {
-            uint8_t reply_buf[NETWORK_BUFFER_SIZE];
-            uint64_t reply_len = 0;
-            xaios_ip_addr_t echo_source;
-            net_v6_source_for(&echo_dst, &echo_source);
-            if (icmpv6_build_echo_reply(reply_buf, &reply_len, g_local_mac,
-                                         rx_buf + 6,
-                                         &echo_source,
-                                         &echo_src, rx_buf,
-                                         frame_len) == XAIOS_OK) {
-              network_device_tx(reply_buf, reply_len);
-              ++g_icmpv6_reply_count;
-            }
-          }
-        } else if (icmpv6_type == XAIOS_ICMPV6_NEIGHBOR_SOLICIT) {
-          /* Extract target address from NS (bytes 8-23 of ICMPv6 payload) */
-          xaios_ip_addr_t ns_target;
-          xaios_ip_addr_from_raw_ipv6(&ns_target, rx_buf + XAIOS_ICMPV6_OFFSET + 8);
-          /* Build NA: source = our link-local, dest = NS source */
-          xaios_ip_addr_t na_src;
-          net_v6_source_for(&ns_target, &na_src);
-          xaios_ip_addr_t na_dst;
-          xaios_ip_addr_from_raw_ipv6(&na_dst, rx_buf + 22); /* IPv6 src */
-          uint8_t na_frame[128];
-          uint64_t na_len = 0;
-          if (icmpv6_build_neighbor_advertisement(na_frame, &na_len,
-                g_local_mac, rx_buf + 6, &na_src, &na_dst, &ns_target,
-                rx_buf, frame_len) == XAIOS_OK) {
-            network_device_tx(na_frame, na_len);
-            ++g_ndp_reply_count;
-          }
-        } else if (icmpv6_type == XAIOS_ICMPV6_NEIGHBOR_ADVERT) {
-          ndp_process_neighbor_advertisement(rx_buf, frame_len);
-        } else if (icmpv6_type == XAIOS_ICMPV6_ROUTER_ADVERT &&
-                   ndp_process_router_advertisement(rx_buf, frame_len) == XAIOS_OK) {
-          net_v6_apply_router_advertisement(rx_buf, frame_len, now_ns,
-                                            g_local_mac);
-        }
-      }
+      net_icmpv6_handle_frame(rx_buf, frame_len, now_ns, g_local_mac);
     } else if (next_header == NETWORK_IP_PROTO_UDP) {
       network_stack_process_udp_frame_v6(rx_buf, frame_len);
     } else if (next_header == NETWORK_IP_PROTO_TCP) {
@@ -2879,22 +2393,6 @@ uint64_t network_tick_poll_count(void) {
 
 uint64_t network_poll_tick_count(void) {
   return g_poll_tick_count;
-}
-
-uint64_t network_icmp_reply_count(void) {
-  return g_icmp_reply_count;
-}
-
-uint64_t network_arp_reply_sent_count(void) {
-  return g_arp_reply_count;
-}
-
-uint64_t network_icmpv6_reply_count(void) {
-  return g_icmpv6_reply_count;
-}
-
-uint64_t network_ndp_reply_count(void) {
-  return g_ndp_reply_count;
 }
 
 uint64_t network_ipv6_rx_count(void) {

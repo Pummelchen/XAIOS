@@ -14,7 +14,7 @@ kernel/arch/riscv64/fdt.c 613
 kernel/arch/riscv64/iommu.c 819
 kernel/arch/riscv64/mmu.c 1018
 kernel/arch/riscv64/smp.c 661
-kernel/arch/x86_64/early.c 1748
+kernel/arch/x86_64/early.c 1583
 kernel/arch/x86_64/mmu.c 732
 kernel/arch/x86_64/smp.c 568
 kernel/core/boot_ui.c 1337
@@ -22,7 +22,6 @@ kernel/core/klog.c 635
 kernel/core/kmain.c 832
 kernel/core/panic.c 685
 kernel/dev/input.c 745
-kernel/dev/nvme.c 1222
 kernel/dev/pci_ecam.c 691
 kernel/dev/virtio/virtio_blk.c 1282
 kernel/dev/virtio/virtio_net.c 1347
@@ -34,7 +33,6 @@ kernel/fs/initramfs.c 552
 kernel/fs/vfs.c 757
 kernel/fs/vfs_xaifs.c 1196
 kernel/fs/xai_fs_admin.c 676
-kernel/fs/xaiboot_fs.c 1411
 kernel/include/xaios/control_protocol.h 678
 kernel/mm/numa.c 990
 kernel/net/dhcpv6.c 609
@@ -48,7 +46,7 @@ kernel/runtime/app_store.c 932
 kernel/runtime/control_protocol.c 1197
 kernel/runtime/cpu_ai_runtime.c 1055
 kernel/runtime/git_workspace.c 697
-kernel/runtime/network_stack.c 2902
+kernel/runtime/network_stack.c 2400
 kernel/runtime/operations.c 857
 kernel/runtime/remote_login.c 1356
 kernel/runtime/security.c 753
@@ -62,7 +60,7 @@ kernel/user/service.c 1340
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
 scripts/build-boot-media.sh 544
-scripts/build-image.sh 2007
+scripts/build-image.sh 2021
 scripts/build-riscv64-image.sh 675
 scripts/build-vm-packages.sh 661
 scripts/xaios-ssh-bridge.py 1171
@@ -76,7 +74,6 @@ tests/scripts/qemu-cluster-partition-gate.py 692
 tests/scripts/qemu-cluster-three-node-gate.py 608
 tests/scripts/qemu-console-xtop-gate.py 840
 tests/scripts/qemu-cpu-matrix.py 559
-tests/scripts/qemu-docker-network-suite.py 1451
 tests/scripts/qemu-freebsd-bidirectional-suite.py 831
 tests/scripts/qemu-freebsd-network-suite.py 598
 tests/scripts/qemu-installed-disk-gate.py 558
@@ -97,8 +94,6 @@ tests/security/test_wt_crypto.c 688
 tests/security/test_wt_quic_pkt.c 604
 tests/security/test_wt_tls.c 749
 tests/security/test_wt_tls_cert.c 979
-tests/security/test_wt_tls_client.c 1402
-tests/security/test_wt_tls_handshake.c 1646
 tests/xai_fs/test_xai_fs_reader.c 888
 tools/xaios_model_v2.py 640
 userspace/apps/clustertest.c 1317
@@ -112,7 +107,6 @@ userspace/lib/xaios_screen.c 564
 userspace/lib/xaios_user.c 839
 userspace/sshd/sftp_server.c 1009
 userspace/sshd/ssh_channel.c 1031
-userspace/sshd/ssh_client.c 1230
 userspace/sshd/ssh_crypto.c 1205
 userspace/sshd/sshd.c 1327
 userspace/wt/src/wt_tls_client.c 1078

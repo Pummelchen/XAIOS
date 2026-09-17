@@ -16,6 +16,7 @@
 
 #include "early_module.h"
 #include "early_serial.h"
+#include "early_fpu.h"
 #include "platform.h"
 
 #ifndef XAIOS_X86_COMMON_RUNTIME
@@ -52,14 +53,9 @@
 #define COM1_PORT UINT16_C(0x3f8)
 #define PAGE_SIZE UINT64_C(4096)
 #define X86_EFLAGS_ID UINT64_C(1 << 21)
-#define X86_CR4_OSXSAVE UINT64_C(1 << 18)
-#define X86_CR4_OSFXSR UINT64_C(1 << 9)
-#define X86_CR4_OSXMMEXCPT UINT64_C(1 << 10)
-#define X86_XCR0_AVX UINT64_C(1 << 2)
-#define X86_XCR0_SSE UINT64_C(1 << 1)
-#define X86_XCR0_X87 UINT64_C(1)
-#define X86_XSTATE_AVX512 UINT64_C(0xe0)
-#define X86_XSTATE_AMX UINT64_C(0x60000)
+/* The CR4/XCR0/XSAVE control bits and the primitives that program them now
+ * live in early_fpu.h, which the extended-state block below and the AVX2 canary
+ * in x86_64_kmain share with early_fpu.c. */
 #define MSR_IA32_APIC_BASE UINT32_C(0x1b)
 /* The value RDTSCP returns in ECX: this kernel puts the CPU's ordinal there so
  * a CPU can name itself without reading the APIC (see the fast identity). */
@@ -213,13 +209,9 @@ static uint32_t g_lapic_x2apic;
 volatile uint64_t g_x86_lapic_timer_interrupts;
 volatile uint64_t g_ring3_return_value;
 static xaios_boot_info_t g_boot_info_copy;
-static uint8_t g_xsave_original[UINT32_C(65536)] __attribute__((aligned(64)));
-static uint8_t g_xsave_test[UINT32_C(65536)] __attribute__((aligned(64)));
 static x86_64_cpu_record_t *g_cpu_records;
 static uint32_t g_cpu_record_count;
 static uint32_t g_bsp_ordinal = UINT32_MAX;
-static uint64_t g_xsave_enabled;
-static uint32_t g_xsave_area_size;
 static volatile uint32_t g_common_worker_release;
 static uint64_t g_tsc_frequency;
 static uint64_t g_lapic_frequency;
@@ -484,85 +476,11 @@ static inline uint64_t read_cr3(void) {
   return value;
 }
 
-static inline uint64_t read_cr4(void) {
-  uint64_t value = 0U;
-  __asm__ volatile("mov %%cr4, %0" : "=r"(value));
-  return value;
-}
-
-static inline void write_cr4(uint64_t value) {
-  __asm__ volatile("mov %0, %%cr4" : : "r"(value) : "memory");
-}
-
-static inline void write_xcr0(uint64_t value) {
-  uint32_t low = (uint32_t)value;
-  uint32_t high = (uint32_t)(value >> 32U);
-  __asm__ volatile("xsetbv" : : "a"(low), "d"(high), "c"(0U) : "memory");
-}
-
-static inline uint64_t read_xcr0(void) {
-  uint32_t low = 0U;
-  uint32_t high = 0U;
-  __asm__ volatile("xgetbv" : "=a"(low), "=d"(high) : "c"(0U));
-  return (uint64_t)low | ((uint64_t)high << 32U);
-}
-
-static inline void xsave_state(void *area, uint64_t mask) {
-  uint32_t low = (uint32_t)mask;
-  uint32_t high = (uint32_t)(mask >> 32U);
-  __asm__ volatile("xsave64 (%0)" : : "r"(area), "a"(low), "d"(high)
-                   : "memory");
-}
-
-static inline void xrstor_state(const void *area, uint64_t mask) {
-  uint32_t low = (uint32_t)mask;
-  uint32_t high = (uint32_t)(mask >> 32U);
-  __asm__ volatile("xrstor64 (%0)" : : "r"(area), "a"(low), "d"(high)
-                   : "memory");
-}
-
-static inline void fxsave_state(void *area) {
-  __asm__ volatile("fxsave64 (%0)" : : "r"(area) : "memory");
-}
-
-static inline void fxrstor_state(const void *area) {
-  __asm__ volatile("fxrstor64 (%0)" : : "r"(area) : "memory");
-}
-
-static uint8_t *current_irq_state_area(void) {
-  uint32_t ordinal = x86_64_platform_current_ordinal();
-  if (ordinal >= g_cpu_record_count || g_xsave_area_size == 0U ||
-      g_cpu_records[ordinal].irq_state_area == 0) {
-    return 0;
-  }
-  uint32_t depth = g_cpu_records[ordinal].user_nesting_depth;
-  uint32_t slot = depth == 0U ? 0U : depth - 1U;
-  if (slot >= X86_USER_NESTING_MAX) {
-    panic_halt(COM1_PORT, "IRQ state nesting");
-  }
-  return g_cpu_records[ordinal].irq_state_area +
-         (uint64_t)slot * g_xsave_area_size;
-}
-
-void x86_64_irq_state_save(void) {
-  uint8_t *area = current_irq_state_area();
-  if (area == 0) return;
-  if (g_xsave_enabled != 0U) {
-    xsave_state(area, g_xsave_enabled);
-  } else {
-    fxsave_state(area);
-  }
-}
-
-void x86_64_irq_state_restore(void) {
-  uint8_t *area = current_irq_state_area();
-  if (area == 0) return;
-  if (g_xsave_enabled != 0U) {
-    xrstor_state(area, g_xsave_enabled);
-  } else {
-    fxrstor_state(area);
-  }
-}
+/* The CR4/XCR0/XSAVE/FXSAVE primitives, the per-CPU IRQ-state area lookup and
+ * the interrupt entry's state save/restore now live in early_fpu.h and
+ * early_fpu.c. The primitives are `static inline` in that header, so this file
+ * still inlines them at the AVX2 canary and in x86_64_ap_entry; the two
+ * save/restore entry points keep their names because entry.S calls them. */
 
 static inline void write_cr3(uint64_t value) {
   __asm__ volatile("mov %0, %%cr3" : : "r"(value) : "memory");
@@ -1033,9 +951,12 @@ void x86_64_ap_entry(uint32_t ordinal) {
   };
   __asm__ volatile("lidt %0" : : "m"(idtr) : "memory");
   write_cr4(read_cr4() | X86_CR4_OSFXSR | X86_CR4_OSXMMEXCPT);
-  if (g_xsave_enabled != 0U) {
+  /* The mask early_fpu.c validated and programmed before any AP started; read
+   * once here so this CPU programs the same XCR0. */
+  uint64_t xsave_enabled = xaios_x86_fpu_enabled_mask();
+  if (xsave_enabled != 0U) {
     write_cr4(read_cr4() | X86_CR4_OSXSAVE);
-    write_xcr0(g_xsave_enabled);
+    write_xcr0(xsave_enabled);
   }
   lapic_write(APIC_SPURIOUS, UINT32_C(0x100) | UINT32_C(0xff));
   if (lapic_id() != g_cpu_records[ordinal].apic_id) {
@@ -1112,95 +1033,9 @@ void x86_64_ap_entry(uint32_t ordinal) {
 #endif
 }
 
-static void validate_xsave(uint16_t serial_base) {
-  uint32_t eax = 0U;
-  uint32_t ebx = 0U;
-  uint32_t ecx = 0U;
-  uint32_t edx = 0U;
-  cpuid(1U, 0U, &eax, &ebx, &ecx, &edx);
-  if ((ecx & (UINT32_C(1) << 26U)) == 0U) {
-    if ((edx & (UINT32_C(1) << 24U)) == 0U) {
-      panic_halt(serial_base, "extended state unavailable");
-    }
-    write_cr4(read_cr4() | X86_CR4_OSFXSR | X86_CR4_OSXMMEXCPT);
-    fxsave_state(g_xsave_original);
-    fxsave_state(g_xsave_test);
-    fxrstor_state(g_xsave_test);
-    fxrstor_state(g_xsave_original);
-    g_xsave_enabled = 0U;
-    g_xsave_area_size = UINT32_C(512);
-    serial_puts(serial_base,
-                "x86_64: FXSAVE/FXRSTOR fallback canary passed bytes=512\n");
-    return;
-  }
-  uint32_t avx_supported = ecx & (UINT32_C(1) << 28U);
-  write_cr4(read_cr4() | X86_CR4_OSFXSR | X86_CR4_OSXMMEXCPT |
-            X86_CR4_OSXSAVE);
-  cpuid(0x0dU, 0U, &eax, &ebx, &ecx, &edx);
-  uint64_t supported = (uint64_t)eax | ((uint64_t)edx << 32U);
-  uint64_t enabled = X86_XCR0_X87 | X86_XCR0_SSE;
-  if ((supported & X86_XCR0_AVX) != 0U &&
-      avx_supported != 0U) {
-    enabled |= X86_XCR0_AVX;
-  }
-  if ((enabled & X86_XCR0_AVX) != 0U &&
-      (supported & X86_XSTATE_AVX512) == X86_XSTATE_AVX512) {
-    enabled |= X86_XSTATE_AVX512;
-  }
-  if ((supported & X86_XSTATE_AMX) == X86_XSTATE_AMX) {
-    enabled |= X86_XSTATE_AMX;
-  }
-  write_xcr0(enabled);
-  g_xsave_enabled = enabled;
-  cpuid(0x0dU, 0U, &eax, &ebx, &ecx, &edx);
-  if (ebx == 0U || ebx > sizeof(g_xsave_original) || read_xcr0() != enabled) {
-    panic_halt(serial_base, "XSAVE area sizing failed");
-  }
-  g_xsave_area_size = ebx;
-  xsave_state(g_xsave_original, enabled);
-  xsave_state(g_xsave_test, enabled);
-  xrstor_state(g_xsave_test, enabled);
-  xrstor_state(g_xsave_original, enabled);
-  serial_puts(serial_base, "x86_64: XSAVE/XRSTOR canary passed bytes=");
-  serial_dec(serial_base, ebx);
-  serial_puts(serial_base, " enabled=");
-  serial_hex64(serial_base, enabled);
-  serial_puts(serial_base, " avx512_supported=");
-  serial_dec(serial_base,
-             (supported & X86_XSTATE_AVX512) == X86_XSTATE_AVX512);
-  serial_puts(serial_base, " avx512_preserved=");
-  serial_dec(serial_base,
-             (enabled & X86_XSTATE_AVX512) == X86_XSTATE_AVX512);
-  serial_puts(serial_base, " amx_supported=");
-  serial_dec(serial_base, (supported & X86_XSTATE_AMX) == X86_XSTATE_AMX);
-  serial_puts(serial_base, " amx_preserved=");
-  serial_dec(serial_base, (enabled & X86_XSTATE_AMX) == X86_XSTATE_AMX);
-  serial_puts(serial_base, "\n");
-}
-
-static void prepare_irq_state_areas(uint16_t serial_base) {
-  if (g_xsave_area_size == 0U ||
-      g_xsave_area_size > UINT32_C(65536)) {
-    panic_halt(serial_base, "IRQ state area size");
-  }
-  uint64_t bytes =
-      (uint64_t)g_xsave_area_size * X86_USER_NESTING_MAX;
-  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
-    g_cpu_records[ordinal].irq_state_area =
-        (uint8_t *)early_alloc(bytes, UINT64_C(64));
-    if (g_cpu_records[ordinal].irq_state_area == 0) {
-      panic_halt(serial_base, "IRQ state allocation");
-    }
-    for (uint64_t offset = 0U; offset < bytes; ++offset) {
-      g_cpu_records[ordinal].irq_state_area[offset] = 0U;
-    }
-  }
-  serial_puts(serial_base, "x86_64: per-CPU nested IRQ state areas ready bytes=");
-  serial_dec(serial_base, bytes);
-  serial_puts(serial_base, " cpus=");
-  serial_dec(serial_base, g_cpu_record_count);
-  serial_puts(serial_base, "\n");
-}
+/* XSAVE/XRSTOR validation and the per-CPU nested IRQ-state areas now live in
+ * early_fpu.c as xaios_x86_fpu_validate and xaios_x86_fpu_prepare_irq_areas,
+ * called at this same point in x86_64_kmain. */
 
 /* The PIT's input frequency, by definition: 14.31818 MHz divided by twelve.
  * Nothing has to be discovered for it, which is the whole reason it is the
@@ -1712,8 +1547,8 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
     panic_halt(serial_base, "page tables not loaded");
   }
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 46 page tables passed\n");
-  validate_xsave(serial_base);
-  prepare_irq_state_areas(serial_base);
+  xaios_x86_fpu_validate(serial_base);
+  xaios_x86_fpu_prepare_irq_areas(serial_base);
   discover_timer_apic(serial_base);
   validate_lapic_timer_interrupt(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 47 timers APIC passed\n");

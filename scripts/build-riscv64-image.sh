@@ -503,7 +503,7 @@ SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 # bidirectional interoperability suite is entirely about.
 printf '%s\n' "Building /bin/ssh and /bin/scp..."
 SSH_CLIENT_OBJS=""
-for ssh_client_src in ssh ssh_client ssh_client_scp ssh_client_kex ssh_client_handshake ssh_known_hosts ssh_crypto ssh_identity \
+for ssh_client_src in ssh ssh_client ssh_client_scp ssh_client_kex ssh_client_handshake ssh_client_auth ssh_client_command ssh_known_hosts ssh_crypto ssh_identity \
     ssh_mlkem tweetnacl_subset ssh_protocol ssh_connection ssh_sftp; do
   ssh_client_path="$ROOT_DIR/userspace/sshd/$ssh_client_src.c"
   [ "$ssh_client_src" = ssh ] && \
