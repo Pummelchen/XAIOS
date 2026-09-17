@@ -16,6 +16,7 @@
 
 #include "early_module.h"
 #include "early_serial.h"
+#include "early_exception.h"
 #include "early_fpu.h"
 #include "platform.h"
 
@@ -56,6 +57,11 @@
  * hooks below call, never through a pointer into that file's state. */
 #define install_gdt_tss xaios_x86_gdt_install
 #define install_ap_gdt_tss xaios_x86_gdt_install_ap
+
+/* The exception entry and its controlled round-trip moved to early_exception.c;
+ * this alias keeps the one call site in x86_64_kmain spelling it the way it
+ * did. The entry itself keeps its name because entry.S calls it by that name. */
+#define validate_exception_round_trip xaios_x86_early_exception_round_trip
 
 #define COM1_PORT UINT16_C(0x3f8)
 #define PAGE_SIZE UINT64_C(4096)
@@ -185,8 +191,6 @@ extern void (*const x86_64_device_irq_stubs[64])(void);
 static x86_64_contract_state_t g_contract;
 static x86_64_hardware_gate_state_t g_hardware_gate;
 static uint32_t g_exception_vectors_installed;
-static volatile uint32_t g_expected_exception_vector = UINT32_MAX;
-static volatile uint64_t g_exception_test_count;
 static uint16_t g_code_selector;
 static uint32_t g_lapic_ready;
 static uint32_t g_lapic_x2apic;
@@ -260,12 +264,6 @@ uint32_t xaios_x86_early_bsp_ordinal(void) { return g_bsp_ordinal; }
 
 void xaios_x86_early_set_worker_release(uint32_t value) {
   __atomic_store_n(&g_common_worker_release, value, __ATOMIC_RELEASE);
-}
-
-static inline uint64_t read_cr2(void) {
-  uint64_t value = 0;
-  __asm__ volatile("mov %%cr2, %0" : "=r"(value));
-  return value;
 }
 
 static inline uint64_t read_cr3(void) {
@@ -1025,48 +1023,6 @@ static void X86_BRINGUP_ONLY validate_hardware_gate(uint16_t serial_base) {
   serial_dec(serial_base, g_hardware_gate.release_candidate_ready);
   serial_puts(serial_base, "\n");
   serial_puts(serial_base, "x86_64: Intel Desktop hardware gate blocked platform-parity-and-physical-evidence-required\n");
-}
-
-uint64_t x86_64_exception_entry(const x86_64_exception_frame_t *frame) {
-  uint16_t serial_base = COM1_PORT;
-  serial_init(serial_base);
-  if (frame != 0 && frame->vector == g_expected_exception_vector) {
-    ++g_exception_test_count;
-    g_expected_exception_vector = UINT32_MAX;
-    return 0U;
-  }
-  serial_puts(serial_base, "\nEXCEPTION x86_64 vector=");
-  serial_dec(serial_base, frame->vector);
-  serial_puts(serial_base, " error=");
-  serial_hex64(serial_base, frame->error_code);
-  serial_puts(serial_base, " rip=");
-  serial_hex64(serial_base, frame->rip);
-  if (frame->vector == 14U) {
-    serial_puts(serial_base, " cr2=");
-    serial_hex64(serial_base, read_cr2());
-  }
-  serial_puts(serial_base, "\n");
-#if XAIOS_X86_COMMON_RUNTIME
-  if (frame != 0 && (frame->cs & 3U) == 3U) {
-    uint64_t result = user_process_note_fault();
-    x86_64_platform_set_user_return(result);
-    return (uint64_t)(uintptr_t)x86_64_ring3_resume;
-  }
-#endif
-  panic_halt(serial_base, "controlled x86_64 exception reported");
-  return 0U;
-}
-
-static void validate_exception_round_trip(uint16_t serial_base) {
-  g_exception_test_count = 0U;
-  g_expected_exception_vector = 3U;
-  __asm__ volatile("int3" ::: "memory");
-  if (g_exception_test_count != 1U ||
-      g_expected_exception_vector != UINT32_MAX) {
-    panic_halt(serial_base, "controlled INT3 exception failed");
-  }
-  serial_puts(serial_base,
-              "x86_64: controlled INT3 exception round-trip passed count=1\n");
 }
 
 void x86_64_kmain(const xaios_boot_info_t *boot) {

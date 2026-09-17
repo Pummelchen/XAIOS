@@ -186,6 +186,8 @@ for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_x25519.c 
               userspace/wt/src/wt_tls_handshake.c \
               userspace/wt/src/wt_tls_cert.c \
               userspace/wt/src/wt_tls_pin.c \
+              userspace/wt/src/wt_tls_client_messages.c \
+              userspace/wt/src/wt_tls_client_finish.c \
               userspace/wt/src/wt_tls_client.c; do
   MODULE_OBJECTS="$MODULE_OBJECTS $(build_module "$source")"
 done

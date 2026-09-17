@@ -263,6 +263,21 @@ for app in $USER_APPS; do
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/lib/control_request.c" \
     -o "$BUILD_DIR/control-request-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_parse_flags.c" \
+    -o "$BUILD_DIR/control-parse-flags-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_parse_validate.c" \
+    -o "$BUILD_DIR/control-parse-validate-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_dispatch.c" \
+    -o "$BUILD_DIR/control-dispatch-$app.o"
   # The screen framework, for programs that draw a screen.
   "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
     -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie -Os \
@@ -356,7 +371,7 @@ for app in $USER_APPS; do
     "$BUILD_DIR/control-primitives-$app.o" \
     "$BUILD_DIR/control-system-$app.o" \
     "$BUILD_DIR/control-storage-$app.o" \
-    "$BUILD_DIR/control-ops-$app.o" "$BUILD_DIR/control-config-$app.o" "$BUILD_DIR/control-request-$app.o" \
+    "$BUILD_DIR/control-ops-$app.o" "$BUILD_DIR/control-config-$app.o" "$BUILD_DIR/control-request-$app.o" "$BUILD_DIR/control-parse-flags-$app.o" "$BUILD_DIR/control-parse-validate-$app.o" "$BUILD_DIR/control-dispatch-$app.o" \
     "$BUILD_DIR/screen-$app.o" $EXTRA_OBJS
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
@@ -403,7 +418,7 @@ for app in $UTILITY_APPS; do
     "$BUILD_DIR/control-primitives-xaios-shell.o" \
     "$BUILD_DIR/control-system-xaios-shell.o" \
     "$BUILD_DIR/control-storage-xaios-shell.o" \
-    "$BUILD_DIR/control-ops-xaios-shell.o" "$BUILD_DIR/control-config-xaios-shell.o" "$BUILD_DIR/control-request-xaios-shell.o" \
+    "$BUILD_DIR/control-ops-xaios-shell.o" "$BUILD_DIR/control-config-xaios-shell.o" "$BUILD_DIR/control-request-xaios-shell.o" "$BUILD_DIR/control-parse-flags-xaios-shell.o" "$BUILD_DIR/control-parse-validate-xaios-shell.o" "$BUILD_DIR/control-dispatch-xaios-shell.o" \
     "$BUILD_DIR/xutils-inflate.o" "$BUILD_DIR/xutils-archive-$app.o" \
     "$BUILD_DIR/xutils-file-$app.o" "$BUILD_DIR/xutils-text-$app.o" "$BUILD_DIR/xutils-$app.o"
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
@@ -463,7 +478,7 @@ if [ -f "$XAPT_BEARSSL" ] &&
     "$BUILD_DIR/control-primitives-hello.o" \
     "$BUILD_DIR/control-system-hello.o" \
     "$BUILD_DIR/control-storage-hello.o" \
-    "$BUILD_DIR/control-ops-hello.o" "$BUILD_DIR/control-config-hello.o" "$BUILD_DIR/control-request-hello.o" \
+    "$BUILD_DIR/control-ops-hello.o" "$BUILD_DIR/control-config-hello.o" "$BUILD_DIR/control-request-hello.o" "$BUILD_DIR/control-parse-flags-hello.o" "$BUILD_DIR/control-parse-validate-hello.o" "$BUILD_DIR/control-dispatch-hello.o" \
     "$BUILD_DIR/xapt.o" "$BUILD_DIR/xapt_tls.o" \
     "$BUILD_DIR/xapt_trust_anchors.o" "$XAPT_BEARSSL"
   XAPT_ARGS="/bin/xapt=$BUILD_DIR/xapt.elf"
@@ -525,7 +540,7 @@ done
   "$BUILD_DIR/control-primitives-hello.o" \
   "$BUILD_DIR/control-system-hello.o" \
   "$BUILD_DIR/control-storage-hello.o" \
-  "$BUILD_DIR/control-ops-hello.o" "$BUILD_DIR/control-config-hello.o" "$BUILD_DIR/control-request-hello.o" \
+  "$BUILD_DIR/control-ops-hello.o" "$BUILD_DIR/control-config-hello.o" "$BUILD_DIR/control-request-hello.o" "$BUILD_DIR/control-parse-flags-hello.o" "$BUILD_DIR/control-parse-validate-hello.o" "$BUILD_DIR/control-dispatch-hello.o" \
   "$BUILD_DIR/screen-hello.o" $SSHD_OBJS
 SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 

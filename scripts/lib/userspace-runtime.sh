@@ -225,6 +225,57 @@ printf '%s\n' "Building userspace C runtime..."
     -c "$ROOT_DIR/userspace/lib/control_request.c" \
     -o "$USER_CONTROL_REQUEST_OBJ"
 
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Os \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_parse_flags.c" \
+    -o "$USER_CONTROL_PARSE_FLAGS_OBJ"
+
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Os \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_parse_validate.c" \
+    -o "$USER_CONTROL_PARSE_VALIDATE_OBJ"
+
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Os \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/control_dispatch.c" \
+    -o "$USER_CONTROL_DISPATCH_OBJ"
+
 # The screen framework: the grid, the present that writes only what
 # changed, and the key decoder. Linked into every program that draws a
 # screen, and into sshd, which runs every alternate-screen program through it.

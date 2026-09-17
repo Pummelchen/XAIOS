@@ -82,6 +82,9 @@ USER_CONTROL_STORAGE_OBJ="$INIT_BUILD_DIR/xaios-control-storage.o"
 USER_CONTROL_OPS_OBJ="$INIT_BUILD_DIR/xaios-control-ops.o"
 USER_CONTROL_CONFIG_OBJ="$INIT_BUILD_DIR/xaios-control-config.o"
 USER_CONTROL_REQUEST_OBJ="$INIT_BUILD_DIR/xaios-control-request.o"
+USER_CONTROL_PARSE_FLAGS_OBJ="$INIT_BUILD_DIR/xaios-control-parse-flags.o"
+USER_CONTROL_PARSE_VALIDATE_OBJ="$INIT_BUILD_DIR/xaios-control-parse-validate.o"
+USER_CONTROL_DISPATCH_OBJ="$INIT_BUILD_DIR/xaios-control-dispatch.o"
 USER_APPS="xaios-shell xaiosctl xapt nano xtop pong hello spin sysinfo systest smptest joinnest smpstress perfbench nettest netmqtest netsocktest lstm-xor sshtest mltest posix-shell agenttest clustertest xaios-setup"
 # Which end of a cluster this image is, and where its peer is.
 #

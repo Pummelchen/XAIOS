@@ -65,7 +65,11 @@ if [ "$WITH_CONTROL" = 1 ]; then
   compile "$ROOT/userspace/lib/control_render_storage.c" "$TEMP/control-storage.o"
   compile "$ROOT/userspace/lib/control_render_ops.c" "$TEMP/control-ops.o"
   compile "$ROOT/userspace/lib/control_render_config.c" "$TEMP/control-config.o"
-  compile "$ROOT/userspace/lib/control_request.c" "$TEMP/control-request.o"
+  compile "$ROOT/userspace/lib/control_request.c" "$TEMP/control-request.o" "$TEMP/control-parse-flags.o" \
+    "$TEMP/control-parse-validate.o" "$TEMP/control-dispatch.o"
+  compile "$ROOT/userspace/lib/control_parse_flags.c" "$TEMP/control-parse-flags.o"
+  compile "$ROOT/userspace/lib/control_parse_validate.c" "$TEMP/control-parse-validate.o"
+  compile "$ROOT/userspace/lib/control_dispatch.c" "$TEMP/control-dispatch.o"
   set -- "$@" "$TEMP/control.o" "$TEMP/control-primitives.o" "$TEMP/control-system.o" \
     "$TEMP/control-storage.o" "$TEMP/control-ops.o" "$TEMP/control-config.o" \
     "$TEMP/control-request.o"

@@ -70,6 +70,7 @@ else
   $KERNEL_BUILD_DIR/early_irq.o
   $KERNEL_BUILD_DIR/early_gdt.o
   $KERNEL_BUILD_DIR/early_platform.o
+  $KERNEL_BUILD_DIR/early_exception.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -113,6 +114,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/virtio_net_setup.o
   $KERNEL_BUILD_DIR/e1000e.o
   $KERNEL_BUILD_DIR/vmxnet3.o
+  $KERNEL_BUILD_DIR/vmxnet3_rings.o
+  $KERNEL_BUILD_DIR/vmxnet3_data.o
   $KERNEL_BUILD_DIR/net_device.o
   $KERNEL_BUILD_DIR/virtio_rng.o
   $KERNEL_BUILD_DIR/virtio_gpu.o
@@ -195,6 +198,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/control_storage_layout_ops.o
   $KERNEL_BUILD_DIR/app_store.o
   $KERNEL_BUILD_DIR/cpu_ai_runtime.o
+  $KERNEL_BUILD_DIR/cpu_ai_manifest.o
+  $KERNEL_BUILD_DIR/cpu_ai_fixture.o
   $KERNEL_BUILD_DIR/ai_kernels.o
   $KERNEL_BUILD_DIR/paged_kv_cache.o
   $KERNEL_BUILD_DIR/inference_batcher.o

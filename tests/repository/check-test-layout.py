@@ -43,6 +43,8 @@ RUNTIME_SCRIPTS = {
     "publish-xapt-repository.sh",
     "run-xaios-ssh-bridge.sh",
     "xaios-ssh-bridge.py",
+    "xaios_ssh_bridge_core.py",
+    "xaios_ssh_bridge_tools.py",
 }
 
 
