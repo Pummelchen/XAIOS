@@ -12,14 +12,8 @@
 #include <xaios/virtio_transport.h>
 #include <xaios/vmm.h>
 
-#define VRING_DESC_F_WRITE UINT16_C(2)
-#define VRING_DESC_F_NEXT UINT16_C(1)
-#define VRING_DESC_F_INDIRECT UINT16_C(4)
-/* VirtIO 1.0 devices use virtio_net_hdr_v1, including num_buffers, even when
- * mergeable receive buffers are not negotiated. */
-#define VIRTIO_NET_HDR_SIZE 12U
-#define VIRTIO_NET_PERSISTENT_RX_DESCS 8U
-#define VIRTIO_NET_PERSISTENT_TX_DESCS 4U
+#include "virtio_net_internal.h"
+
 #define VIRTIO_NET_MAX_FRAME 1524U
 #define VIRTIO_DMA_ALIGNMENT 4096U
 #define VIRTIO_NET_F_CSUM (UINT32_C(1) << 0U)
@@ -116,137 +110,17 @@
 #define VIRTIO_NET_GUEST_GSO_MASK                                   \
   (VIRTIO_NET_F_GUEST_TSO4 | VIRTIO_NET_F_GUEST_TSO6 |              \
    VIRTIO_NET_F_GUEST_ECN | VIRTIO_NET_F_GUEST_UFO)
-/* Without mergeable receive buffers, negotiating a guest segmentation offload
-   would oblige the driver to post receive buffers of at least 65550 bytes,
-   because the device may then deliver a coalesced segment that large. A
-   buffer that size spans seventeen pages, and a single descriptor must be
-   physically contiguous, which the kernel heap cannot promise: it maps pages
-   allocated one at a time. Posting one page instead keeps every descriptor
-   contiguous and carries any ordinary frame; a coalesced segment larger than
-   this is dropped on receive, which the receive path already does safely.
-   Lifting that limit needs either a contiguous allocator or an indirect
-   descriptor chain per receive buffer. */
-#define VIRTIO_NET_GSO_RX_BUFFER 65550U
-/* A buffer that large spans seventeen pages, and a descriptor covers one
-   physically contiguous run, which the kernel heap cannot promise: it maps
-   pages allocated one at a time. The specification lets a receive buffer be a
-   descriptor chain, so each slot posts one indirect descriptor naming a page
-   per entry. That is why indirect descriptors are asked for above. */
-#define VIRTIO_NET_RX_PAGE_BYTES 4096U
-#define VIRTIO_NET_RX_PAGES 17U
 #define VIRTIO_F_RING_INDIRECT_DESC (UINT32_C(1) << 28U)
 #define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
 #define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
-/* The most pairs this driver will set up. The device may offer more; it
-   is told how many are in use, so offering more is not an error. */
-#define VIRTIO_NET_MAX_QUEUE_PAIRS 4U
 #define VIRTIO_NET_MAX_TX_FRAGMENTS 4U
 #define VIRTIO_NET_FRAGMENT_BUFFER 4096U
 
-/* Everything that belongs to one receive/transmit pair.
- *
- * This was eighteen fields spread through the driver, which was correct while
- * there could only ever be one pair of them. `VIRTIO_NET_F_MQ` makes that
- * false: a device may offer several, and a driver that services one while the
- * device delivers on all of them loses every packet that lands on a queue
- * nobody is reading. Gathering the state into a pair is the first half of
- * E4 -- buffers and servicing for N pairs -- and has to come before asking a
- * device to use more than one, because a device told to use four pairs will
- * deliver on four whether or not anything is listening. */
-typedef struct virtio_net_queue_pair {
-  virtq_desc_t *rx_desc;
-  virtq_avail_t *rx_avail;
-  virtq_used_t *rx_used;
-  virtq_desc_t *tx_desc;
-  virtq_avail_t *tx_avail;
-  virtq_used_t *tx_used;
-  uint8_t *rx_packet;
-  uint8_t *tx_packet;
-  uint16_t rx_avail_idx;
-  uint16_t rx_last_used;
-  uint16_t tx_avail_idx;
-  uint16_t tx_last_used;
-  xaios_spinlock_t tx_lock;
-  uint8_t *rx_bufs[VIRTIO_NET_PERSISTENT_RX_DESCS];
-  virtq_desc_t *rx_indirect[VIRTIO_NET_PERSISTENT_RX_DESCS];
-  uint8_t *rx_pages[VIRTIO_NET_PERSISTENT_RX_DESCS][VIRTIO_NET_RX_PAGES];
-  uint32_t rx_chained;
-  uint8_t *tx_bufs[VIRTIO_NET_PERSISTENT_TX_DESCS];
-  virtq_desc_t *tx_indirect[VIRTIO_NET_PERSISTENT_TX_DESCS];
-} virtio_net_queue_pair_t;
-
-typedef struct virtio_net_driver {
-  virtio_mmio_device_t device;
-  /* persistent mode state */
-  uint32_t persistent;
-  uint64_t interrupt_count;
-  uint64_t tx_completion_count;
-  uint32_t event_idx;
-  uint32_t indirect_desc;
-  uint32_t large_rx;
-  uint32_t device_present;
-  uint64_t scatter_gather_submissions;
-  uint64_t copy_fallbacks;
-  uint32_t multiqueue;
-  /* Whether the device accepted VIRTIO_NET_F_RSS. Separate from multiqueue:
-     a device can offer several pairs and no hashing at all. */
-  uint32_t rss;
-  /* What the device said it can hash on, what it will let the indirection
-     table and the key grow to, and what was finally asked for. Read from the
-     device configuration rather than assumed: a device is entitled to support
-     only some hash types, and a driver naming one it does not have is asking
-     for a refusal. The last of the four is what the gate quotes. */
-  uint32_t rss_supported_hash_types;
-  uint32_t rss_max_table_entries;
-  uint32_t rss_max_key_size;
-  uint32_t rss_hash_types;
-  uint32_t max_queue_pairs;
-  /* How many pairs are set up and serviced. Receive polls all of them round
-     robin; transmit picks one per CPU. The device may advertise more than
-     were successfully brought up, which is why this is the count that was
-     achieved rather than the count that was offered. */
-  uint32_t active_pairs;
-  /* Which pairs have actually carried a frame. A driver that selects a pair
-     per CPU and a driver that always picks zero are indistinguishable from
-     the outside unless this is counted, and "it should fan out" is not
-     evidence that it did. */
-  uint64_t tx_frames_by_pair[VIRTIO_NET_MAX_QUEUE_PAIRS];
-  uint32_t tx_fanout_reported;
-  /* How many pairs had carried a frame when the last line was printed. */
-  uint32_t tx_fanout_pairs_reported;
-  /* The same count for the direction the device chooses.
-   *
-   * Transmit fanning out proves the driver picks a queue; it says nothing
-   * about steering, because the driver picked. Receive is the direction RSS
-   * governs: the device hashes the frame and names the queue, and the only
-   * way to know it did is to count what arrived where. A gate that checks
-   * "four queues exist" would pass without a single frame having been
-   * steered, so this is the number that has to be reported. */
-  uint64_t rx_frames_by_pair[VIRTIO_NET_MAX_QUEUE_PAIRS];
-  uint64_t rx_frames_total;
-  /* When the next distribution line is due. Doubling the threshold keeps a
-     busy link from filling the console while still ending on a line whose
-     counts are large enough to mean something. */
-  uint64_t rx_report_at;
-  /* Where the next receive poll starts, so no pair starves another. Receive
-     has no CPU affinity to follow -- the device chooses which queue a frame
-     lands on -- so a cursor is right here where it would be wrong for
-     transmit. */
-  uint32_t rx_cursor;
-  /* The control queue, when the device has one. It is not a pair: there is a
-     single one, and it sits after the last pair the device advertises. */
-  virtq_desc_t *ctrl_desc;
-  virtq_avail_t *ctrl_avail;
-  virtq_used_t *ctrl_used;
-  uint8_t *ctrl_buffer;
-  uint16_t ctrl_avail_idx;
-  uint16_t ctrl_last_used;
-  uint32_t ctrl_ready;
-  uint32_t ctrl_queue_index;
-  virtio_net_queue_pair_t pairs[VIRTIO_NET_MAX_QUEUE_PAIRS];
-} virtio_net_driver_t;
-
 static virtio_net_driver_t *g_net;
+
+/* Read by virtio_net_selftest.c, which reaches the driver through this.
+   The pointer's value is copied out; the variable itself stays private. */
+virtio_net_driver_t *virtio_net_primary_driver(void) { return g_net; }
 
 static uint16_t read_be16(const uint8_t *value) {
   return (uint16_t)(((uint16_t)value[0] << 8U) | value[1]);
@@ -309,24 +183,11 @@ static void virtio_net_interrupt(uint32_t intid, void *context) {
   virtio_transport_ack_interrupts(&driver->device);
 }
 
-static void bytes_zero(void *buffer, uint64_t size) {
+void virtio_net_bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
   for (uint64_t i = 0; i < size; ++i) {
     bytes[i] = 0;
   }
-}
-
-static void put_be16(uint8_t *dst, uint16_t value) {
-  dst[0] = (uint8_t)(value >> 8U);
-  dst[1] = (uint8_t)value;
-}
-
-static uint64_t dma_address(const void *ptr) {
-  uint64_t physical = 0;
-  uint32_t flags = 0;
-  kassert(vmm_translate((uint64_t)(uintptr_t)ptr, &physical, &flags) == XAIOS_OK);
-  kassert((flags & XAIOS_VMM_PRESENT) != 0);
-  return physical;
 }
 
 static int dma_range(const void *ptr, uint64_t length, uint64_t *physical) {
@@ -346,10 +207,6 @@ static int dma_range(const void *ptr, uint64_t length, uint64_t *physical) {
   }
   *physical = first;
   return 1;
-}
-
-static uint16_t get_be16(const uint8_t *src) {
-  return (uint16_t)(((uint16_t)src[0] << 8U) | src[1]);
 }
 
 /* One pair's rings and scratch buffers. Pair zero is allocated with the
@@ -392,7 +249,7 @@ static xaios_status_t allocate_pair(uint32_t index) {
   return XAIOS_OK;
 }
 
-static xaios_status_t allocate_driver(void) {
+xaios_status_t virtio_net_allocate_driver(void) {
   if (g_net != 0) {
     return XAIOS_OK;
   }
@@ -404,13 +261,13 @@ static xaios_status_t allocate_driver(void) {
   return allocate_pair(0U);
 }
 
-static uint32_t rx_buffer_bytes(const virtio_net_driver_t *driver) {
+uint32_t virtio_net_rx_buffer_bytes(const virtio_net_driver_t *driver) {
   return driver != 0 && driver->large_rx != 0U
              ? VIRTIO_NET_GSO_RX_BUFFER
              : VIRTIO_NET_HDR_SIZE + VIRTIO_NET_MAX_FRAME;
 }
 
-static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
+xaios_status_t virtio_net_negotiate_features(virtio_net_driver_t *driver) {
   /* Ask for the smallest useful set first. A device is entitled to refuse to
      run on a subset of what it offers, and Virtualization.framework's does:
      it declines the address alone, declines it with the ring features, and
@@ -532,204 +389,11 @@ static xaios_status_t negotiate_net_features(virtio_net_driver_t *driver) {
     if (driver->large_rx != 0U) {
       klog("virtio-net: guest offload negotiated; receive buffers hold %u "
            "bytes\n",
-           rx_buffer_bytes(driver));
+           virtio_net_rx_buffer_bytes(driver));
     }
     return XAIOS_OK;
   }
   return XAIOS_ERR_IO;
-}
-
-static void build_arp_request(uint8_t *packet, uint64_t *packet_len) {
-  static const uint8_t src_ip[4] = {10, 0, 2, 15};
-  static const uint8_t target_ip[4] = {10, 0, 2, 2};
-  uint8_t src_mac[6];
-  uint8_t *frame = packet + VIRTIO_NET_HDR_SIZE;
-
-  kassert(virtio_net_get_mac(src_mac) == XAIOS_OK);
-  bytes_zero(packet, VIRTIO_NET_HDR_SIZE + 42U);
-  for (uint32_t i = 0; i < 6; ++i) {
-    frame[i] = 0xff;
-    frame[6 + i] = src_mac[i];
-  }
-  put_be16(frame + 12, 0x0806);
-  put_be16(frame + 14, 1);
-  put_be16(frame + 16, 0x0800);
-  frame[18] = 6;
-  frame[19] = 4;
-  put_be16(frame + 20, 1);
-  for (uint32_t i = 0; i < 6; ++i) {
-    frame[22 + i] = src_mac[i];
-  }
-  for (uint32_t i = 0; i < 4; ++i) {
-    frame[28 + i] = src_ip[i];
-    frame[38 + i] = target_ip[i];
-  }
-  *packet_len = VIRTIO_NET_HDR_SIZE + 42U;
-}
-
-static int is_expected_arp_reply(const uint8_t *packet, uint32_t len) {
-  if (len < VIRTIO_NET_HDR_SIZE + 42U) {
-    return 0;
-  }
-
-  const uint8_t *frame = packet + VIRTIO_NET_HDR_SIZE;
-  if (get_be16(frame + 12) != 0x0806) {
-    return 0;
-  }
-  if (get_be16(frame + 20) != 2) {
-    return 0;
-  }
-  if (frame[28] != 10 || frame[29] != 0 || frame[30] != 2 || frame[31] != 2) {
-    return 0;
-  }
-  if (frame[38] != 10 || frame[39] != 0 || frame[40] != 2 || frame[41] != 15) {
-    return 0;
-  }
-
-  return 1;
-}
-
-static void malformed_packet_self_test(void) {
-  uint8_t packet[52];
-  uint64_t len = 0;
-  build_arp_request(packet, &len);
-  kassert(is_expected_arp_reply(packet, 8) == 0);
-  put_be16(packet + VIRTIO_NET_HDR_SIZE + 12U, 0x0800);
-  kassert(is_expected_arp_reply(packet, (uint32_t)len) == 0);
-  klog("virtio-net: malformed packet/drop self-test passed\n");
-}
-
-
-void virtio_net_self_test(void) {
-  kassert(allocate_driver() == XAIOS_OK);
-  xaios_status_t status = virtio_transport_find(
-      VIRTIO_DEVICE_NET, "virtio-net", &g_net->device);
-  if (status == XAIOS_ERR_NOT_FOUND) {
-    klog("virtio-net: self-test skipped no VirtIO network device\n");
-    return;
-  }
-  kassert(status == XAIOS_OK);
-  g_net->device_present = 1U;
-  /* Feature negotiation is the device's decision, not ours. A device that
-     refuses the set this driver needs must leave the machine without
-     networking, not halt it: the same posture already taken when no device
-     is present at all. */
-  if (negotiate_net_features(g_net) != XAIOS_OK) {
-    g_net->device_present = 0U;
-    klog("virtio-net: self-test skipped device refused required features\n");
-    return;
-  }
-
-  bytes_zero(g_net->pairs[0].rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->pairs[0].rx_avail, sizeof(*g_net->pairs[0].rx_avail));
-  bytes_zero(g_net->pairs[0].rx_used, sizeof(*g_net->pairs[0].rx_used));
-  bytes_zero(g_net->pairs[0].tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->pairs[0].tx_avail, sizeof(*g_net->pairs[0].tx_avail));
-  bytes_zero(g_net->pairs[0].tx_used, sizeof(*g_net->pairs[0].tx_used));
-  if (g_net->event_idx != 0U) {
-    g_net->pairs[0].rx_avail->used_event = 0U;
-    g_net->pairs[0].tx_avail->used_event = 0U;
-  }
-  bytes_zero(g_net->pairs[0].rx_packet, rx_buffer_bytes(g_net));
-  bytes_zero(g_net->pairs[0].tx_packet, 128);
-
-  kassert(virtio_transport_setup_queue(&g_net->device, 0, VIRTQ_SIZE,
-                                       g_net->pairs[0].rx_desc, g_net->pairs[0].rx_avail,
-                                       g_net->pairs[0].rx_used) == XAIOS_OK);
-  kassert(virtio_transport_setup_queue(&g_net->device, 1, VIRTQ_SIZE,
-                                       g_net->pairs[0].tx_desc, g_net->pairs[0].tx_avail,
-                                       g_net->pairs[0].tx_used) == XAIOS_OK);
-  virtio_transport_set_driver_ok(&g_net->device);
-
-  g_net->pairs[0].rx_desc[0].addr = dma_address(g_net->pairs[0].rx_packet);
-  g_net->pairs[0].rx_desc[0].len = rx_buffer_bytes(g_net);
-  g_net->pairs[0].rx_desc[0].flags = VRING_DESC_F_WRITE;
-  g_net->pairs[0].rx_avail->ring[0] = 0;
-  virtio_mmio_barrier();
-  g_net->pairs[0].rx_avail->idx = 1;
-  virtio_transport_notify(&g_net->device, 0);
-
-  uint64_t tx_len = 0;
-  build_arp_request(g_net->pairs[0].tx_packet, &tx_len);
-  if (g_net->indirect_desc != 0U) {
-    virtq_desc_t *indirect = g_net->pairs[0].tx_indirect[0];
-    indirect[0].addr = dma_address(g_net->pairs[0].tx_packet);
-    indirect[0].len = VIRTIO_NET_HDR_SIZE;
-    indirect[0].flags = VRING_DESC_F_NEXT;
-    indirect[0].next = 1U;
-    indirect[1].addr = dma_address(g_net->pairs[0].tx_packet + VIRTIO_NET_HDR_SIZE);
-    indirect[1].len = 21U;
-    indirect[1].flags = VRING_DESC_F_NEXT;
-    indirect[1].next = 2U;
-    indirect[2].addr =
-        dma_address(g_net->pairs[0].tx_packet + VIRTIO_NET_HDR_SIZE + 21U);
-    indirect[2].len = 21U;
-    indirect[2].flags = 0U;
-    indirect[2].next = 0U;
-    g_net->pairs[0].tx_desc[0].addr = dma_address(indirect);
-    g_net->pairs[0].tx_desc[0].len = 3U * sizeof(virtq_desc_t);
-    g_net->pairs[0].tx_desc[0].flags = VRING_DESC_F_INDIRECT;
-  } else {
-    g_net->pairs[0].tx_desc[0].addr = dma_address(g_net->pairs[0].tx_packet);
-    g_net->pairs[0].tx_desc[0].len = (uint32_t)tx_len;
-    g_net->pairs[0].tx_desc[0].flags = 0U;
-  }
-  g_net->pairs[0].tx_avail->ring[0] = 0;
-  virtio_mmio_barrier();
-  g_net->pairs[0].tx_avail->idx = 1;
-  virtio_transport_notify(&g_net->device, 1);
-
-  /* Whether a transmit completes inside a fixed window is the device's
-     business and the host's, not a kernel invariant. Asserting on it halted a
-     machine outright when this ran on a loaded host and the completion arrived
-     late -- the posture feature negotiation above already rejects for exactly
-     this reason. Report it and leave the path unvalidated instead, and go on
-     to reset the device either way, because the real driver initialises after
-     this and needs the queues put back. */
-  xaios_status_t tx_status =
-      virtio_transport_wait_used_notifying(&g_net->device, 1U, &g_net->pairs[0].tx_used->idx, 1);
-  xaios_status_t rx_status =
-      tx_status == XAIOS_OK
-          ? virtio_transport_wait_used_notifying(&g_net->device, 0U, &g_net->pairs[0].rx_used->idx, 1)
-          : XAIOS_ERR_IO;
-  virtio_transport_ack_interrupts(&g_net->device);
-
-  if (tx_status != XAIOS_OK) {
-    /* V-10: this happens on roughly one boot in twenty-five here and nobody
-       knows why yet. Five seconds is far too long for a merely slow device,
-       so record enough to tell the candidates apart the next time it lands:
-       whether the device gave up (status bit 6, DEVICE_NEEDS_RESET), whether
-       it ever consumed what was offered, and where both rings stood. */
-    klog("virtio-net: transmit completion did not arrive; TX/RX integration "
-         "not asserted\n");
-    klog("virtio-net: V-10 tx_avail=%u tx_used=%u rx_avail=%u rx_used=%u "
-         "device_status=0x%x event_idx=%u indirect=%u\n",
-         g_net->pairs[0].tx_avail->idx, g_net->pairs[0].tx_used->idx, g_net->pairs[0].rx_avail->idx,
-         g_net->pairs[0].rx_used->idx,
-         virtio_transport_device_status(&g_net->device), g_net->event_idx,
-         g_net->indirect_desc);
-  } else if (rx_status == XAIOS_OK) {
-    uint32_t rx_len = g_net->pairs[0].rx_used->ring[0].len;
-    /* The request went to QEMU user-mode networking's gateway. Any other
-       host answers from its own subnet, so a reply that does not match is
-       evidence of a different network rather than of a broken driver. */
-    if (is_expected_arp_reply(g_net->pairs[0].rx_packet, rx_len)) {
-      klog("virtio-net: host arp reply validated len=%u from=10.0.2.2\n",
-           rx_len);
-    } else {
-      klog("virtio-net: arp reply from a different network len=%u; RX "
-           "integration not asserted\n",
-           rx_len);
-    }
-  } else {
-    klog("virtio-net: host arp reply unavailable; RX integration not asserted\n");
-  }
-  malformed_packet_self_test();
-  virtio_transport_reset(&g_net->device);
-  klog("virtio-net: queue/tx/parser/reset self-test passed event_idx=%u "
-       "indirect_sg=%u tx_completed=%u\n",
-       g_net->event_idx, g_net->indirect_desc,
-       tx_status == XAIOS_OK ? 1U : 0U);
 }
 
 static uint64_t net_dma_address(const void *ptr) {
@@ -952,12 +616,12 @@ static xaios_status_t bring_up_pair(uint32_t index) {
   if (status != XAIOS_OK) return status;
   virtio_net_queue_pair_t *pair = &g_net->pairs[index];
 
-  bytes_zero(pair->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(pair->rx_avail, sizeof(*pair->rx_avail));
-  bytes_zero(pair->rx_used, sizeof(*pair->rx_used));
-  bytes_zero(pair->tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(pair->tx_avail, sizeof(*pair->tx_avail));
-  bytes_zero(pair->tx_used, sizeof(*pair->tx_used));
+  virtio_net_bytes_zero(pair->rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  virtio_net_bytes_zero(pair->rx_avail, sizeof(*pair->rx_avail));
+  virtio_net_bytes_zero(pair->rx_used, sizeof(*pair->rx_used));
+  virtio_net_bytes_zero(pair->tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  virtio_net_bytes_zero(pair->tx_avail, sizeof(*pair->tx_avail));
+  virtio_net_bytes_zero(pair->tx_used, sizeof(*pair->tx_used));
   if (g_net->event_idx != 0U) {
     pair->rx_avail->used_event = 0U;
     pair->tx_avail->used_event = 0U;
@@ -982,14 +646,14 @@ static xaios_status_t bring_up_pair(uint32_t index) {
 
   for (uint32_t i = 0; i < VIRTIO_NET_PERSISTENT_RX_DESCS; ++i) {
     pair->rx_bufs[i] =
-        (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net), VIRTIO_DMA_ALIGNMENT);
+        (uint8_t *)kheap_calloc(virtio_net_rx_buffer_bytes(g_net), VIRTIO_DMA_ALIGNMENT);
     if (pair->rx_bufs[i] == 0) {
       klog("virtio-net-persist: pair %u receive buffer %u unavailable\n",
            index, i);
       return XAIOS_ERR_NO_MEMORY;
     }
     pair->rx_desc[i].addr = net_dma_address(pair->rx_bufs[i]);
-    pair->rx_desc[i].len = rx_buffer_bytes(g_net);
+    pair->rx_desc[i].len = virtio_net_rx_buffer_bytes(g_net);
     pair->rx_desc[i].flags = VRING_DESC_F_WRITE;
     pair->rx_avail->ring[i] = (uint16_t)i;
   }
@@ -1014,7 +678,7 @@ static xaios_status_t bring_up_pair(uint32_t index) {
 }
 
 xaios_status_t virtio_net_init_persistent(void) {
-  xaios_status_t status = allocate_driver();
+  xaios_status_t status = virtio_net_allocate_driver();
   if (status != XAIOS_OK) return status;
 
   if (g_net->persistent != 0) {
@@ -1028,19 +692,19 @@ xaios_status_t virtio_net_init_persistent(void) {
     return status;
   }
   g_net->device_present = 1U;
-  status = negotiate_net_features(g_net);
+  status = virtio_net_negotiate_features(g_net);
   if (status != XAIOS_OK) {
     klog("virtio-net-persist: feature negotiation failed status=%d\n",
          (int)status);
     return status;
   }
 
-  bytes_zero(g_net->pairs[0].rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->pairs[0].rx_avail, sizeof(*g_net->pairs[0].rx_avail));
-  bytes_zero(g_net->pairs[0].rx_used, sizeof(*g_net->pairs[0].rx_used));
-  bytes_zero(g_net->pairs[0].tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
-  bytes_zero(g_net->pairs[0].tx_avail, sizeof(*g_net->pairs[0].tx_avail));
-  bytes_zero(g_net->pairs[0].tx_used, sizeof(*g_net->pairs[0].tx_used));
+  virtio_net_bytes_zero(g_net->pairs[0].rx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  virtio_net_bytes_zero(g_net->pairs[0].rx_avail, sizeof(*g_net->pairs[0].rx_avail));
+  virtio_net_bytes_zero(g_net->pairs[0].rx_used, sizeof(*g_net->pairs[0].rx_used));
+  virtio_net_bytes_zero(g_net->pairs[0].tx_desc, sizeof(virtq_desc_t) * VIRTQ_SIZE);
+  virtio_net_bytes_zero(g_net->pairs[0].tx_avail, sizeof(*g_net->pairs[0].tx_avail));
+  virtio_net_bytes_zero(g_net->pairs[0].tx_used, sizeof(*g_net->pairs[0].tx_used));
   if (g_net->event_idx != 0U) {
     g_net->pairs[0].rx_avail->used_event = 0U;
     g_net->pairs[0].tx_avail->used_event = 0U;
@@ -1111,15 +775,15 @@ xaios_status_t virtio_net_init_persistent(void) {
           (uint32_t)(sizeof(virtq_desc_t) * VIRTIO_NET_RX_PAGES);
       g_net->pairs[0].rx_desc[i].flags = VRING_DESC_F_INDIRECT;
     } else {
-      g_net->pairs[0].rx_bufs[i] = (uint8_t *)kheap_calloc(rx_buffer_bytes(g_net),
+      g_net->pairs[0].rx_bufs[i] = (uint8_t *)kheap_calloc(virtio_net_rx_buffer_bytes(g_net),
                                                   VIRTIO_DMA_ALIGNMENT);
       if (g_net->pairs[0].rx_bufs[i] == 0) {
         klog("virtio-net-persist: receive buffer %u of %u bytes unavailable\n",
-             i, rx_buffer_bytes(g_net));
+             i, virtio_net_rx_buffer_bytes(g_net));
         return XAIOS_ERR_NO_MEMORY;
       }
       g_net->pairs[0].rx_desc[i].addr = net_dma_address(g_net->pairs[0].rx_bufs[i]);
-      g_net->pairs[0].rx_desc[i].len = rx_buffer_bytes(g_net);
+      g_net->pairs[0].rx_desc[i].len = virtio_net_rx_buffer_bytes(g_net);
       g_net->pairs[0].rx_desc[i].flags = VRING_DESC_F_WRITE;
     }
     g_net->pairs[0].rx_avail->ring[i] = (uint16_t)i;
@@ -1285,7 +949,7 @@ static xaios_status_t tx_submit_vectors(const xaios_net_iovec_t *vectors,
   }
   uint16_t desc_idx =
       pair->tx_avail_idx % VIRTIO_NET_PERSISTENT_TX_DESCS;
-  bytes_zero(pair->tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
+  virtio_net_bytes_zero(pair->tx_bufs[desc_idx], VIRTIO_NET_HDR_SIZE);
 
   uint64_t fragment_physical[VIRTIO_NET_MAX_TX_FRAGMENTS];
   uint32_t direct = allow_direct != 0U && g_net->indirect_desc != 0U;
@@ -1624,7 +1288,7 @@ static uint32_t rx_poll_pair(uint32_t index, uint8_t *buffer,
     pair->rx_desc[desc].flags = VRING_DESC_F_INDIRECT;
   } else {
     pair->rx_desc[desc].addr = net_dma_address(pair->rx_bufs[desc]);
-    pair->rx_desc[desc].len = rx_buffer_bytes(g_net);
+    pair->rx_desc[desc].len = virtio_net_rx_buffer_bytes(g_net);
     pair->rx_desc[desc].flags = VRING_DESC_F_WRITE;
   }
   pair->rx_avail->ring[pair->rx_avail_idx % VIRTQ_SIZE] = desc;

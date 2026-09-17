@@ -64,8 +64,11 @@ if [ "$WITH_CONTROL" = 1 ]; then
   compile "$ROOT/userspace/lib/control_render_system.c" "$TEMP/control-system.o"
   compile "$ROOT/userspace/lib/control_render_storage.c" "$TEMP/control-storage.o"
   compile "$ROOT/userspace/lib/control_render_ops.c" "$TEMP/control-ops.o"
+  compile "$ROOT/userspace/lib/control_render_config.c" "$TEMP/control-config.o"
+  compile "$ROOT/userspace/lib/control_request.c" "$TEMP/control-request.o"
   set -- "$@" "$TEMP/control.o" "$TEMP/control-primitives.o" "$TEMP/control-system.o" \
-    "$TEMP/control-storage.o" "$TEMP/control-ops.o"
+    "$TEMP/control-storage.o" "$TEMP/control-ops.o" "$TEMP/control-config.o" \
+    "$TEMP/control-request.o"
 fi
 set -- "$@" "$TEMP/app.o"
 mkdir -p "$(dirname "$OUTPUT")"

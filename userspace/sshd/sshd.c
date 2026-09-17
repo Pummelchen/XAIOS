@@ -1,5 +1,6 @@
 #include "sshd.h"
 #include "sshd_audit.h"
+#include "sshd_console_screen.h"
 #include "ssh_connection.h"
 #include "ssh_crypto.h"
 #include "ssh_protocol.h"
@@ -29,8 +30,6 @@ static uint32_t g_password_auth_enabled;
 
 #define SSHD_CONSOLE_SESSION_ID UINT64_C(0xfffffffffffffffe)
 #define SSHD_CONSOLE_COMMAND_MAX UINT32_C(256)
-#define SSHD_CONSOLE_OUTPUT_MAX UINT32_C(32768)
-#define SSHD_CONSOLE_WRITE_MAX UINT32_C(4096)
 
 static char g_console_command[SSHD_CONSOLE_COMMAND_MAX];
 static char g_console_output[SSHD_CONSOLE_OUTPUT_MAX];
@@ -148,31 +147,6 @@ uint32_t sshd_max_channels_per_connection(void) {
 
 uint32_t sshd_command_rate_per_minute(void) {
   return g_runtime_config.command_rate_per_minute;
-}
-
-/* The local console has no window-size protocol the way SSH does, so it is
-   asked instead: a framebuffer console knows its own geometry and reports it,
-   and anything else -- a serial line -- reports nothing and gets the
-   conservative terminal below, which renders correctly at any real width. */
-#define SSHD_CONSOLE_FALLBACK_COLUMNS 80U
-#define SSHD_CONSOLE_FALLBACK_ROWS 24U
-
-static uint32_t console_columns(void) {
-  u32 columns = 0U;
-  u32 rows = 0U;
-  if (xaios_console_size(&columns, &rows) != 0 || columns < 40U) {
-    return SSHD_CONSOLE_FALLBACK_COLUMNS;
-  }
-  return columns > 240U ? 240U : columns;
-}
-
-static uint32_t console_rows(void) {
-  u32 columns = 0U;
-  u32 rows = 0U;
-  if (xaios_console_size(&columns, &rows) != 0 || rows < 12U) {
-    return SSHD_CONSOLE_FALLBACK_ROWS;
-  }
-  return rows > 100U ? 100U : rows;
 }
 
 /* The authorized-key loader's share of the durable cost. They stay here with
@@ -406,115 +380,8 @@ static uint64_t timer_now(void) {
   return xaios_clock_nanos();
 }
 
-static int console_write_raw(const char *data, u64 size) {
-  u64 offset = 0U;
-  if (data == 0) return -1;
-  while (offset < size) {
-    u64 chunk = size - offset;
-    if (chunk > SSHD_CONSOLE_WRITE_MAX) chunk = SSHD_CONSOLE_WRITE_MAX;
-    if (xaios_console_write(data + offset, chunk) != (int)chunk) return -1;
-    offset += chunk;
-  }
-  return 0;
-}
-
-/* The session filter of the screen framework, for the local console: a
-   program on the alternate screen is run through a screen this process
-   holds, and only the cells that changed are written to the kernel's
-   terminal -- which keeps a cell cache of its own, so the two together
-   make a change cost its own width and nothing more. */
-static xaios_screen_cell_t g_console_screen_cells[2][XAIOS_SCREEN_MAX_CELLS];
-static xaios_screen_t g_console_screen;
-static uint32_t g_console_screen_held;
-static char g_console_screen_out[65536];
-static uint8_t g_console_screen_in[SSHD_CONSOLE_OUTPUT_MAX + 8U];
-static uint8_t g_console_carry[8];
-static uint32_t g_console_carry_used;
-static const uint8_t k_console_alternate_enter[8] = {0x1b, '[', '?', '1', '0', '4', '9', 'h'};
-static const uint8_t k_console_alternate_leave[8] = {0x1b, '[', '?', '1', '0', '4', '9', 'l'};
-
-static int64_t console_find_bytes(const uint8_t *data, u64 len,
-                                  const uint8_t *needle, u64 n) {
-  for (u64 i = 0U; i + n <= len; ++i) {
-    u64 k = 0U;
-    while (k < n && data[i + k] == needle[k]) ++k;
-    if (k == n) return (int64_t)i;
-  }
-  return -1;
-}
-
-static u64 console_trailing_partial_escape(const uint8_t *data, u64 len) {
-  u64 back = len < 8U ? len : 8U;
-  for (u64 i = 0U; i < back; ++i) {
-    u64 at = len - 1U - i;
-    if (data[at] == 0x1bU) {
-      if (at + 1U < len && data[at + 1U] == '[') {
-        for (u64 j = at + 2U; j < len; ++j) {
-          if (data[j] >= 0x40U && data[j] <= 0x7eU) return 0U;
-        }
-        return len - at;
-      }
-      return at + 1U == len ? 1U : 0U;
-    }
-  }
-  return 0U;
-}
-
-static int console_screen_flush(void) {
-  for (;;) {
-    uint64_t n = xaios_screen_present(&g_console_screen, g_console_screen_out,
-                                      sizeof(g_console_screen_out));
-    if (n == 0U) return 0;
-    if (console_write_raw(g_console_screen_out, n) != 0) return -1;
-    if (g_console_screen.incomplete == 0U) return 0;
-  }
-}
-
-static int console_write_bytes(const char *text, u64 size) {
-  const uint8_t *data = (const uint8_t *)text;
-  if (text == 0) return -1;
-  while (size != 0U) {
-    if (g_console_screen_held == 0U) {
-      int64_t at = console_find_bytes(data, size, k_console_alternate_enter, 8U);
-      if (at < 0) return console_write_raw((const char *)data, size);
-      u64 head = (u64)at + 8U;
-      if (console_write_raw((const char *)data, head) != 0) return -1;
-      data += head;
-      size -= head;
-      xaios_screen_init(&g_console_screen, g_console_screen_cells[0],
-                        g_console_screen_cells[1], XAIOS_SCREEN_MAX_CELLS,
-                        console_rows(), console_columns());
-      g_console_screen_held = 1U;
-      g_console_carry_used = 0U;
-      continue;
-    }
-    u64 total = g_console_carry_used + size;
-    if (total > sizeof(g_console_screen_in)) return -1;
-    for (u64 i = 0U; i < g_console_carry_used; ++i) g_console_screen_in[i] = g_console_carry[i];
-    for (u64 i = 0U; i < size; ++i) g_console_screen_in[g_console_carry_used + i] = data[i];
-    g_console_carry_used = 0U;
-    data = g_console_screen_in;
-    size = total;
-    int64_t at = console_find_bytes(data, size, k_console_alternate_leave, 8U);
-    if (at < 0) {
-      u64 keep = console_trailing_partial_escape(data, size);
-      xaios_screen_paint(&g_console_screen, (const char *)data, size - keep);
-      for (u64 i = 0U; i < keep; ++i) g_console_carry[i] = data[size - keep + i];
-      g_console_carry_used = (uint32_t)keep;
-      return console_screen_flush();
-    }
-    xaios_screen_paint(&g_console_screen, (const char *)data, (u64)at);
-    if (console_screen_flush() != 0) return -1;
-    g_console_screen_held = 0U;
-    if (console_write_raw((const char *)data + at, 8U) != 0) return -1;
-    data += (u64)at + 8U;
-    size -= (u64)at + 8U;
-  }
-  return 0;
-}
-
 static void console_write(const char *text) {
-  if (text != 0) (void)console_write_bytes(text, xaios_strlen(text));
+  if (text != 0) (void)sshd_console_write_bytes(text, xaios_strlen(text));
 }
 
 static void console_write_ipv4(uint32_t address) {
@@ -813,8 +680,8 @@ static int console_start_less(const char *command) {
          (cwd[cwd_size - 1U] == '\n' || cwd[cwd_size - 1U] == '\r')) {
     cwd[--cwd_size] = '\0';
   }
-  if (less_pager_open(&g_console_less, command, cwd, console_columns(),
-                      console_rows()) != 0) {
+  if (less_pager_open(&g_console_less, command, cwd, sshd_console_columns(),
+                      sshd_console_rows()) != 0) {
     console_write(
         "less: usage: less [-N] FILE (regular files up to 128 KiB)\n");
     return -1;
@@ -825,7 +692,7 @@ static int console_start_less(const char *command) {
     return -1;
   }
   console_write("\033[?1049h\033[?25l");
-  (void)console_write_bytes(g_console_output, frame_size);
+  (void)sshd_console_write_bytes(g_console_output, frame_size);
   return 0;
 }
 
@@ -863,7 +730,7 @@ static int console_start_nano(const char *command) {
     return -1;
   }
   console_write("\033[?1049h");
-  (void)console_write_bytes(g_console_output, frame_size);
+  (void)sshd_console_write_bytes(g_console_output, frame_size);
   return 0;
 }
 
@@ -873,7 +740,7 @@ static int console_render_pong(uint64_t now_ns) {
                        sizeof(g_console_output), &frame_size, now_ns) != 0 ||
       frame_size == 0U)
     return -1;
-  return console_write_bytes(g_console_output, frame_size);
+  return sshd_console_write_bytes(g_console_output, frame_size);
 }
 
 static uint32_t console_boot_ui_state(void) {
@@ -957,8 +824,8 @@ static void console_child_release(int cancel) {
 static int console_start_child(char *command, uint32_t capacity) {
   char cwd[256];
   u64 cwd_size = 0U;
-  (void)ssh_terminal_promote_command(command, capacity, console_columns(),
-                                     console_rows());
+  (void)ssh_terminal_promote_command(command, capacity, sshd_console_columns(),
+                                     sshd_console_rows());
   if (xaios_remote_login_session(SSHD_CONSOLE_SESSION_ID, console_username(),
                                  "pwd", cwd, sizeof(cwd), &cwd_size) != 0 ||
       cwd_size == 0U || cwd_size >= sizeof(cwd)) {
@@ -1020,7 +887,7 @@ static void console_service_child(void) {
       uint32_t frame_length = SSH_CHILD_IPC_HEADER_SIZE + length;
       if (g_console_child_used < frame_length) break;
       if (type == SSH_CHILD_IPC_OUTPUT) {
-        (void)console_write_bytes(
+        (void)sshd_console_write_bytes(
             (const char *)g_console_child_rx + SSH_CHILD_IPC_HEADER_SIZE,
             length);
       }
@@ -1130,15 +997,15 @@ static void console_execute_command(void) {
        rather than falling back to their plain snapshot form here. */
     (void)ssh_terminal_promote_command(g_console_command,
                                        sizeof(g_console_command),
-                                       console_columns(),
-                                       console_rows());
+                                       sshd_console_columns(),
+                                       sshd_console_rows());
     xaios_memzero(g_console_output, sizeof(g_console_output));
     int status = xaios_remote_login_session(
         SSHD_CONSOLE_SESSION_ID, console_username(), g_console_command,
         g_console_output,
         sizeof(g_console_output), &output_bytes);
     if (output_bytes != 0U) {
-      (void)console_write_bytes(g_console_output, output_bytes);
+      (void)sshd_console_write_bytes(g_console_output, output_bytes);
       if (g_console_output[output_bytes - 1U] != '\n') console_write("\n");
     }
     if (status < 0 && output_bytes == 0U) {
@@ -1262,7 +1129,7 @@ static void console_tick(void) {
       } else if (nano_editor_render(&g_console_nano, g_console_output,
                                     sizeof(g_console_output),
                                     &frame_size) == 0) {
-        (void)console_write_bytes(g_console_output, frame_size);
+        (void)sshd_console_write_bytes(g_console_output, frame_size);
       }
       continue;
     }
@@ -1278,7 +1145,7 @@ static void console_tick(void) {
       } else if (less_pager_render(&g_console_less, g_console_output,
                                    sizeof(g_console_output),
                                    &frame_size) == 0) {
-        (void)console_write_bytes(g_console_output, frame_size);
+        (void)sshd_console_write_bytes(g_console_output, frame_size);
       }
       continue;
     }

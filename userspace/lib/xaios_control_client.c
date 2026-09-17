@@ -1,108 +1,10 @@
 #include <xaios_control_client.h>
 
 #include "xaios_control_internal.h"
-
-typedef struct xaios_control_options {
-  u16 operation;
-  u32 json;
-  u32 node_id;
-  u64 timeout_ms;
-  u64 operation_id;
-  u64 since_cursor;
-  u32 since_set;
-  u32 limit;
-  u32 follow;
-  u32 assigned_role;
-  u32 principal_role;
-  u32 storage_partition_type;
-  u32 dry_run;
-  u32 verify_data;
-  u32 read_only;
-  u32 checksum_data;
-  u32 trim_all_free;
-  u64 size_bytes;
-  u64 chunk_size;
-  u64 block_size;
-  u64 trim_offset;
-  u64 trim_length;
-  char component[XAIOS_CONTROL_LOG_COMPONENT_MAX];
-  char argument[XAIOS_CONTROL_PATH_MAX];
-  char replica[XAIOS_CONTROL_PATH_MAX];
-  /* The EFI System Partition an install copies from. Named rather
-     than inferred: a machine can have more than one. */
-  char install_source[XAIOS_CONTROL_PATH_MAX];
-  char replica_package_id[65];
-  char storage_name[37];
-  char confirmation[37];
-  char mount_path[XAIOS_CONTROL_STORAGE_MOUNT_MAX];
-  char target_principal[XAIOS_ADMIN_PRINCIPAL_MAX];
-  char principal[XAIOS_ADMIN_PRINCIPAL_MAX];
-  unsigned char model_uuid[16];
-  unsigned char package_id[32];
-  unsigned char signer_public_key[32];
-  unsigned char signature[64];
-  unsigned char source_revision[32];
-  char architecture_id[33];
-  char target_id[33];
-} xaios_control_options_t;
+#include "control_render_config_internal.h"
+#include "control_request_internal.h"
 
 static u64 g_next_request_id = 1ULL;
-
-
-static const char *password_auth_name(u32 mode) {
-  return mode == XAIOS_ADMIN_PASSWORD_DEVELOPMENT ? "development"
-                                                   : "disabled";
-}
-
-static int render_config(const void *payload, int json, char *output,
-                         u64 capacity, u64 *offset, u64 request_id) {
-  xaios_control_config_payload_user_t value;
-  bytes_copy(&value, payload, sizeof(value));
-  if (json != 0) {
-    int first = 1;
-    return json_envelope_begin(output, capacity, offset, request_id) ||
-           json_field_u64(output, capacity, offset, &first, "generation",
-                          value.config.generation) ||
-           json_field_u64(output, capacity, offset, &first,
-                          "max_connections", value.config.max_connections) ||
-           json_field_u64(output, capacity, offset, &first,
-                          "max_channels_per_connection",
-                          value.config.max_channels_per_connection) ||
-           json_field_u64(output, capacity, offset, &first,
-                          "max_auth_attempts",
-                          value.config.max_auth_attempts) ||
-           json_field_u64(output, capacity, offset, &first,
-                          "command_rate_per_minute",
-                          value.config.command_rate_per_minute) ||
-           json_field_string(output, capacity, offset, &first,
-                             "password_auth",
-                             password_auth_name(value.config.password_auth)) ||
-           json_field_u64(output, capacity, offset, &first, "change_mask",
-                          value.change_mask) ||
-           json_field_u64(output, capacity, offset, &first, "validated",
-                          value.validated) ||
-           json_envelope_end(output, capacity, offset);
-  }
-  return human_field_u64(output, capacity, offset, "generation",
-                         value.config.generation) ||
-         human_field_u64(output, capacity, offset, "max_connections",
-                         value.config.max_connections) ||
-         human_field_u64(output, capacity, offset,
-                         "max_channels_per_connection",
-                         value.config.max_channels_per_connection) ||
-         human_field_u64(output, capacity, offset, "max_auth_attempts",
-                         value.config.max_auth_attempts) ||
-         human_field_u64(output, capacity, offset, "command_rate_per_minute",
-                         value.config.command_rate_per_minute) ||
-         append_text(output, capacity, offset, "password_auth=") ||
-         append_text(output, capacity, offset,
-                     password_auth_name(value.config.password_auth)) ||
-         append_char(output, capacity, offset, '\n') ||
-         human_field_u64(output, capacity, offset, "change_mask",
-                         value.change_mask) ||
-         human_field_u64(output, capacity, offset, "validated",
-                         value.validated);
-}
 
 int fixed_string_valid(const char *text, u64 capacity) {
   if (text == 0 || capacity == 0ULL || text[capacity - 1ULL] != '\0') {
@@ -129,194 +31,6 @@ int append_quoted_hex(char *output, u64 capacity, u64 *offset,
   return append_char(output, capacity, offset, '"') ||
          append_hex(output, capacity, offset, bytes, size) ||
          append_char(output, capacity, offset, '"');
-}
-
-static int render_auth_keys(const void *payload, u64 payload_length, int json,
-                            char *output, u64 capacity, u64 *offset,
-                            u64 request_id) {
-  xaios_control_auth_keys_payload_user_t metadata;
-  if (payload_length < sizeof(metadata)) return -1;
-  bytes_copy(&metadata, payload, sizeof(metadata));
-  if (metadata.key_count > XAIOS_ADMIN_MAX_KEYS ||
-      payload_length != sizeof(metadata) +
-                            (u64)metadata.key_count *
-                                sizeof(xaios_admin_key_view_user_t)) {
-    return -1;
-  }
-  const xaios_admin_key_view_user_t *keys =
-      (const xaios_admin_key_view_user_t *)((const unsigned char *)payload +
-                                             sizeof(metadata));
-  for (u32 i = 0U; i < metadata.key_count; ++i) {
-    if (!fixed_string_valid(keys[i].principal, sizeof(keys[i].principal)) ||
-        keys[i].role < XAIOS_CONTROL_ROLE_OBSERVER ||
-        keys[i].role > XAIOS_CONTROL_ROLE_ADMIN || keys[i].reserved != 0U) {
-      return -1;
-    }
-  }
-  if (json != 0) {
-    int first = 1;
-    if (json_envelope_begin(output, capacity, offset, request_id) != 0 ||
-        json_field_u64(output, capacity, offset, &first, "generation",
-                       metadata.generation) != 0 ||
-        json_field_u64(output, capacity, offset, &first, "key_count",
-                       metadata.key_count) != 0 ||
-        json_field_u64(output, capacity, offset, &first, "revoked_count",
-                       metadata.revoked_count) != 0 ||
-        json_field_prefix(output, capacity, offset, &first, "keys") != 0 ||
-        append_char(output, capacity, offset, '[') != 0) {
-      return -1;
-    }
-    for (u32 i = 0U; i < metadata.key_count; ++i) {
-      if ((i != 0U && append_char(output, capacity, offset, ',') != 0) ||
-          append_text(output, capacity, offset, "{\"fingerprint\":") != 0 ||
-          append_quoted_hex(output, capacity, offset, keys[i].fingerprint,
-                            sizeof(keys[i].fingerprint)) != 0 ||
-          append_text(output, capacity, offset, ",\"principal\":") != 0 ||
-          append_json_string(output, capacity, offset, keys[i].principal,
-                             xaios_strlen(keys[i].principal)) != 0 ||
-          append_text(output, capacity, offset, ",\"role\":") != 0 ||
-          append_json_string(output, capacity, offset, role_name(keys[i].role),
-                             xaios_strlen(role_name(keys[i].role))) != 0 ||
-          append_char(output, capacity, offset, '}') != 0) {
-        return -1;
-      }
-    }
-    return append_char(output, capacity, offset, ']') ||
-           json_envelope_end(output, capacity, offset);
-  }
-  if (human_field_u64(output, capacity, offset, "generation",
-                      metadata.generation) != 0 ||
-      human_field_u64(output, capacity, offset, "key_count",
-                      metadata.key_count) != 0 ||
-      human_field_u64(output, capacity, offset, "revoked_count",
-                      metadata.revoked_count) != 0) {
-    return -1;
-  }
-  for (u32 i = 0U; i < metadata.key_count; ++i) {
-    if (append_text(output, capacity, offset, "fingerprint=") != 0 ||
-        append_hex(output, capacity, offset, keys[i].fingerprint,
-                   sizeof(keys[i].fingerprint)) != 0 ||
-        append_text(output, capacity, offset, " principal=") != 0 ||
-        append_text(output, capacity, offset, keys[i].principal) != 0 ||
-        append_text(output, capacity, offset, " role=") != 0 ||
-        append_text(output, capacity, offset, role_name(keys[i].role)) != 0 ||
-        append_char(output, capacity, offset, '\n') != 0) {
-      return -1;
-    }
-  }
-  return 0;
-}
-
-static const char *audit_result_name(u32 result) {
-  switch (result) {
-  case 0U: return "ok";
-  case 1U: return "invalid";
-  case 2U: return "denied";
-  case 3U: return "not-found";
-  case 4U: return "replay";
-  case 5U: return "conflict";
-  case 6U: return "no-memory";
-  case 7U: return "io-error";
-  default: return "unknown";
-  }
-}
-
-static int render_audit(const void *payload, u64 payload_length, int json,
-                        char *output, u64 capacity, u64 *offset,
-                        u64 request_id) {
-  xaios_control_audit_payload_user_t metadata;
-  if (payload_length < sizeof(metadata)) return -1;
-  bytes_copy(&metadata, payload, sizeof(metadata));
-  if (metadata.record_count > 16U ||
-      payload_length != sizeof(metadata) +
-                            (u64)metadata.record_count *
-                                sizeof(xaios_admin_audit_record_user_t)) {
-    return -1;
-  }
-  const xaios_admin_audit_record_user_t *records =
-      (const xaios_admin_audit_record_user_t *)((const unsigned char *)payload +
-                                                 sizeof(metadata));
-  for (u32 i = 0U; i < metadata.record_count; ++i) {
-    if (!fixed_string_valid(records[i].principal,
-                            sizeof(records[i].principal)) ||
-        !fixed_string_valid(records[i].operation,
-                            sizeof(records[i].operation))) {
-      return -1;
-    }
-  }
-  if (json != 0) {
-    int first = 1;
-    if (json_envelope_begin(output, capacity, offset, request_id) != 0 ||
-        json_field_u64(output, capacity, offset, &first, "next_sequence",
-                       metadata.next_sequence) != 0 ||
-        json_field_u64(output, capacity, offset, &first, "latest_sequence",
-                       metadata.latest_sequence) != 0 ||
-        json_field_u64(output, capacity, offset, &first, "record_count",
-                       metadata.record_count) != 0 ||
-        json_field_prefix(output, capacity, offset, &first, "records") != 0 ||
-        append_char(output, capacity, offset, '[') != 0) {
-      return -1;
-    }
-    for (u32 i = 0U; i < metadata.record_count; ++i) {
-      const char *result = audit_result_name(records[i].result);
-      if ((i != 0U && append_char(output, capacity, offset, ',') != 0) ||
-          append_text(output, capacity, offset, "{\"sequence\":") != 0 ||
-          append_u64(output, capacity, offset, records[i].sequence) != 0 ||
-          append_text(output, capacity, offset, ",\"operation_id\":") != 0 ||
-          append_u64(output, capacity, offset, records[i].operation_id) != 0 ||
-          append_text(output, capacity, offset, ",\"principal\":") != 0 ||
-          append_json_string(output, capacity, offset, records[i].principal,
-                             xaios_strlen(records[i].principal)) != 0 ||
-          append_text(output, capacity, offset, ",\"role\":") != 0 ||
-          append_json_string(output, capacity, offset,
-                             role_name(records[i].role),
-                             xaios_strlen(role_name(records[i].role))) != 0 ||
-          append_text(output, capacity, offset, ",\"operation\":") != 0 ||
-          append_json_string(output, capacity, offset, records[i].operation,
-                             xaios_strlen(records[i].operation)) != 0 ||
-          append_text(output, capacity, offset, ",\"result\":") != 0 ||
-          append_json_string(output, capacity, offset, result,
-                             xaios_strlen(result)) != 0 ||
-          append_text(output, capacity, offset, ",\"object_hash\":") != 0 ||
-          append_quoted_hex(output, capacity, offset, records[i].object_hash,
-                            sizeof(records[i].object_hash)) != 0 ||
-          append_char(output, capacity, offset, '}') != 0) {
-        return -1;
-      }
-    }
-    return append_char(output, capacity, offset, ']') ||
-           json_envelope_end(output, capacity, offset);
-  }
-  if (human_field_u64(output, capacity, offset, "next_sequence",
-                      metadata.next_sequence) != 0 ||
-      human_field_u64(output, capacity, offset, "latest_sequence",
-                      metadata.latest_sequence) != 0 ||
-      human_field_u64(output, capacity, offset, "record_count",
-                      metadata.record_count) != 0) {
-    return -1;
-  }
-  for (u32 i = 0U; i < metadata.record_count; ++i) {
-    if (append_text(output, capacity, offset, "sequence=") != 0 ||
-        append_u64(output, capacity, offset, records[i].sequence) != 0 ||
-        append_text(output, capacity, offset, " operation_id=") != 0 ||
-        append_u64(output, capacity, offset, records[i].operation_id) != 0 ||
-        append_text(output, capacity, offset, " principal=") != 0 ||
-        append_text(output, capacity, offset, records[i].principal) != 0 ||
-        append_text(output, capacity, offset, " role=") != 0 ||
-        append_text(output, capacity, offset, role_name(records[i].role)) != 0 ||
-        append_text(output, capacity, offset, " operation=") != 0 ||
-        append_text(output, capacity, offset, records[i].operation) != 0 ||
-        append_text(output, capacity, offset, " result=") != 0 ||
-        append_text(output, capacity, offset,
-                    audit_result_name(records[i].result)) != 0 ||
-        append_text(output, capacity, offset, " object_hash=") != 0 ||
-        append_hex(output, capacity, offset, records[i].object_hash,
-                   sizeof(records[i].object_hash)) != 0 ||
-        append_char(output, capacity, offset, '\n') != 0) {
-      return -1;
-    }
-  }
-  return 0;
 }
 
 static int parse_options(const char *command, xaios_control_options_t *options,
@@ -1199,304 +913,6 @@ duplicate:
   return -1;
 }
 
-static u64 build_request(const xaios_control_options_t *options,
-                         u64 request_id, unsigned char *request) {
-  xaios_control_request_header_user_t header;
-  xaios_memzero(&header, sizeof(header));
-  header.magic = XAIOS_CONTROL_MAGIC;
-  header.version = XAIOS_CONTROL_VERSION;
-  header.header_size = (u16)sizeof(header);
-  header.operation = options->operation;
-  header.request_id = request_id;
-  header.principal_role = options->principal_role;
-  header.node_id = options->node_id;
-  header.timeout_ms = options->timeout_ms;
-  bytes_copy(request, &header, sizeof(header));
-  if (options->operation == XAIOS_CONTROL_OP_LOGS) {
-    xaios_control_log_request_payload_user_t logs;
-    xaios_memzero(&logs, sizeof(logs));
-    logs.since_cursor = options->since_cursor;
-    logs.limit = options->limit;
-    logs.follow = options->follow;
-    bytes_copy(logs.component, options->component,
-               xaios_strlen(options->component) + 1ULL);
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_LOG_REQUEST;
-    header.payload_length = sizeof(logs);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &logs, sizeof(logs));
-    return sizeof(header) + sizeof(logs);
-  }
-  if (options->operation == XAIOS_CONTROL_OP_CONFIG_VALIDATE ||
-      options->operation == XAIOS_CONTROL_OP_CONFIG_DIFF ||
-      options->operation == XAIOS_CONTROL_OP_MODEL_VERIFY ||
-      options->operation == XAIOS_CONTROL_OP_STORAGE_DEVICE_SHOW ||
-      options->operation == XAIOS_CONTROL_OP_STORAGE_FILESYSTEM_SHOW ||
-      options->operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_LIST ||
-      options->operation == XAIOS_CONTROL_OP_STORAGE_PARTITION_VERIFY) {
-    xaios_control_path_request_payload_user_t path;
-    xaios_memzero(&path, sizeof(path));
-    bytes_copy(path.path, options->argument,
-               xaios_strlen(options->argument) + 1ULL);
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_PATH_REQUEST;
-    header.payload_length = sizeof(path);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &path, sizeof(path));
-    return sizeof(header) + sizeof(path);
-  }
-  if (options->operation >=
-          XAIOS_CONTROL_OP_STORAGE_PARTITION_PLAN_CREATE &&
-      options->operation <= XAIOS_CONTROL_OP_STORAGE_PARTITION_REPAIR) {
-    xaios_control_storage_partition_request_payload_user_t storage;
-    xaios_memzero(&storage, sizeof(storage));
-    bytes_copy(storage.request.target, options->argument,
-               xaios_strlen(options->argument) + 1ULL);
-    bytes_copy(storage.request.confirmation, options->confirmation,
-               xaios_strlen(options->confirmation) + 1ULL);
-    bytes_copy(storage.request.name, options->storage_name,
-               xaios_strlen(options->storage_name) + 1ULL);
-    storage.request.size_bytes = options->size_bytes;
-    storage.request.operation_id = options->operation_id;
-    storage.request.partition_type = options->storage_partition_type;
-    bytes_copy(storage.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_PARTITION_REQUEST;
-    header.payload_length = sizeof(storage);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &storage, sizeof(storage));
-    return sizeof(header) + sizeof(storage);
-  }
-  if (options->operation >= XAIOS_CONTROL_OP_STORAGE_FORMAT_PLAN &&
-      options->operation <= XAIOS_CONTROL_OP_STORAGE_FS_RESIZE) {
-    xaios_control_storage_volume_request_payload_user_t storage;
-    xaios_memzero(&storage, sizeof(storage));
-    bytes_copy(storage.target, options->argument,
-               xaios_strlen(options->argument) + 1ULL);
-    bytes_copy(storage.confirmation, options->confirmation,
-               xaios_strlen(options->confirmation) + 1ULL);
-    bytes_copy(storage.mount_path, options->mount_path,
-               xaios_strlen(options->mount_path) + 1ULL);
-    bytes_copy(storage.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    storage.size_bytes = options->size_bytes;
-    storage.chunk_size = options->chunk_size;
-    storage.operation_id = options->operation_id;
-    storage.verify_data = options->verify_data;
-    storage.read_only = options->read_only;
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_VOLUME_REQUEST;
-    header.payload_length = sizeof(storage);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &storage, sizeof(storage));
-    return sizeof(header) + sizeof(storage);
-  }
-  if (options->operation == XAIOS_CONTROL_OP_STORAGE_INSTALL) {
-    xaios_control_storage_install_request_payload_user_t install;
-    xaios_memzero(&install, sizeof(install));
-    bytes_copy(install.request.target, options->argument,
-               xaios_strlen(options->argument) + 1ULL);
-    bytes_copy(install.request.source, options->install_source,
-               xaios_strlen(options->install_source) + 1ULL);
-    bytes_copy(install.request.confirmation, options->confirmation,
-               xaios_strlen(options->confirmation) + 1ULL);
-    bytes_copy(install.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    install.request.operation_id = options->operation_id;
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_INSTALL_REQUEST;
-    header.payload_length = sizeof(install);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &install, sizeof(install));
-    return sizeof(header) + sizeof(install);
-  }
-  if (options->operation == XAIOS_CONTROL_OP_STORAGE_REPAIR_FROM_REPLICA) {
-    xaios_control_storage_replica_repair_request_payload_user_t repair;
-    xaios_memzero(&repair, sizeof(repair));
-    bytes_copy(repair.target, options->argument,
-               xaios_strlen(options->argument) + 1ULL);
-    bytes_copy(repair.replica, options->replica,
-               xaios_strlen(options->replica) + 1ULL);
-    bytes_copy(repair.confirmation, options->confirmation,
-               xaios_strlen(options->confirmation) + 1ULL);
-    bytes_copy(repair.package_id, options->replica_package_id,
-               xaios_strlen(options->replica_package_id) + 1ULL);
-    bytes_copy(repair.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    repair.operation_id = options->operation_id;
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_REPLICA_REPAIR_REQUEST;
-    header.payload_length = sizeof(repair);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &repair, sizeof(repair));
-    return sizeof(header) + sizeof(repair);
-  }
-  if (options->operation == XAIOS_CONTROL_OP_MODEL_REGISTER) {
-    xaios_control_model_register_request_payload_user_t registration;
-    xaios_memzero(&registration, sizeof(registration));
-    registration.operation_id = options->operation_id;
-    registration.logical_size = options->size_bytes;
-    bytes_copy(registration.model_uuid, options->model_uuid,
-               sizeof(registration.model_uuid));
-    bytes_copy(registration.package_id, options->package_id,
-               sizeof(registration.package_id));
-    bytes_copy(registration.signer_public_key, options->signer_public_key,
-               sizeof(registration.signer_public_key));
-    bytes_copy(registration.signature, options->signature,
-               sizeof(registration.signature));
-    bytes_copy(registration.source_revision, options->source_revision,
-               sizeof(registration.source_revision));
-    bytes_copy(registration.architecture_id, options->architecture_id,
-               xaios_strlen(options->architecture_id) + 1ULL);
-    bytes_copy(registration.target_id, options->target_id,
-               xaios_strlen(options->target_id) + 1ULL);
-    bytes_copy(registration.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_MODEL_REGISTER_REQUEST;
-    header.payload_length = sizeof(registration);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &registration, sizeof(registration));
-    return sizeof(header) + sizeof(registration);
-  }
-  if (options->operation >= XAIOS_CONTROL_OP_STORAGE_SCRUB_START &&
-      options->operation <= XAIOS_CONTROL_OP_STORAGE_SCRUB_CANCEL) {
-    xaios_control_storage_volume_request_payload_user_t storage;
-    xaios_memzero(&storage, sizeof(storage));
-    bytes_copy(storage.target, options->argument,
-               xaios_strlen(options->argument) + 1ULL);
-    bytes_copy(storage.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    storage.operation_id = options->operation_id;
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_VOLUME_REQUEST;
-    header.payload_length = sizeof(storage);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &storage, sizeof(storage));
-    return sizeof(header) + sizeof(storage);
-  }
-  if (options->operation >= XAIOS_CONTROL_OP_STORAGE_TRIM_START &&
-      options->operation <= XAIOS_CONTROL_OP_STORAGE_TRIM_CANCEL) {
-    xaios_control_storage_trim_request_payload_user_t trim;
-    xaios_memzero(&trim, sizeof(trim));
-    bytes_copy(trim.target, options->argument,
-               xaios_strlen(options->argument) + 1ULL);
-    bytes_copy(trim.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    trim.offset = options->trim_offset;
-    trim.length = options->trim_length;
-    trim.operation_id = options->operation_id;
-    trim.dry_run = options->dry_run;
-    trim.all_free = options->trim_all_free;
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_STORAGE_TRIM_REQUEST;
-    header.payload_length = sizeof(trim);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &trim, sizeof(trim));
-    return sizeof(header) + sizeof(trim);
-  }
-  if (options->operation == XAIOS_CONTROL_OP_AUDIT_SHOW) {
-    xaios_control_audit_request_payload_user_t audit;
-    xaios_memzero(&audit, sizeof(audit));
-    audit.since_sequence = options->since_cursor;
-    audit.limit = options->limit;
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_AUDIT_REQUEST;
-    header.payload_length = sizeof(audit);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &audit, sizeof(audit));
-    return sizeof(header) + sizeof(audit);
-  }
-  if (options->operation == XAIOS_CONTROL_OP_CONFIG_APPLY ||
-      options->operation == XAIOS_CONTROL_OP_AUTH_KEY_ADD ||
-      options->operation == XAIOS_CONTROL_OP_AUTH_KEY_REMOVE ||
-      options->operation == XAIOS_CONTROL_OP_AUTH_HOST_KEY_ROTATE ||
-      options->operation == XAIOS_CONTROL_OP_MODEL_ACTIVATE ||
-      options->operation == XAIOS_CONTROL_OP_MODEL_CLEANUP) {
-    xaios_control_mutation_request_payload_user_t mutation;
-    xaios_memzero(&mutation, sizeof(mutation));
-    mutation.operation_id = options->operation_id;
-    mutation.assigned_role = options->assigned_role;
-    bytes_copy(mutation.actor, options->principal,
-               xaios_strlen(options->principal) + 1ULL);
-    if (options->argument[0] != '\0') {
-      bytes_copy(mutation.argument, options->argument,
-                 xaios_strlen(options->argument) + 1ULL);
-    }
-    if (options->target_principal[0] != '\0') {
-      bytes_copy(mutation.target_principal, options->target_principal,
-                 xaios_strlen(options->target_principal) + 1ULL);
-    }
-    header.payload_type = XAIOS_CONTROL_PAYLOAD_MUTATION_REQUEST;
-    header.payload_length = sizeof(mutation);
-    bytes_copy(request, &header, sizeof(header));
-    bytes_copy(request + sizeof(header), &mutation, sizeof(mutation));
-    return sizeof(header) + sizeof(mutation);
-  }
-  return sizeof(header);
-}
-
-static int query_once(const xaios_control_options_t *options, u64 request_id,
-                      unsigned char *response, u64 *response_size) {
-  unsigned char request[XAIOS_CONTROL_MAX_REQUEST_BYTES];
-  u64 request_size = build_request(options, request_id, request);
-  return xaios_control_query(request, request_size, response,
-                             XAIOS_CONTROL_MAX_RESPONSE_BYTES, response_size);
-}
-
-static int validate_response(const unsigned char *response, u64 response_size,
-                             u64 request_id, u16 operation,
-                             xaios_control_response_header_user_t *header) {
-  if (response_size < sizeof(*header)) {
-    return -1;
-  }
-  bytes_copy(header, response, sizeof(*header));
-  if (header->magic != XAIOS_CONTROL_MAGIC ||
-      header->version != XAIOS_CONTROL_VERSION ||
-      header->header_size != sizeof(*header) ||
-      header->operation != operation || header->flags != 0U ||
-      header->request_id != request_id ||
-      header->payload_length > response_size - sizeof(*header) ||
-      response_size != sizeof(*header) + header->payload_length) {
-    return -1;
-  }
-  return 0;
-}
-
-static int follow_logs(xaios_control_options_t *options, u64 request_id,
-                       unsigned char *response, u64 *response_size) {
-  xaios_control_response_header_user_t header;
-  xaios_control_logs_payload_user_t logs;
-  if (validate_response(response, *response_size, request_id,
-                        options->operation, &header) != 0 ||
-      header.status != XAIOS_CONTROL_STATUS_OK ||
-      header.payload_type != XAIOS_CONTROL_PAYLOAD_LOGS ||
-      header.payload_length < sizeof(logs)) {
-    return 0;
-  }
-  bytes_copy(&logs, response + sizeof(header), sizeof(logs));
-  if (options->since_set == 0U) {
-    options->since_cursor = logs.latest_cursor;
-    options->since_set = 1U;
-    logs.record_count = 0U;
-  } else if (logs.record_count != 0U) {
-    return 0;
-  }
-  u64 started = xaios_clock_nanos();
-  u64 duration_ns = options->timeout_ms * 1000000ULL;
-  u64 deadline = started + duration_ns;
-  if (deadline < started) deadline = ~0ULL;
-  while (xaios_clock_nanos() < deadline) {
-    if (query_once(options, request_id, response, response_size) != 0 ||
-        validate_response(response, *response_size, request_id,
-                          options->operation, &header) != 0 ||
-        header.status != XAIOS_CONTROL_STATUS_OK ||
-        header.payload_type != XAIOS_CONTROL_PAYLOAD_LOGS ||
-        header.payload_length < sizeof(logs)) {
-      return -1;
-    }
-    bytes_copy(&logs, response + sizeof(header), sizeof(logs));
-    if (logs.record_count != 0U) {
-      return 0;
-    }
-    options->since_cursor = logs.next_cursor;
-  }
-  logs.timed_out = 1U;
-  bytes_copy(response + sizeof(header), &logs, sizeof(logs));
-  return 0;
-}
-
 int xaios_control_is_command(const char *command) {
   static const char prefix[] = "xaiosctl";
   if (command == 0) {
@@ -1549,20 +965,20 @@ int xaios_control_run_as(const char *command, u32 principal_role,
   }
   options.principal_role = principal_role;
   json = (int)options.json;
-  if (query_once(&options, request_id, response, &response_size) != 0) {
+  if (req_query_once(&options, request_id, response, &response_size) != 0) {
     (void)render_error(output, output_capacity, &offset, request_id, json,
                        "transport_error", "The control syscall failed.");
     *output_size = offset;
     return -1;
   }
   if (options.operation == XAIOS_CONTROL_OP_LOGS && options.follow != 0U &&
-      follow_logs(&options, request_id, response, &response_size) != 0) {
+      req_follow_logs(&options, request_id, response, &response_size) != 0) {
     (void)render_error(output, output_capacity, &offset, request_id, json,
                        "transport_error", "Log follow failed.");
     *output_size = offset;
     return -1;
   }
-  if (validate_response(response, response_size, request_id,
+  if (req_validate_response(response, response_size, request_id,
                         options.operation, &header) != 0) {
     (void)render_error(output, output_capacity, &offset, request_id, json,
                        "invalid_response",
@@ -1624,13 +1040,13 @@ int xaios_control_run_as(const char *command, u32 principal_role,
              header.payload_type == XAIOS_CONTROL_PAYLOAD_CONFIG &&
              header.payload_length ==
                  sizeof(xaios_control_config_payload_user_t)) {
-    render_result = render_config(payload, json, output, output_capacity,
+    render_result = cfg_render_config(payload, json, output, output_capacity,
                                   &offset, request_id);
   } else if ((options.operation == XAIOS_CONTROL_OP_AUTH_KEY_LIST ||
               options.operation == XAIOS_CONTROL_OP_AUTH_KEY_ADD ||
               options.operation == XAIOS_CONTROL_OP_AUTH_KEY_REMOVE) &&
              header.payload_type == XAIOS_CONTROL_PAYLOAD_AUTH_KEYS) {
-    render_result = render_auth_keys(payload, header.payload_length, json,
+    render_result = cfg_render_auth_keys(payload, header.payload_length, json,
                                      output, output_capacity, &offset,
                                      request_id);
   } else if ((options.operation == XAIOS_CONTROL_OP_AUTH_HOST_KEY_ROTATE ||
@@ -1651,7 +1067,7 @@ int xaios_control_run_as(const char *command, u32 principal_role,
                                          output_capacity, &offset, request_id);
   } else if (options.operation == XAIOS_CONTROL_OP_AUDIT_SHOW &&
              header.payload_type == XAIOS_CONTROL_PAYLOAD_AUDIT) {
-    render_result = render_audit(payload, header.payload_length, json, output,
+    render_result = cfg_render_audit(payload, header.payload_length, json, output,
                                  output_capacity, &offset, request_id);
   } else if ((options.operation == XAIOS_CONTROL_OP_STORAGE_DEVICE_LIST ||
               options.operation == XAIOS_CONTROL_OP_STORAGE_DEVICE_SHOW) &&

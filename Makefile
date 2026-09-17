@@ -1425,6 +1425,8 @@ hosted-test: engine-cli
 	  userspace/lib/control_render_system.c \
 	  userspace/lib/control_render_storage.c \
 	  userspace/lib/control_render_ops.c \
+	  userspace/lib/control_render_config.c \
+	  userspace/lib/control_request.c \
 	  tests/control/test_control_client.c -o build/hosted/test-control-client
 	./build/hosted/test-control-client
 	$(HOST_CC) $(HOST_CFLAGS) \

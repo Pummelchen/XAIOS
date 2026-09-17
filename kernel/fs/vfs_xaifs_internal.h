@@ -1,10 +1,12 @@
-/* Private interface shared by the two halves of the model VFS.
+/* Private interface shared by the model VFS sources.
  *
- * vfs_xaifs.c keeps the mount, the block and engine glue and the scrub job;
- * vfs_xaifs_trim.c owns the trim job and its persisted record. Both halves
- * need the model context layout, so the type lives here. The context itself
- * stays in vfs_xaifs.c and is reached through vfs_xaifs_model(); the trim code
- * calls that under the model lock exactly where it used the variable.
+ * vfs_xaifs.c keeps the mount, the block and engine glue, the model context
+ * and the maintenance predicate; vfs_xaifs_scrub.c owns the scrub/verify job
+ * and its persisted record; vfs_xaifs_trim.c owns the trim job and its
+ * persisted record. All three need the model context layout, so the type lives
+ * here. The context itself stays in vfs_xaifs.c and is reached through
+ * vfs_xaifs_model(); the scrub and trim code call that under the model lock
+ * exactly where they used the variable.
  */
 #ifndef XAIOS_FS_VFS_XAIFS_INTERNAL_H
 #define XAIOS_FS_VFS_XAIFS_INTERNAL_H
@@ -63,9 +65,21 @@ model_vfs_context_t *vfs_xaifs_model(void);
 int catalog_maintenance_active(void);
 xaios_status_t map_engine_status(xaios_engine_status_t status);
 
-/* Defined in vfs_xaifs_trim.c and used by the scrub half of vfs_xaifs.c:
-   scrub and trim exclude each other, and a mount resumes a persisted trim. */
+/* Defined in vfs_xaifs.c and shared with the scrub half, which builds the same
+   writer for the quarantine path. */
+xaios_engine_status_t vfs_xaifs_write_at(void *context, uint64_t offset,
+                                         const void *source, size_t length);
+xaios_engine_status_t vfs_xaifs_flush(void *context);
+
+/* Defined in vfs_xaifs_trim.c and used by the maintenance predicate in
+   vfs_xaifs.c and by the scrub half: scrub and trim exclude each other, and a
+   mount resumes a persisted trim. */
 uint32_t vfs_xaifs_trim_state(void);
 void vfs_xaifs_trim_load(void);
+
+/* Defined in vfs_xaifs_scrub.c and used by the mount and the maintenance
+   predicate in vfs_xaifs.c. */
+uint32_t vfs_xaifs_scrub_state(void);
+void vfs_xaifs_scrub_load(void);
 
 #endif /* XAIOS_FS_VFS_XAIFS_INTERNAL_H */

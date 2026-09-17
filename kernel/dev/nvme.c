@@ -6,7 +6,7 @@
 #include <xaios/klog.h>
 #include <xaios/nvme.h>
 
-#include "nvme_completion.h"
+#include "nvme_internal.h"
 #include <xaios/pci.h>
 #include <xaios/smp.h>
 #include <xaios/spinlock.h>
@@ -24,7 +24,6 @@
 #define NVME_REG_AQA UINT32_C(0x24)
 #define NVME_REG_ASQ UINT32_C(0x28)
 #define NVME_REG_ACQ UINT32_C(0x30)
-#define NVME_REG_DOORBELL UINT32_C(0x1000)
 
 #define NVME_CC_ENABLE UINT32_C(1)
 #define NVME_CSTS_READY UINT32_C(1)
@@ -34,46 +33,14 @@
 #define NVME_ADMIN_IDENTIFY UINT8_C(0x06)
 #define NVME_ADMIN_SET_FEATURES UINT8_C(0x09)
 #define NVME_FEATURE_NUMBER_OF_QUEUES UINT32_C(0x07)
-#define NVME_IO_FLUSH UINT8_C(0x00)
-#define NVME_IO_WRITE UINT8_C(0x01)
-#define NVME_IO_READ UINT8_C(0x02)
-#define NVME_PSDT_SGL ((uint8_t)(UINT8_C(1) << 6U))
 
-#define NVME_MAX_IO_QUEUES 4U
-#define NVME_PAGE_SIZE UINT64_C(4096)
-#define NVME_MAX_TRANSFER_BYTES UINT32_C(16384)
 #define NVME_STRESS_ROUNDS 8U
 #define NVME_TIMEOUT_NS UINT64_C(5000000000)
 
 
-typedef struct nvme_controller {
-  volatile uint8_t *bar;
-  uint64_t cap;
-  uint32_t doorbell_stride;
-  uint16_t next_cid;
-  nvme_queue_t admin;
-  nvme_queue_t io[NVME_MAX_IO_QUEUES];
-  uint32_t io_queue_count;
-  uint32_t next_queue;
-  uint32_t namespace_id;
-  uint32_t block_size;
-  uint64_t namespace_blocks;
-  uint32_t sgl_supported;
-  uint64_t async_operations;
-  uint64_t cancelled_operations;
-  uint64_t sgl_operations;
-  uint64_t direct_operations;
-  uint32_t pci_index;
-  uint32_t msix_queue_count;
-  uint8_t *interrupt_test_buffer;
-  uint8_t *identify;
-  xaios_block_device_t block_device;
-} nvme_controller_t;
 
 static nvme_controller_t *g_nvme_controller;
 
-static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
-                           uint32_t budget);
 
 typedef char nvme_command_size_must_be_64[(sizeof(nvme_command_t) == 64) ? 1 : -1];
 typedef char nvme_completion_size_must_be_16[(sizeof(nvme_completion_t) == 16) ? 1 : -1];
@@ -116,27 +83,13 @@ static uint64_t mmio_read64(const nvme_controller_t *controller,
   return ((uint64_t)high << 32U) | low;
 }
 
-static void mmio_write32(const nvme_controller_t *controller, uint32_t offset,
-                         uint32_t value) {
-  *(volatile uint32_t *)(void *)(controller->bar + offset) = value;
-  xaios_cpu_io_barrier();
-}
 
 static void mmio_write64(const nvme_controller_t *controller, uint32_t offset,
                          uint64_t value) {
-  mmio_write32(controller, offset, (uint32_t)value);
-  mmio_write32(controller, offset + 4U, (uint32_t)(value >> 32U));
+  nvme_mmio_write32(controller, offset, (uint32_t)value);
+  nvme_mmio_write32(controller, offset + 4U, (uint32_t)(value >> 32U));
 }
 
-static uint64_t dma_address(const void *buffer) {
-  uint64_t physical = 0U;
-  uint32_t flags = 0U;
-  if (vmm_translate((uint64_t)(uintptr_t)buffer, &physical, &flags) != XAIOS_OK ||
-      (flags & XAIOS_VMM_PRESENT) == 0U) {
-    return 0U;
-  }
-  return physical;
-}
 
 static xaios_status_t wait_ready(const nvme_controller_t *controller,
                                  uint32_t expected) {
@@ -164,17 +117,6 @@ static xaios_status_t wait_ready(const nvme_controller_t *controller,
   }
 }
 
-static uint32_t doorbell_offset(const nvme_controller_t *controller,
-                                uint16_t qid, uint32_t completion) {
-  uint32_t index = (uint32_t)qid * 2U + completion;
-  return NVME_REG_DOORBELL + index * controller->doorbell_stride;
-}
-
-static uint16_t allocate_cid(nvme_controller_t *controller) {
-  ++controller->next_cid;
-  if (controller->next_cid == 0U) ++controller->next_cid;
-  return controller->next_cid;
-}
 
 
 /* Record a completion this queue consumed, and say what a queue had been doing
@@ -247,7 +189,7 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
                                    uint32_t *result) {
   nvme_queue_t *queue = &controller->admin;
   nvme_command_t staged = *command;
-  staged.cid = allocate_cid(controller);
+  staged.cid = nvme_allocate_cid(controller);
   queue->sq[queue->sq_tail] = staged;
   xaios_cpu_io_barrier();
   queue->sq_tail = (uint16_t)((queue->sq_tail + 1U) % NVME_QUEUE_DEPTH);
@@ -255,7 +197,7 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
      for the I/O queues: the field was written for I/O and read for the admin
      queue, where it was always zero while a command was in flight. */
   ++queue->outstanding;
-  mmio_write32(controller, doorbell_offset(controller, 0U, 0U), queue->sq_tail);
+  nvme_mmio_write32(controller, nvme_doorbell_offset(controller, 0U, 0U), queue->sq_tail);
 
   uint64_t started = timer_now_ns();
   for (;;) {
@@ -293,7 +235,7 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
         queue->cq_head = 0U;
         queue->phase ^= 1U;
       }
-      mmio_write32(controller, doorbell_offset(controller, 0U, 1U),
+      nvme_mmio_write32(controller, nvme_doorbell_offset(controller, 0U, 1U),
                    queue->cq_head);
       return XAIOS_OK;
     }
@@ -316,33 +258,6 @@ static xaios_status_t submit_admin(nvme_controller_t *controller,
   }
 }
 
-static xaios_status_t allocate_queue(nvme_queue_t *queue, uint16_t qid,
-                                     uint32_t assigned_cpu,
-                                     nvme_controller_t *controller) {
-  queue->sq = (nvme_command_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-  queue->cq = (nvme_completion_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-  if (queue->sq == 0 || queue->cq == 0) {
-    klog("nvme: queue ring allocation failed qid=%u sq=%u cq=%u bytes=%u\n",
-         (unsigned)qid, (unsigned)(queue->sq == 0),
-         (unsigned)(queue->cq == 0), (unsigned)NVME_PAGE_SIZE);
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  queue->qid = qid;
-  queue->phase = 1U;
-  queue->assigned_cpu = assigned_cpu;
-  queue->controller = controller;
-  xaios_spin_init(&queue->lock);
-  for (uint32_t slot = 0U; slot < NVME_QUEUE_DEPTH; ++slot) {
-    queue->slots[slot].prp_list =
-        (uint64_t *)kheap_calloc(NVME_PAGE_SIZE, NVME_PAGE_SIZE);
-    if (queue->slots[slot].prp_list == 0) {
-      klog("nvme: queue prp list allocation failed qid=%u slot=%u bytes=%u\n",
-           (unsigned)qid, (unsigned)slot, (unsigned)NVME_PAGE_SIZE);
-      return XAIOS_ERR_NO_MEMORY;
-    }
-  }
-  return XAIOS_OK;
-}
 
 static xaios_status_t initialize_controller(nvme_controller_t *controller,
                                             uint32_t pci_index) {
@@ -380,10 +295,10 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
 
   uint32_t cc = mmio_read32(controller, NVME_REG_CC);
   if ((cc & NVME_CC_ENABLE) != 0U) {
-    mmio_write32(controller, NVME_REG_CC, cc & ~NVME_CC_ENABLE);
+    nvme_mmio_write32(controller, NVME_REG_CC, cc & ~NVME_CC_ENABLE);
     if (wait_ready(controller, 0U) != XAIOS_OK) return XAIOS_ERR_IO;
   }
-  if (allocate_queue(&controller->admin, 0U, 0U, controller) != XAIOS_OK) {
+  if (nvme_allocate_queue(&controller->admin, 0U, 0U, controller) != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
   }
   uint32_t desired = smp_online_count();
@@ -392,7 +307,7 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
   for (uint32_t index = 0U; index < desired; ++index) {
     uint32_t cpu_id = index;
     (void)smp_cpu_id_at(index, &cpu_id);
-    if (allocate_queue(&controller->io[index], (uint16_t)(index + 1U), cpu_id,
+    if (nvme_allocate_queue(&controller->io[index], (uint16_t)(index + 1U), cpu_id,
                        controller) != XAIOS_OK) {
       return XAIOS_ERR_NO_MEMORY;
     }
@@ -406,11 +321,11 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
     return XAIOS_ERR_NO_MEMORY;
   }
 
-  mmio_write32(controller, NVME_REG_AQA,
+  nvme_mmio_write32(controller, NVME_REG_AQA,
                ((NVME_QUEUE_DEPTH - 1U) << 16U) | (NVME_QUEUE_DEPTH - 1U));
-  mmio_write64(controller, NVME_REG_ASQ, dma_address(controller->admin.sq));
-  mmio_write64(controller, NVME_REG_ACQ, dma_address(controller->admin.cq));
-  mmio_write32(controller, NVME_REG_CC,
+  mmio_write64(controller, NVME_REG_ASQ, nvme_dma_address(controller->admin.sq));
+  mmio_write64(controller, NVME_REG_ACQ, nvme_dma_address(controller->admin.cq));
+  nvme_mmio_write32(controller, NVME_REG_CC,
                NVME_CC_ENABLE | (6U << 16U) | (4U << 20U));
   if (wait_ready(controller, NVME_CSTS_READY) != XAIOS_OK) return XAIOS_ERR_IO;
   klog("nvme: controller ready version=0x%x mqes=%u dstrd=%u\n",
@@ -425,7 +340,7 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
    * the device disagrees about looks like from the outside, and so is a
    * submission-queue base that is not the page the driver writes. Both are
    * visible here and nowhere else: `aqa` carries the queue sizes and `asq` the
-   * base, and `expect_` is what `dma_address` says the driver's own pages are.
+   * base, and `expect_` is what `nvme_dma_address` says the driver's own pages are.
    * One line on every NVMe boot, because the healthy value is what makes an
    * unhealthy one readable. */
   klog("nvme: controller registers cc=0x%x csts=0x%x aqa=0x%x asq=0x%lx "
@@ -435,8 +350,8 @@ static xaios_status_t initialize_controller(nvme_controller_t *controller,
        (unsigned)mmio_read32(controller, NVME_REG_AQA),
        (unsigned long)mmio_read64(controller, NVME_REG_ASQ),
        (unsigned long)mmio_read64(controller, NVME_REG_ACQ),
-       (unsigned long)dma_address(controller->admin.sq),
-       (unsigned long)dma_address(controller->admin.cq));
+       (unsigned long)nvme_dma_address(controller->admin.sq),
+       (unsigned long)nvme_dma_address(controller->admin.cq));
   return XAIOS_OK;
 }
 
@@ -447,7 +362,7 @@ static xaios_status_t identify(nvme_controller_t *controller, uint32_t nsid,
   bytes_zero(&command, sizeof(command));
   command.opcode = NVME_ADMIN_IDENTIFY;
   command.nsid = nsid;
-  command.data_pointer1 = dma_address(controller->identify);
+  command.data_pointer1 = nvme_dma_address(controller->identify);
   command.cdw10 = cns;
   return submit_admin(controller, &command, 0);
 }
@@ -494,7 +409,7 @@ static void nvme_interrupt_handler(uint32_t intid, void *context) {
     return;
   }
   ++queue->interrupt_completions;
-  (void)poll_queue(queue->controller, queue, NVME_QUEUE_DEPTH);
+  (void)nvme_poll_queue(queue->controller, queue, NVME_QUEUE_DEPTH);
 }
 
 static xaios_status_t configure_queue_interrupts(
@@ -526,7 +441,7 @@ static xaios_status_t configure_queue_interrupts(
    *
    * A PLIC takes wires, not messages: there is no identity to allocate and
    * nothing to write a message into, so the queues are serviced by the
-   * caller's own wait path -- wait_request calls poll_controller every turn
+   * caller's own wait path -- wait_request calls nvme_poll_controller every turn
    * -- and saying so is what stops this looking like a driver that failed to
    * initialise. That is still the honest answer on QEMU's default `virt`
    * board and on every existing gate for this architecture.
@@ -651,7 +566,7 @@ static xaios_status_t create_io_queues(nvme_controller_t *controller) {
     nvme_command_t command;
     bytes_zero(&command, sizeof(command));
     command.opcode = NVME_ADMIN_CREATE_IO_CQ;
-    command.data_pointer1 = dma_address(queue->cq);
+    command.data_pointer1 = nvme_dma_address(queue->cq);
     command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | queue->qid;
     command.cdw11 = ((uint32_t)queue->msix_entry << 16U) | 3U;
     xaios_status_t completion_queue = submit_admin(controller, &command, 0);
@@ -662,7 +577,7 @@ static xaios_status_t create_io_queues(nvme_controller_t *controller) {
     }
     bytes_zero(&command, sizeof(command));
     command.opcode = NVME_ADMIN_CREATE_IO_SQ;
-    command.data_pointer1 = dma_address(queue->sq);
+    command.data_pointer1 = nvme_dma_address(queue->sq);
     command.cdw10 = ((NVME_QUEUE_DEPTH - 1U) << 16U) | queue->qid;
     command.cdw11 = ((uint32_t)queue->qid << 16U) | 1U;
     xaios_status_t submission_queue = submit_admin(controller, &command, 0);
@@ -675,23 +590,6 @@ static xaios_status_t create_io_queues(nvme_controller_t *controller) {
   return XAIOS_OK;
 }
 
-/* Put a queue back to the state it was in before it carried any work, over the
- * same pages and with the same interrupt binding. */
-static void reset_queue(nvme_queue_t *queue) {
-  bytes_zero(queue->sq, NVME_PAGE_SIZE);
-  bytes_zero(queue->cq, NVME_PAGE_SIZE);
-  for (uint32_t slot = 0U; slot < NVME_QUEUE_DEPTH; ++slot) {
-    uint64_t *prp_list = queue->slots[slot].prp_list;
-    bytes_zero(&queue->slots[slot], sizeof(queue->slots[slot]));
-    queue->slots[slot].prp_list = prp_list;
-  }
-  queue->sq_tail = 0U;
-  queue->cq_head = 0U;
-  queue->phase = 1U;
-  queue->outstanding = 0U;
-  queue->trace_next = 0U;
-  queue->completions_consumed = 0U;
-}
 
 /* Stop the controller and re-arm it over the memory it already has.
  *
@@ -709,20 +607,20 @@ static void reset_queue(nvme_queue_t *queue) {
  * have already given up on one. */
 static xaios_status_t restart_controller(nvme_controller_t *controller) {
   uint32_t cc = mmio_read32(controller, NVME_REG_CC);
-  mmio_write32(controller, NVME_REG_CC, cc & ~NVME_CC_ENABLE);
+  nvme_mmio_write32(controller, NVME_REG_CC, cc & ~NVME_CC_ENABLE);
   if (wait_ready(controller, 0U) != XAIOS_OK) {
     klog("nvme: controller restart failed step=disable\n");
     return XAIOS_ERR_IO;
   }
-  reset_queue(&controller->admin);
+  nvme_reset_queue(&controller->admin);
   for (uint32_t index = 0U; index < controller->io_queue_count; ++index) {
-    reset_queue(&controller->io[index]);
+    nvme_reset_queue(&controller->io[index]);
   }
-  mmio_write32(controller, NVME_REG_AQA,
+  nvme_mmio_write32(controller, NVME_REG_AQA,
                ((NVME_QUEUE_DEPTH - 1U) << 16U) | (NVME_QUEUE_DEPTH - 1U));
-  mmio_write64(controller, NVME_REG_ASQ, dma_address(controller->admin.sq));
-  mmio_write64(controller, NVME_REG_ACQ, dma_address(controller->admin.cq));
-  mmio_write32(controller, NVME_REG_CC,
+  mmio_write64(controller, NVME_REG_ASQ, nvme_dma_address(controller->admin.sq));
+  mmio_write64(controller, NVME_REG_ACQ, nvme_dma_address(controller->admin.cq));
+  nvme_mmio_write32(controller, NVME_REG_CC,
                NVME_CC_ENABLE | (6U << 16U) | (4U << 20U));
   if (wait_ready(controller, NVME_CSTS_READY) != XAIOS_OK) {
     klog("nvme: controller restart failed step=enable\n");
@@ -731,197 +629,6 @@ static xaios_status_t restart_controller(nvme_controller_t *controller) {
   return create_io_queues(controller);
 }
 
-static xaios_status_t prepare_data_pointer(nvme_controller_t *controller,
-                                           nvme_request_slot_t *slot,
-                                           nvme_command_t *command,
-                                           void *buffer, uint32_t length,
-                                           uint32_t use_sgl) {
-  if (buffer == 0 || length == 0U || length > NVME_MAX_TRANSFER_BYTES ||
-      ((uintptr_t)buffer & (NVME_PAGE_SIZE - 1U)) != 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t first = dma_address(buffer);
-  if (first == 0U) return XAIOS_ERR_IO;
-  uint32_t pages = (length + (uint32_t)NVME_PAGE_SIZE - 1U) /
-                   (uint32_t)NVME_PAGE_SIZE;
-  if (use_sgl != 0U && controller->sgl_supported != 0U) {
-    for (uint32_t page = 1U; page < pages; ++page) {
-      uint64_t physical = dma_address((uint8_t *)buffer +
-                                      (uint64_t)page * NVME_PAGE_SIZE);
-      if (physical != first + (uint64_t)page * NVME_PAGE_SIZE) {
-        return XAIOS_ERR_UNSUPPORTED;
-      }
-    }
-    command->flags = NVME_PSDT_SGL;
-    command->data_pointer1 = first;
-    command->data_pointer2 = length;
-    slot->uses_sgl = 1U;
-    return XAIOS_OK;
-  }
-  command->data_pointer1 = first;
-  if (pages == 1U) return XAIOS_OK;
-  uint64_t second = dma_address((uint8_t *)buffer + NVME_PAGE_SIZE);
-  if (second == 0U) return XAIOS_ERR_IO;
-  if (pages == 2U) {
-    command->data_pointer2 = second;
-    return XAIOS_OK;
-  }
-  bytes_zero(slot->prp_list, NVME_PAGE_SIZE);
-  for (uint32_t page = 1U; page < pages; ++page) {
-    uint64_t physical = dma_address((uint8_t *)buffer +
-                                    (uint64_t)page * NVME_PAGE_SIZE);
-    if (physical == 0U) return XAIOS_ERR_IO;
-    slot->prp_list[page - 1U] = physical;
-  }
-  command->data_pointer2 = dma_address(slot->prp_list);
-  return command->data_pointer2 == 0U ? XAIOS_ERR_IO : XAIOS_OK;
-}
-
-static nvme_request_slot_t *free_slot(nvme_queue_t *queue) {
-  for (uint32_t index = 0U; index < NVME_QUEUE_DEPTH; ++index) {
-    if (queue->slots[index].active == 0U) return &queue->slots[index];
-  }
-  return 0;
-}
-
-static nvme_request_slot_t *slot_for_cid(nvme_queue_t *queue, uint16_t cid) {
-  for (uint32_t index = 0U; index < NVME_QUEUE_DEPTH; ++index) {
-    if (queue->slots[index].active != 0U && queue->slots[index].cid == cid) {
-      return &queue->slots[index];
-    }
-  }
-  return 0;
-}
-
-static xaios_status_t submit_io(nvme_controller_t *controller,
-                                uint32_t queue_index,
-                                xaios_block_async_request_t *request,
-                                uint32_t use_sgl) {
-  if (queue_index >= controller->io_queue_count || request == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  nvme_queue_t *queue = &controller->io[queue_index];
-  xaios_spin_lock(&queue->lock);
-  if (queue->outstanding >= NVME_QUEUE_DEPTH - 1U) {
-    xaios_spin_unlock(&queue->lock);
-    return XAIOS_ERR_BUSY;
-  }
-  nvme_request_slot_t *slot = free_slot(queue);
-  if (slot == 0) {
-    xaios_spin_unlock(&queue->lock);
-    return XAIOS_ERR_BUSY;
-  }
-  uint64_t *prp_list = slot->prp_list;
-  bytes_zero(slot, sizeof(*slot));
-  slot->prp_list = prp_list;
-  nvme_command_t command;
-  bytes_zero(&command, sizeof(command));
-  if (request->operation == XAIOS_BLOCK_ASYNC_READ) command.opcode = NVME_IO_READ;
-  else if (request->operation == XAIOS_BLOCK_ASYNC_WRITE) command.opcode = NVME_IO_WRITE;
-  else if (request->operation == XAIOS_BLOCK_ASYNC_FLUSH) command.opcode = NVME_IO_FLUSH;
-  else {
-    xaios_spin_unlock(&queue->lock);
-    return XAIOS_ERR_INVALID;
-  }
-  command.nsid = controller->namespace_id;
-  if (command.opcode != NVME_IO_FLUSH) {
-    if (request->length > UINT32_MAX || request->length % controller->block_size != 0U ||
-        request->byte_offset % controller->block_size != 0U ||
-        prepare_data_pointer(controller, slot, &command, request->buffer,
-                             (uint32_t)request->length, use_sgl) != XAIOS_OK) {
-      xaios_spin_unlock(&queue->lock);
-      return XAIOS_ERR_INVALID;
-    }
-    uint64_t lba = request->byte_offset / controller->block_size;
-    command.cdw10 = (uint32_t)lba;
-    command.cdw11 = (uint32_t)(lba >> 32U);
-    command.cdw12 = (uint32_t)(request->length / controller->block_size - 1U);
-  }
-  slot->cid = allocate_cid(controller);
-  slot->active = 1U;
-  slot->request = request;
-  command.cid = slot->cid;
-  request->token = ((uint64_t)queue->qid << 32U) | slot->cid;
-  request->backend_private = slot;
-  queue->sq[queue->sq_tail] = command;
-  xaios_cpu_io_barrier();
-  queue->sq_tail = (uint16_t)((queue->sq_tail + 1U) % NVME_QUEUE_DEPTH);
-  ++queue->outstanding;
-  ++controller->async_operations;
-  ++controller->direct_operations;
-  if (slot->uses_sgl != 0U) ++controller->sgl_operations;
-  uint16_t submitted_tail = queue->sq_tail;
-  xaios_spin_unlock(&queue->lock);
-  mmio_write32(controller, doorbell_offset(controller, queue->qid, 0U),
-               submitted_tail);
-  return XAIOS_OK;
-}
-
-static uint32_t poll_queue(nvme_controller_t *controller, nvme_queue_t *queue,
-                           uint32_t budget) {
-  uint32_t completed_count = 0U;
-  while (completed_count < budget) {
-    xaios_spin_lock(&queue->lock);
-    xaios_cpu_io_barrier();
-    if (completion_in_phase(queue, queue->cq_head) == 0) {
-      xaios_spin_unlock(&queue->lock);
-      break;
-    }
-    nvme_completion_t completion = queue->cq[queue->cq_head];
-    nvme_request_slot_t *slot = slot_for_cid(queue, completion.cid);
-    /* Recorded before the outcome is decided, so a refusal is read together
-       with the completions that were accepted before it. */
-    record_completion(queue, &completion, slot == 0 ? 0U : slot->cid);
-    xaios_status_t status = XAIOS_ERR_IO;
-    xaios_block_async_request_t *request = slot == 0 ? 0 : slot->request;
-    if (slot != 0 &&
-        completion_fields_valid(&completion, queue->qid, slot->cid)) {
-      status = slot->cancel_requested != 0U ? XAIOS_ERR_CANCELLED : XAIOS_OK;
-    } else {
-      /* The device-error side of the I/O path, and the reason B-100 can now
-         tell it from the timeout below: a completion arrived and could not be
-         matched to the request it claims to answer. A cancelled request is not
-         this -- that is a completion this driver asked for and matches
-         perfectly well. */
-      klog("nvme: io completion rejected qid=%u cid=%u sq_id=%u sq_head=%u "
-           "status=0x%04x slot=%s\n",
-           (unsigned)queue->qid, (unsigned)completion.cid,
-           (unsigned)completion.sq_id, (unsigned)completion.sq_head,
-           (unsigned)completion.status, slot == 0 ? "none" : "mismatched");
-      report_completion_reread(queue, &completion);
-      report_sq_neighbourhood(queue, completion.sq_head);
-      report_queue_trace(queue, "rejected");
-    }
-    queue->cq_head = (uint16_t)(queue->cq_head + 1U);
-    if (queue->cq_head == NVME_QUEUE_DEPTH) {
-      queue->cq_head = 0U;
-      queue->phase ^= 1U;
-    }
-    mmio_write32(controller, doorbell_offset(controller, queue->qid, 1U),
-                 queue->cq_head);
-    if (slot != 0) {
-      slot->active = 0U;
-      slot->request = 0;
-      slot->cancel_requested = 0U;
-      if (queue->outstanding != 0U) --queue->outstanding;
-    }
-    xaios_spin_unlock(&queue->lock);
-    if (request != 0) block_async_complete(request, status);
-    ++completed_count;
-  }
-  return completed_count;
-}
-
-static uint32_t poll_controller(nvme_controller_t *controller,
-                                uint32_t budget) {
-  uint32_t completed = 0U;
-  for (uint32_t index = 0U;
-       index < controller->io_queue_count && completed < budget; ++index) {
-    completed += poll_queue(controller, &controller->io[index],
-                            budget - completed);
-  }
-  return completed;
-}
 
 /* Every polled wait in this driver goes through one loop, batched or single.
  *
@@ -989,7 +696,7 @@ static xaios_status_t await_requests(nvme_controller_t *controller,
       record_wait(margin, timer_now_ns() - started);
       return XAIOS_OK;
     }
-    (void)poll_controller(controller, NVME_QUEUE_DEPTH * NVME_MAX_IO_QUEUES);
+    (void)nvme_poll_controller(controller, NVME_QUEUE_DEPTH * NVME_MAX_IO_QUEUES);
     if (timer_now_ns() - started >= NVME_TIMEOUT_NS) {
       /* A request that reaches COMPLETE returns OK above even if it completed
          with an error, so a failure here really is requests that never
@@ -1050,11 +757,11 @@ static xaios_status_t nvme_backend_submit(
                    controller->io_queue_count;
   uint32_t use_sgl = controller->sgl_supported != 0U &&
                      (controller->async_operations & 1U) != 0U;
-  return submit_io(controller, queue, request, use_sgl);
+  return nvme_submit_io(controller, queue, request, use_sgl);
 }
 
 static uint32_t nvme_backend_poll(void *context, uint32_t budget) {
-  return poll_controller((nvme_controller_t *)context, budget);
+  return nvme_poll_controller((nvme_controller_t *)context, budget);
 }
 
 static xaios_status_t nvme_backend_cancel(
@@ -1090,7 +797,7 @@ static xaios_status_t synchronous_io(nvme_controller_t *controller,
   request.length = length;
   uint32_t queue = __sync_fetch_and_add(&controller->next_queue, 1U) %
                    controller->io_queue_count;
-  xaios_status_t status = submit_io(controller, queue, &request, 0U);
+  xaios_status_t status = nvme_submit_io(controller, queue, &request, 0U);
   return status == XAIOS_OK ? wait_request(controller, &request) : status;
 }
 
@@ -1166,7 +873,7 @@ static xaios_status_t stress_io(nvme_controller_t *controller,
       requests[queue].buffer = buffers[queue];
       requests[queue].length = NVME_MAX_TRANSFER_BYTES;
       xaios_status_t submitted =
-          submit_io(controller, queue, &requests[queue], round & 1U);
+          nvme_submit_io(controller, queue, &requests[queue], round & 1U);
       if (submitted != XAIOS_OK) {
         /* Named, like every other way this phase can fail. `stress_io` used to
            return XAIOS_ERR_IO without saying which of its exits it had taken,
@@ -1201,7 +908,7 @@ static xaios_status_t stress_io(nvme_controller_t *controller,
     requests[queue].buffer = buffers[queue];
     requests[queue].length = NVME_MAX_TRANSFER_BYTES;
     xaios_status_t submitted =
-        submit_io(controller, queue, &requests[queue], queue & 1U);
+        nvme_submit_io(controller, queue, &requests[queue], queue & 1U);
     if (submitted != XAIOS_OK) {
       klog("nvme: stress read submit failed queue=%u status=%d\n",
            (unsigned)queue, (int)submitted);
@@ -1245,7 +952,7 @@ static xaios_status_t stress_io(nvme_controller_t *controller,
      same reason the others are: the value alone does not say whether the
      queue refused the request, there was no active slot to mark, or the
      device completed a transfer that was supposed to be cancelled. */
-  xaios_status_t cancel_submitted = submit_io(controller, 0U, &cancelled, 0U);
+  xaios_status_t cancel_submitted = nvme_submit_io(controller, 0U, &cancelled, 0U);
   if (cancel_submitted != XAIOS_OK) {
     klog("nvme: stress cancel submit failed status=%d\n",
          (int)cancel_submitted);
@@ -1482,7 +1189,7 @@ xaios_status_t nvme_interrupt_self_test(void) {
     request.state = XAIOS_BLOCK_ASYNC_PENDING;
     request.buffer = controller->interrupt_test_buffer;
     request.length = controller->block_size;
-    if (submit_io(controller, index, &request, 0U) != XAIOS_OK) {
+    if (nvme_submit_io(controller, index, &request, 0U) != XAIOS_OK) {
       return XAIOS_ERR_IO;
     }
     uint64_t started = timer_now_ns();

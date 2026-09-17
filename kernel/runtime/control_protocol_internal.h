@@ -1,4 +1,4 @@
-/* Private interface for the storage half of the control protocol.
+/* Private interface shared by the control protocol's split modules.
  *
  * control_protocol.c was split so no source file exceeds 500 lines. The
  * helpers below stay in control_protocol.c because the dispatch table and the
@@ -34,6 +34,37 @@ xaios_status_t control_protocol_write_admin_error(
     const xaios_control_request_header_t *request,
     xaios_admin_result_t admin_result, void *response,
     uint64_t response_capacity, uint64_t *response_bytes);
+
+/* Log helpers and operation handlers that control_ops.c and the self-test
+   share, defined in control_protocol.c and control_ops.c. */
+int control_protocol_line_contains_case_insensitive(const char *line,
+                                                    uint64_t line_size,
+                                                    const char *needle);
+int control_protocol_log_line_sensitive(const char *line, uint64_t line_size);
+xaios_status_t control_protocol_append_log_record(
+    char *output, uint64_t capacity, uint64_t *offset, uint64_t sequence,
+    const char *component, const char *level, const char *line,
+    uint64_t line_size, int redact);
+void control_protocol_string_copy(char *dst, uint64_t capacity,
+                                  const char *src);
+
+/* Log, configuration, identity and audit-operation handlers, defined in
+   control_ops.c. */
+xaios_status_t control_protocol_handle_logs(
+    const xaios_control_request_header_t *request,
+    const xaios_control_log_request_payload_t *query, void *response,
+    uint64_t response_capacity, uint64_t *response_bytes);
+xaios_status_t control_protocol_handle_config_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role);
+xaios_status_t control_protocol_handle_auth_operation(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes,
+    xaios_control_role_t authenticated_role);
+xaios_status_t control_protocol_handle_audit(
+    const xaios_control_request_header_t *request, const uint8_t *payload,
+    void *response, uint64_t response_capacity, uint64_t *response_bytes);
 
 /* Storage-operation handlers, defined in control_storage_ops.c. */
 xaios_status_t control_protocol_handle_storage_volume_operation(

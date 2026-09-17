@@ -15,6 +15,7 @@
 #include <xaios_engine/packed.h>
 
 #include "acpi.h"
+#include "early_module.h"
 #include "platform.h"
 
 #ifndef XAIOS_X86_COMMON_RUNTIME
@@ -79,18 +80,11 @@
 #define X86_KERNEL_STACK_SIZE UINT64_C(524288)
 #define X86_KERNEL_STACK_GUARD_BYTES UINT32_C(64)
 #define X86_KERNEL_STACK_GUARD_VALUE UINT8_C(0xa5)
-#define X86_USER_NESTING_MAX UINT32_C(8)
 #define IDT_PRESENT UINT8_C(0x80)
 #define IDT_INTERRUPT_GATE UINT8_C(0x0e)
 #define IDT_TRAP_GATE UINT8_C(0x0f)
 #define PCI_CONFIG_ADDRESS UINT16_C(0x0cf8)
 #define PCI_CONFIG_DATA UINT16_C(0x0cfc)
-
-typedef enum x86_64_core_role {
-  X86_64_CORE_HOUSEKEEPING = 1,
-  X86_64_CORE_AI_HOT = 2,
-  X86_64_CORE_BACKGROUND = 3,
-} x86_64_core_role_t;
 
 typedef struct x86_64_idt_entry {
   uint16_t offset_low;
@@ -106,18 +100,6 @@ typedef struct x86_64_idtr {
   uint16_t limit;
   uint64_t base;
 } __attribute__((packed)) x86_64_idtr_t;
-
-typedef struct x86_64_tss {
-  uint32_t reserved0;
-  uint64_t rsp0;
-  uint64_t rsp1;
-  uint64_t rsp2;
-  uint64_t reserved1;
-  uint64_t ist[7];
-  uint64_t reserved2;
-  uint16_t reserved3;
-  uint16_t io_map_base;
-} __attribute__((packed)) x86_64_tss_t;
 
 typedef struct x86_64_exception_frame {
   uint64_t r15;
@@ -165,20 +147,6 @@ typedef struct x86_64_pci_state {
   uint32_t modern_virtio_devices;
 } x86_64_pci_state_t;
 
-typedef struct x86_64_placement_state {
-  uint32_t logical_cpus;
-  uint32_t housekeeping_cpus;
-  uint32_t ai_hot_cpus;
-  uint32_t background_cpus;
-  uint32_t smt_disabled_by_default;
-  uint32_t p_core_policy_ready;
-  uint32_t e_core_policy_ready;
-  uint32_t threads_per_core;
-  uint32_t topology_leaf;
-  uint64_t migration_total;
-  uint64_t context_switch_total;
-} x86_64_placement_state_t;
-
 typedef struct x86_64_contract_state {
   uint32_t userspace_contract_ready;
   uint32_t filesystem_contract_ready;
@@ -196,46 +164,6 @@ typedef struct x86_64_hardware_gate_state {
   uint32_t performance_claims_allowed;
   uint32_t release_candidate_ready;
 } x86_64_hardware_gate_state_t;
-
-typedef struct x86_64_cpu_record {
-  uint32_t apic_id;
-  volatile uint32_t online;
-  volatile uint32_t worker_ready;
-  volatile uint32_t requested_generation;
-  volatile uint32_t completed_generation;
-  volatile uint64_t checksum;
-  volatile uint32_t tlb_generation;
-  /* What this CPU was doing when somebody asked it for a TLB shootdown, so a
-   * refusal can say why it did not answer (B-123). `interrupts_taken` is a
-   * liveness count: a CPU that keeps taking timer interrupts is running with
-   * interrupts enabled and simply did not receive or handle the request, while
-   * one whose count is frozen is not taking interrupts at all. */
-  volatile uint64_t interrupts_taken;
-  volatile uint32_t last_vector;
-  volatile uint64_t shootdowns_handled;
-  volatile uint64_t shootdowns_polled;
-  volatile uint32_t shootdown_lock_wait;
-  /* How many times this CPU reached its halt with a thread pending for it
-   * anyway, which is a wakeup that arrived between the idle loop's check and
-   * its halt and was consumed by its handler (B-120). Zero after the fix
-   * except when it counts one the re-check caught. */
-  volatile uint32_t idle_wakeups_raced;
-  /* How many times this CPU entered the self-test's widened window, which is
-   * how the test knows the wakeup it sends is inside it. */
-  volatile uint32_t idle_gap_rounds;
-  uint64_t kernel_stack_top;
-  uint64_t syscall_stack_top;
-  uint64_t user_resume_rsp[X86_USER_NESTING_MAX];
-  uint64_t user_previous_rsp0[X86_USER_NESTING_MAX];
-  uint32_t user_nesting_depth;
-  uint64_t user_return_value;
-  uint8_t *irq_state_area;
-  uint64_t *page_table_root;
-  uint64_t *user_page_directory;
-  uint64_t gdt[7];
-  x86_64_tss_t tss;
-  xaios_cpu_state_t state;
-} x86_64_cpu_record_t;
 
 typedef struct x86_64_virtio_pci_device {
   uint8_t bus;
@@ -327,7 +255,6 @@ static uint8_t g_syscall_stack[X86_KERNEL_STACK_SIZE]
 static uint8_t *g_user_test_page;
 static x86_64_pmm_state_t g_pmm;
 static x86_64_pci_state_t g_pci;
-static x86_64_placement_state_t g_placement;
 static x86_64_contract_state_t g_contract;
 static x86_64_hardware_gate_state_t g_hardware_gate;
 static uint32_t g_exception_vectors_installed;
@@ -362,21 +289,12 @@ static uint64_t g_lapic_frequency;
  * may use RDTSCP. Set by whichever CPU prepares first; it is a property of the
  * CPU model, not of one CPU. */
 static uint32_t g_tsc_aux_ready;
-static volatile uint32_t g_tlb_shootdown_lock;
-static volatile uint32_t g_tlb_shootdown_generation;
-static volatile uint64_t g_tlb_shootdown_address;
-static volatile uint64_t g_tlb_shootdown_count;
-/* Non-zero from the moment a shootdown request is published until every other
- * online CPU has acknowledged it. The spin path tests this first, so the cost
- * of answering by hand is one load when nothing is in flight. */
-static volatile uint32_t g_tlb_shootdown_in_flight;
-/* Set only by the self-test's negative control, which has to run the kernel as
- * it was before the spin path could answer. */
-static volatile uint32_t g_tlb_shootdown_poll_suppressed;
 /* Set only by the idle-wakeup self-test: widen the window between the idle
  * loop's queue check and its halt, and optionally halt the way this kernel did
  * before the re-check, so the lost wakeup behind B-120 can be built on purpose
- * instead of waited for. Zero in production. */
+ * instead of waited for. Zero in production. The TLB shootdown's own state and
+ * lock live in early_tlb.c; this pair stays here because the idle loop below
+ * reads it, and early_tlb.c reaches it through xaios_x86_early_idle_probe_get. */
 static volatile uint64_t g_idle_halt_probe_gap_cycles;
 static volatile uint32_t g_idle_halt_probe_legacy;
 
@@ -392,10 +310,6 @@ static uint32_t lapic_id(void);
 static uint32_t current_ordinal_fast(void);
 static void lapic_send(uint32_t destination, uint32_t command);
 static void lapic_write(uint32_t offset, uint32_t value);
-/* How long a TLB shootdown waits for every online CPU to acknowledge, and a
- * spin bound for the part of boot where no clock can be read yet. */
-#define X86_TLB_SHOOTDOWN_TIMEOUT_NS UINT64_C(2000000000)
-#define X86_TLB_SHOOTDOWN_FALLBACK_SPINS UINT64_C(200000000)
 static void serial_puts(uint16_t base, const char *message);
 static void serial_dec(uint16_t base, uint64_t value);
 static void panic_halt(uint16_t serial_base, const char *message);
@@ -549,269 +463,6 @@ void x86_64_platform_eoi(void) {
   if (g_lapic_ready != 0U) lapic_write(APIC_EOI, 0U);
 }
 
-/* Acknowledge `generation` for this CPU, and never an older one.
- *
- * Two paths carry the same acknowledgement -- the shootdown interrupt and the
- * poll a spinning CPU does -- and they can overlap: the interrupt can land
- * while a poll is between reading the request and storing the answer. The
- * generations only ever increase, so an answer older than what is already
- * recorded is ignored rather than written. Without that the late store would
- * un-acknowledge a generation the interrupt had already covered, and the
- * initiator would wait for an answer that had already been given. */
-static void tlb_acknowledge(x86_64_cpu_record_t *record, uint32_t generation) {
-  uint32_t current =
-      __atomic_load_n(&record->tlb_generation, __ATOMIC_ACQUIRE);
-  if ((int32_t)(generation - current) <= 0) return;
-  __atomic_store_n(&record->tlb_generation, generation, __ATOMIC_RELEASE);
-}
-
-/* Answer a shootdown request without an interrupt.
- *
- * This is the whole of the fix for B-123. A CPU can be spinning with
- * interrupts masked -- a reentrant guard masks them before it spins, so every
- * CPU waiting for the network, service or CPU AI guard is in that state -- and
- * the CPU it is waiting for can be the CPU waiting for its acknowledgement:
- * the guard's holder maps or unmaps a page inside the critical section, which
- * is a shootdown. Neither side can move, because the answer is meant to arrive
- * as the interrupt the waiting CPU cannot take. The spinning CPU therefore
- * reads the request the interrupt would have carried and answers it directly.
- *
- * `in_flight` is the gate the spin path tests first, so a machine with no
- * shootdown outstanding pays one load per relaxation and no per-CPU lookup.
- * The request is published address-before-generation, so a CPU that sees a
- * generation also sees that generation's address. */
-void xaios_cpu_service_shootdown_request(void) {
-  if (__atomic_load_n(&g_tlb_shootdown_in_flight, __ATOMIC_ACQUIRE) == 0U) {
-    return;
-  }
-  if (__atomic_load_n(&g_tlb_shootdown_poll_suppressed, __ATOMIC_ACQUIRE) !=
-      0U) {
-    return;
-  }
-  if (g_cpu_records == 0) return;
-  uint32_t ordinal = current_ordinal_fast();
-  if (ordinal >= g_cpu_record_count) return;
-  uint32_t generation =
-      __atomic_load_n(&g_tlb_shootdown_generation, __ATOMIC_ACQUIRE);
-  if (generation == 0U) return;
-  x86_64_cpu_record_t *record = &g_cpu_records[ordinal];
-  if (__atomic_load_n(&record->tlb_generation, __ATOMIC_ACQUIRE) ==
-      generation) {
-    return;
-  }
-  uint64_t address =
-      __atomic_load_n(&g_tlb_shootdown_address, __ATOMIC_ACQUIRE);
-  __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)address)
-                   : "memory");
-  tlb_acknowledge(record, generation);
-  __atomic_add_fetch(&record->shootdowns_polled, 1U, __ATOMIC_RELAXED);
-}
-
-/* Publish a shootdown request and interrupt every other online CPU. */
-static uint32_t tlb_shootdown_begin(uint32_t self, uint64_t virtual_address) {
-  /* The flag first: a CPU that polls between it and the new generation answers
-     whatever was outstanding before this request, which is harmless, and one
-     that polls after the generation is published answers this request. */
-  __atomic_store_n(&g_tlb_shootdown_in_flight, 1U, __ATOMIC_RELEASE);
-  uint32_t generation =
-      __atomic_load_n(&g_tlb_shootdown_generation, __ATOMIC_RELAXED) + 1U;
-  if (generation == 0U) generation = 1U;
-  /* The address before the generation it belongs to, because a polling CPU
-     reads the generation and then the address: it must never see a generation
-     with the address of the generation before it. */
-  __atomic_store_n(&g_tlb_shootdown_address, virtual_address,
-                   __ATOMIC_RELEASE);
-  __atomic_store_n(&g_tlb_shootdown_generation, generation, __ATOMIC_RELEASE);
-  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
-    if (ordinal == self ||
-        __atomic_load_n(&g_cpu_records[ordinal].online,
-                        __ATOMIC_ACQUIRE) == 0U) {
-      continue;
-    }
-    lapic_send(g_cpu_records[ordinal].apic_id, 35U);
-  }
-  __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)virtual_address)
-                   : "memory");
-  return generation;
-}
-
-/* Wait for every other online CPU to acknowledge `generation`.
- *
- * Returns 1 when every one has, and 0 when the budget runs out with the first
- * CPU that had not answered in `stuck_cpu`. The budget is in nanoseconds and
- * it used to be in TSC ticks: `rdtsc() + 2000000000` is two seconds only on a
- * machine whose TSC runs at 1 GHz, and on the CI runner's 2.4456 GHz it was
- * 0.82 seconds -- the same shape as `B-122`, where a hand-written tick
- * deadline had to become a measured one. A clock that cannot be read yet falls
- * back to a bounded spin, which is what the virtio waits do for the same
- * reason. */
-static int tlb_shootdown_wait(uint32_t self, uint32_t generation,
-                              uint64_t started_ns, uint64_t budget_ns,
-                              uint32_t *stuck_cpu) {
-  uint64_t spins = 0U;
-  for (uint32_t ordinal = 0U; ordinal < g_cpu_record_count; ++ordinal) {
-    if (ordinal == self ||
-        __atomic_load_n(&g_cpu_records[ordinal].online,
-                        __ATOMIC_ACQUIRE) == 0U) {
-      continue;
-    }
-    while (__atomic_load_n(&g_cpu_records[ordinal].tlb_generation,
-                           __ATOMIC_ACQUIRE) != generation) {
-      int expired = started_ns != 0U
-                        ? timer_now_ns() - started_ns >= budget_ns
-                        : ++spins >= X86_TLB_SHOOTDOWN_FALLBACK_SPINS;
-      if (expired != 0) {
-        if (stuck_cpu != 0) *stuck_cpu = ordinal;
-        return 0;
-      }
-      __asm__ volatile("pause");
-    }
-  }
-  return 1;
-}
-
-/* Name the CPU that did not answer, what it last acknowledged, and what it
- * says it was doing: "the shootdown timed out" says nothing about which CPU is
- * stuck, whether it ever saw the request, or what it was waiting for (B-123).
- * The initiator's own note is printed last, because the CPU that reports the
- * refusal is the one that knows which of the two is holding what. */
-static void tlb_shootdown_report_timeout(uint32_t self, uint32_t generation,
-                                         uint32_t ordinal, uint64_t started_ns) {
-  x86_64_cpu_record_t *stuck = &g_cpu_records[ordinal];
-  /* Plain reads of a volatile pointer: this is a report, and a pointer that is
-     being replaced as it is read is still a pointer. */
-  const char *waiting_for = stuck->state.waiting_for;
-  const char *own = self < g_cpu_record_count
-                        ? g_cpu_records[self].state.waiting_for
-                        : 0;
-  serial_puts(COM1_PORT, "x86_64: tlb shootdown timeout waiting for cpu=");
-  serial_dec(COM1_PORT, ordinal);
-  serial_puts(COM1_PORT, " apic_id=");
-  serial_dec(COM1_PORT, stuck->apic_id);
-  serial_puts(COM1_PORT, " generation=");
-  serial_dec(COM1_PORT, generation);
-  serial_puts(COM1_PORT, " acknowledged=");
-  serial_dec(COM1_PORT,
-             __atomic_load_n(&stuck->tlb_generation, __ATOMIC_ACQUIRE));
-  serial_puts(COM1_PORT, " online=");
-  serial_dec(COM1_PORT, __atomic_load_n(&stuck->online, __ATOMIC_ACQUIRE));
-  serial_puts(COM1_PORT, " waited_ns=");
-  serial_dec(COM1_PORT, started_ns != 0U ? timer_now_ns() - started_ns : 0U);
-  serial_puts(COM1_PORT, " interrupts=");
-  serial_dec(COM1_PORT,
-             __atomic_load_n(&stuck->interrupts_taken, __ATOMIC_ACQUIRE));
-  serial_puts(COM1_PORT, " last_vector=");
-  serial_dec(COM1_PORT, stuck->last_vector);
-  serial_puts(COM1_PORT, " shootdowns_handled=");
-  serial_dec(COM1_PORT,
-             __atomic_load_n(&stuck->shootdowns_handled, __ATOMIC_ACQUIRE));
-  serial_puts(COM1_PORT, " shootdowns_polled=");
-  serial_dec(COM1_PORT,
-             __atomic_load_n(&stuck->shootdowns_polled, __ATOMIC_ACQUIRE));
-  serial_puts(COM1_PORT, " shootdown_lock_wait=");
-  serial_dec(COM1_PORT, stuck->shootdown_lock_wait);
-  serial_puts(COM1_PORT, " waiting_for=");
-  serial_puts(COM1_PORT, waiting_for != 0 ? waiting_for : "none");
-  serial_puts(COM1_PORT, "\n");
-  serial_puts(COM1_PORT, "x86_64: tlb shootdown initiator cpu=");
-  serial_dec(COM1_PORT, self);
-  serial_puts(COM1_PORT, " waiting_for=");
-  serial_puts(COM1_PORT, own != 0 ? own : "none");
-  serial_puts(COM1_PORT, "\n");
-}
-
-void x86_64_platform_invalidate_page_all(uint64_t virtual_address) {
-  uint32_t self = x86_64_platform_current_ordinal();
-  xaios_cpu_note_wait("tlb shootdown lock");
-  while (__atomic_exchange_n(&g_tlb_shootdown_lock, 1U,
-                             __ATOMIC_ACQUIRE) != 0U) {
-    /* A CPU waiting here cannot take the shootdown interrupt either, so record
-     * whether it is waiting with interrupts masked -- that is the difference
-     * between "spinning and will answer" and "spinning and cannot" -- and
-     * answer a shootdown by hand while waiting, for the same reason the guard's
-     * spin does (B-123). */
-    if (self < g_cpu_record_count) {
-      __atomic_store_n(&g_cpu_records[self].shootdown_lock_wait,
-                       xaios_interrupts_enabled() != 0 ? 1U : 2U,
-                       __ATOMIC_RELEASE);
-    }
-    xaios_cpu_relax();
-  }
-  if (self < g_cpu_record_count) {
-    __atomic_store_n(&g_cpu_records[self].shootdown_lock_wait, 0U,
-                     __ATOMIC_RELEASE);
-  }
-  xaios_cpu_note_wait("tlb shootdown in progress");
-  uint32_t generation = tlb_shootdown_begin(self, virtual_address);
-  uint64_t started_ns = timer_now_ns();
-  uint32_t stuck = UINT32_MAX;
-  if (tlb_shootdown_wait(self, generation, started_ns,
-                         X86_TLB_SHOOTDOWN_TIMEOUT_NS, &stuck) == 0) {
-    tlb_shootdown_report_timeout(self, generation, stuck, started_ns);
-    panic_halt(COM1_PORT, "TLB shootdown timeout");
-  }
-  __atomic_store_n(&g_tlb_shootdown_in_flight, 0U, __ATOMIC_RELEASE);
-  __atomic_add_fetch(&g_tlb_shootdown_count, 1U, __ATOMIC_RELAXED);
-  __atomic_store_n(&g_tlb_shootdown_lock, 0U, __ATOMIC_RELEASE);
-  xaios_cpu_note_wait(0);
-}
-
-/* One shootdown with a caller-chosen budget, reported rather than fatal.
- *
- * The self-test needs both halves of B-123: the fixed kernel, where a CPU
- * spinning with interrupts masked answers, and the kernel as it was, where it
- * cannot. `suppress_poll` is the second half; the budget is short for that run
- * so the control costs a few tens of milliseconds instead of the production
- * two seconds. Returns 1 when every CPU acknowledged. */
-int x86_64_platform_shootdown_probe(uint64_t virtual_address, uint64_t budget_ns,
-                                    uint32_t suppress_poll) {
-  uint32_t self = x86_64_platform_current_ordinal();
-  uint32_t saved = __atomic_exchange_n(
-      &g_tlb_shootdown_poll_suppressed, suppress_poll != 0U ? 1U : 0U,
-      __ATOMIC_ACQ_REL);
-  while (__atomic_exchange_n(&g_tlb_shootdown_lock, 1U,
-                             __ATOMIC_ACQUIRE) != 0U) {
-    __asm__ volatile("pause");
-  }
-  uint32_t generation = tlb_shootdown_begin(self, virtual_address);
-  uint64_t started_ns = timer_now_ns();
-  uint32_t stuck = UINT32_MAX;
-  int complete = tlb_shootdown_wait(self, generation, started_ns, budget_ns,
-                                    &stuck);
-  __atomic_store_n(&g_tlb_shootdown_in_flight, 0U, __ATOMIC_RELEASE);
-  if (complete != 0) {
-    __atomic_add_fetch(&g_tlb_shootdown_count, 1U, __ATOMIC_RELAXED);
-  }
-  __atomic_store_n(&g_tlb_shootdown_lock, 0U, __ATOMIC_RELEASE);
-  __atomic_store_n(&g_tlb_shootdown_poll_suppressed, saved, __ATOMIC_RELEASE);
-  return complete;
-}
-
-uint64_t x86_64_platform_tlb_shootdown_count(void) {
-  return __atomic_load_n(&g_tlb_shootdown_count, __ATOMIC_ACQUIRE);
-}
-
-uint64_t x86_64_platform_shootdown_budget_ns(void) {
-  return X86_TLB_SHOOTDOWN_TIMEOUT_NS;
-}
-
-/* How each CPU answered, so the self-test can say whether the answer came from
- * the spin or from the interrupt -- a passing test that only ever saw the
- * interrupt would not have built the cycle it claims to test. */
-uint64_t x86_64_platform_shootdowns_polled(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count
-             ? __atomic_load_n(&g_cpu_records[ordinal].shootdowns_polled,
-                               __ATOMIC_ACQUIRE)
-             : 0U;
-}
-
-uint64_t x86_64_platform_shootdowns_handled(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count
-             ? __atomic_load_n(&g_cpu_records[ordinal].shootdowns_handled,
-                               __ATOMIC_ACQUIRE)
-             : 0U;
-}
-
 void x86_64_platform_set_idle_halt_probe(uint64_t gap_cycles, uint32_t legacy) {
   __atomic_store_n(&g_idle_halt_probe_legacy, legacy != 0U ? 1U : 0U,
                    __ATOMIC_RELEASE);
@@ -819,18 +470,20 @@ void x86_64_platform_set_idle_halt_probe(uint64_t gap_cycles, uint32_t legacy) {
                    __ATOMIC_RELEASE);
 }
 
-uint64_t x86_64_platform_idle_gap_rounds(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count
-             ? __atomic_load_n(&g_cpu_records[ordinal].idle_gap_rounds,
-                               __ATOMIC_ACQUIRE)
-             : 0U;
-}
+/* The seam early_tlb.c reaches through: the CPU table this file owns, and the
+ * idle-loop probe pair it still reads below. The per-CPU getters for both live
+ * in early_tlb.c with the rest of the shootdown; this file keeps only the
+ * storage and these reads. */
+x86_64_cpu_record_t *xaios_x86_early_cpu_records(void) { return g_cpu_records; }
 
-uint64_t x86_64_platform_idle_wakeups_raced(uint32_t ordinal) {
-  return ordinal < g_cpu_record_count
-             ? __atomic_load_n(&g_cpu_records[ordinal].idle_wakeups_raced,
-                               __ATOMIC_ACQUIRE)
-             : 0U;
+uint32_t xaios_x86_early_cpu_record_count(void) { return g_cpu_record_count; }
+
+void xaios_x86_early_idle_probe_get(x86_64_idle_probe_state_t *state) {
+  if (state == 0) return;
+  state->legacy =
+      __atomic_load_n(&g_idle_halt_probe_legacy, __ATOMIC_ACQUIRE);
+  state->gap_cycles =
+      __atomic_load_n(&g_idle_halt_probe_gap_cycles, __ATOMIC_ACQUIRE);
 }
 
 void x86_64_platform_set_user_resume(uint64_t stack) {
@@ -1352,6 +1005,39 @@ static void lapic_send(uint32_t destination, uint32_t command) {
   }
 }
 
+/* The primitives early_tlb.c calls, exported under the names early_module.h
+ * declares. They are the same functions above and below, not copies. */
+void xaios_x86_early_lapic_send(uint32_t destination, uint32_t command) {
+  lapic_send(destination, command);
+}
+
+uint32_t xaios_x86_early_current_ordinal_fast(void) {
+  return current_ordinal_fast();
+}
+
+void xaios_x86_early_serial_puts(uint16_t base, const char *message) {
+  serial_puts(base, message);
+}
+
+void xaios_x86_early_serial_dec(uint16_t base, uint64_t value) {
+  serial_dec(base, value);
+}
+
+void xaios_x86_early_panic_halt(uint16_t serial_base, const char *message) {
+  panic_halt(serial_base, message);
+}
+
+/* The two more primitives early_cpu.c's placement report calls; declared in
+ * the same early_module.h seam and defined here, not copied. */
+void xaios_x86_early_serial_hex64(uint16_t base, uint64_t value) {
+  serial_hex64(base, value);
+}
+
+void xaios_x86_early_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
+                           uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
+  cpuid(leaf, subleaf, eax, ebx, ecx, edx);
+}
+
 static void tsc_delay(uint64_t cycles) {
   uint64_t deadline = rdtsc() + cycles;
   while ((int64_t)(rdtsc() - deadline) < 0) __asm__ volatile("pause");
@@ -1448,18 +1134,9 @@ static uint64_t x86_64_interrupt_entry_body(x86_64_exception_frame_t *frame) {
     return 0U;
   }
   if (frame != 0 && frame->vector == 35U && g_lapic_ready != 0U) {
-    uint32_t ordinal = x86_64_platform_current_ordinal();
-    uint32_t generation =
-        __atomic_load_n(&g_tlb_shootdown_generation, __ATOMIC_ACQUIRE);
-    uint64_t address =
-        __atomic_load_n(&g_tlb_shootdown_address, __ATOMIC_ACQUIRE);
-    __asm__ volatile("invlpg (%0)" : : "r"((void *)(uintptr_t)address)
-                     : "memory");
-    if (ordinal < g_cpu_record_count) {
-      tlb_acknowledge(&g_cpu_records[ordinal], generation);
-      __atomic_add_fetch(&g_cpu_records[ordinal].shootdowns_handled, 1U,
-                         __ATOMIC_RELAXED);
-    }
+    /* The shootdown's own state lives in early_tlb.c now; this is the same
+     * read the inline block did, in the same place in the dispatch order. */
+    xaios_x86_early_tlb_note_interrupt();
     lapic_write(APIC_EOI, 0U);
     return 0U;
   }
@@ -1572,15 +1249,19 @@ void x86_64_ap_entry(uint32_t ordinal) {
      * would otherwise wait on; x86-64 has no event register, so the answer is
      * the `sti; hlt` pair, whose interrupt shadow means the interrupt is
      * recognised after the halt rather than before it. */
-    uint64_t probe_gap =
-        __atomic_load_n(&g_idle_halt_probe_gap_cycles, __ATOMIC_ACQUIRE);
+    x86_64_idle_probe_state_t probe;
+    xaios_x86_early_idle_probe_get(&probe);
+    uint64_t probe_gap = probe.gap_cycles;
     if (probe_gap != 0U) {
       __atomic_add_fetch(&g_cpu_records[ordinal].idle_gap_rounds, 1U,
                          __ATOMIC_RELEASE);
       tsc_delay(probe_gap);
     }
     __asm__ volatile("cli" ::: "memory");
-    if (__atomic_load_n(&g_idle_halt_probe_legacy, __ATOMIC_ACQUIRE) == 0U &&
+    /* Read again after `cli`, where this used to load the legacy flag: the two
+     * loads keep the order they had before the split. */
+    xaios_x86_early_idle_probe_get(&probe);
+    if (probe.legacy == 0U &&
         xaios_thread_pending_on_cpu(ordinal) != 0U) {
       /* The window was real and this CPU was in it. Counted once per CPU, and
          then said out loud with interrupts restored: this is the measurement
@@ -2690,81 +2371,6 @@ static void X86_BRINGUP_ONLY validate_virtio_network_operation(uint16_t serial_b
               "x86_64: modern VirtIO network DMA TX passed bytes=42\n");
 }
 
-static void X86_BRINGUP_ONLY build_placement_policy(uint16_t serial_base) {
-  uint32_t eax = 0;
-  uint32_t ebx = 0;
-  uint32_t ecx = 0;
-  uint32_t edx = 0;
-  cpuid(0, 0, &eax, &ebx, &ecx, &edx);
-  uint32_t max_leaf = eax;
-  uint32_t topology_leaf = max_leaf >= 0x1fU ? 0x1fU :
-                           (max_leaf >= 0x0bU ? 0x0bU : 0U);
-  uint32_t logical_cpus = 0U;
-  uint32_t threads_per_core = 1U;
-  if (topology_leaf != 0U) {
-    for (uint32_t level = 0U; level < 32U; ++level) {
-      cpuid(topology_leaf, level, &eax, &ebx, &ecx, &edx);
-      uint32_t level_type = (ecx >> 8U) & 0xffU;
-      uint32_t count = ebx & UINT32_C(0xffff);
-      if (count == 0U || level_type == 0U) break;
-      if (level_type == 1U) threads_per_core = count;
-      if (count > logical_cpus) logical_cpus = count;
-    }
-  }
-  if (logical_cpus == 0U) {
-    cpuid(1, 0, &eax, &ebx, &ecx, &edx);
-    logical_cpus = (ebx >> 16) & 0xffU;
-    if (logical_cpus == 0U) logical_cpus = 1U;
-  }
-
-  g_placement = (x86_64_placement_state_t){0};
-  g_placement.logical_cpus = logical_cpus;
-  g_placement.housekeeping_cpus = 1U;
-  if (logical_cpus >= 4U) {
-    g_placement.ai_hot_cpus = 2U;
-    g_placement.background_cpus = logical_cpus - 3U;
-  } else if (logical_cpus >= 2U) {
-    g_placement.ai_hot_cpus = 1U;
-    g_placement.background_cpus = logical_cpus - 2U;
-  } else {
-    g_placement.ai_hot_cpus = 0U;
-    g_placement.background_cpus = 0U;
-  }
-  g_placement.smt_disabled_by_default = 1U;
-  g_placement.p_core_policy_ready = max_leaf >= 0x1aU ? 1U : 0U;
-  g_placement.e_core_policy_ready = max_leaf >= 0x1aU ? 1U : 0U;
-  g_placement.threads_per_core = threads_per_core;
-  g_placement.topology_leaf = topology_leaf;
-  g_placement.migration_total = 0;
-  g_placement.context_switch_total = 0;
-
-  serial_puts(serial_base, "x86_64: placement policy logical_cpus=");
-  serial_dec(serial_base, g_placement.logical_cpus);
-  serial_puts(serial_base, " housekeeping=");
-  serial_dec(serial_base, g_placement.housekeeping_cpus);
-  serial_puts(serial_base, " ai_hot=");
-  serial_dec(serial_base, g_placement.ai_hot_cpus);
-  serial_puts(serial_base, " background=");
-  serial_dec(serial_base, g_placement.background_cpus);
-  serial_puts(serial_base, " threads_per_core=");
-  serial_dec(serial_base, g_placement.threads_per_core);
-  serial_puts(serial_base, " topology_leaf=");
-  serial_hex64(serial_base, g_placement.topology_leaf);
-  serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: SMT policy disabled_by_default=");
-  serial_dec(serial_base, g_placement.smt_disabled_by_default);
-  serial_puts(serial_base, " p_core_policy=");
-  serial_dec(serial_base, g_placement.p_core_policy_ready);
-  serial_puts(serial_base, " e_core_policy=");
-  serial_dec(serial_base, g_placement.e_core_policy_ready);
-  serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: hot-core telemetry migration_total=");
-  serial_dec(serial_base, g_placement.migration_total);
-  serial_puts(serial_base, " context_switch_total=");
-  serial_dec(serial_base, g_placement.context_switch_total);
-  serial_puts(serial_base, "\n");
-}
-
 static void X86_BRINGUP_ONLY validate_x86_os_contract(uint16_t serial_base) {
   uint32_t portable = xaios_common_runtime_probe();
   uint32_t storage_ready =
@@ -2950,7 +2556,7 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 48 PCI discovery passed\n");
   validate_virtio_block_operation(serial_base);
   validate_virtio_network_operation(serial_base);
-  build_placement_policy(serial_base);
+  x86_64_early_cpu_build_placement_policy(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 49 placement policy passed\n");
   validate_x86_os_contract(serial_base);
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 50 portable common runtime passed platform services pending\n");
