@@ -9,28 +9,36 @@
  *   cut before the TCP data plane            88 symbols cross
  *   cut out the self-test                    50 symbols cross
  *
- * The reason is visible directly below this comment. Every counter, both flow
+ * The reason was visible directly below this comment. Every counter, both flow
  * tables and the listener registry are file-scope state, and every layer
  * touches all of it, so a split relocates the coupling into a shared header
  * without reducing it. Splitting this file usefully means first putting that
  * state behind accessors -- a refactor with real risk, and one that wants
  * doing deliberately rather than alongside something else. It is tracked.
  *
+ * The first of those cuts has landed. The listener registry, the accept queue
+ * and the socket-to-flow map now live in network_stack_listener.c, reached
+ * through the row-copying accessors declared in network_stack_listener.h. The
+ * rest of this file -- the TCP/UDP flow tables and the counters -- is still
+ * file-scope state, and the row-copying accessors are the pattern the next cut
+ * should follow.
+ *
  * The layout, for navigation:
  *
  *   constants and types            declarations, sizes, protocol numbers
- *   shared state                   counters, flow tables, listener registry
+ *   shared state                   counters, flow tables
  *   guard                          see xaios_reentrant_lock; C-01
  *   helpers                        byte order, checksums, frame construction
  *   receive path                   frame classification and dispatch
  *   TCP segment builder            line ~2185
- *   listener, accept, socket map   line ~2476
+ *   listener, accept, socket map   moved to network_stack_listener.c
  *   public API                     the entry points a syscall reaches
- *   self-test                      line ~4120
+ *   self-test                      the boot-time network self-test
  */
 
 #include <xaios/arp.h>
 
+#include "network_stack_listener.h"
 #include "network_stack_wire.h"
 #include <xaios/assert.h>
 #include <xaios/dns.h>
@@ -60,8 +68,6 @@
    refills that land while it works. */
 #define NETWORK_POLL_RX_BUDGET 16U
 
-#define NETWORK_TCP_CONNECTIONS 128U
-#define NETWORK_UDP_FLOWS 32U
 #define NETWORK_PACKET_DESCRIPTORS 32U
 #define NETWORK_QUEUE_RING_SIZE 8U
 #define NETWORK_UDP_IDLE_TIMEOUT_NS UINT64_C(30000000000)
@@ -404,14 +410,6 @@ static uint16_t g_ping_sequence;
 #define NETWORK_PING_IDENTIFIER UINT16_C(0x5841)
 #define NETWORK_PING_TIMEOUT_NS UINT64_C(3000000000)
 
-/* ---- Socket-to-Flow Mapping ---- */
-#define NETWORK_SOCK_FLOW_MAP_SIZE \
-  (NETWORK_TCP_CONNECTIONS + NETWORK_UDP_FLOWS)
-static socket_flow_mapping_t g_socket_flow_map[NETWORK_SOCK_FLOW_MAP_SIZE];
-/* Every mapping this table had no room for. Counted rather than inferred: the
-   condition is otherwise invisible from outside the kernel. */
-static uint64_t g_socket_map_exhausted_count;
-
 static uint64_t g_udp_tx_count;
 static uint64_t g_udp_rx_count;
 static uint64_t g_udp_malformed_count;
@@ -509,29 +507,9 @@ static uint32_t ooo_buffer_drain(network_tcp_flow_t *flow) {
   return total;
 }
 
-/* Per-listener accept backlog. */
-#define NETWORK_MAX_LISTENERS 16U
-#define NETWORK_LISTENER_BACKLOG NETWORK_TCP_CONNECTIONS
-typedef struct listener_accept_entry {
-  uint32_t flow_id;
-  uint32_t peer_ip;         /* IPv4 (host order) */
-  xaios_ip_addr_t peer_addr; /* full address (IPv4 or IPv6) */
-  uint16_t peer_port;
-  uint16_t local_port;
-  uint16_t payload_len;
-  uint32_t active;
-} listener_accept_entry_t;
-
-typedef struct network_listener_ex {
-  uint16_t port;
-  uint8_t protocol;
-  uint64_t sockfd;
-  uint32_t active;
-  listener_accept_entry_t backlog[NETWORK_LISTENER_BACKLOG];
-  uint32_t backlog_count;
-} network_listener_ex_t;
-
-static network_listener_ex_t g_listeners_ex[NETWORK_MAX_LISTENERS];
+/* The listener registry and the socket-to-flow map now live in
+   network_stack_listener.c; network_stack_listener.h declares the accessors
+   the rest of this file uses and the row types they speak. */
 
 /* B-63: say how a flow ended when the ending is the interesting kind.
  *
@@ -581,20 +559,27 @@ static void release_tcp_flow(network_tcp_flow_t *flow) {
   uint32_t flow_id = flow->flow_id;
   if (flow->rx_buf != 0) sockbuf_free(flow->rx_buf);
   if (flow->tx_buf != 0) sockbuf_free(flow->tx_buf);
+  /* Copy each live row out, compact it, and commit it back. The row is never
+     a pointer into the registry: this runs under the caller's guard and a
+     copy is what the accessor contract gives. */
   for (uint32_t listener_index = 0;
-       listener_index < NETWORK_MAX_LISTENERS; ++listener_index) {
-    network_listener_ex_t *listener = &g_listeners_ex[listener_index];
+       listener_index < network_listener_slot_count(); ++listener_index) {
+    network_listener_ex_t listener;
+    if (!network_listener_slot_read(listener_index, &listener)) continue;
     uint32_t write_index = 0;
     for (uint32_t read_index = 0;
-         read_index < listener->backlog_count; ++read_index) {
-      if (listener->backlog[read_index].flow_id != flow_id) {
+         read_index < listener.backlog_count; ++read_index) {
+      if (listener.backlog[read_index].flow_id != flow_id) {
         if (write_index != read_index) {
-          listener->backlog[write_index] = listener->backlog[read_index];
+          listener.backlog[write_index] = listener.backlog[read_index];
         }
         ++write_index;
       }
     }
-    listener->backlog_count = write_index;
+    if (write_index != listener.backlog_count) {
+      listener.backlog_count = write_index;
+      network_listener_slot_write(listener_index, &listener);
+    }
   }
   flow->rx_buf = 0;
   flow->tx_buf = 0;
@@ -631,25 +616,30 @@ static void release_udp_flow(network_udp_flow_t *flow) {
   uint32_t flow_id = flow->flow_id;
   if (flow->rx_buf != 0) sockbuf_free(flow->rx_buf);
   for (uint32_t listener_index = 0;
-       listener_index < NETWORK_MAX_LISTENERS; ++listener_index) {
-    network_listener_ex_t *listener = &g_listeners_ex[listener_index];
+       listener_index < network_listener_slot_count(); ++listener_index) {
+    network_listener_ex_t listener;
+    if (!network_listener_slot_read(listener_index, &listener)) continue;
     uint32_t write_index = 0;
     for (uint32_t read_index = 0;
-         read_index < listener->backlog_count; ++read_index) {
-      if (listener->backlog[read_index].flow_id != flow_id) {
+         read_index < listener.backlog_count; ++read_index) {
+      if (listener.backlog[read_index].flow_id != flow_id) {
         if (write_index != read_index) {
-          listener->backlog[write_index] = listener->backlog[read_index];
+          listener.backlog[write_index] = listener.backlog[read_index];
         }
         ++write_index;
       }
     }
-    listener->backlog_count = write_index;
+    if (write_index != listener.backlog_count) {
+      listener.backlog_count = write_index;
+      network_listener_slot_write(listener_index, &listener);
+    }
   }
-  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
-    if (g_socket_flow_map[i].active != 0U &&
-        g_socket_flow_map[i].protocol == NETWORK_IP_PROTO_UDP &&
-        g_socket_flow_map[i].flow_id == flow_id) {
-      g_socket_flow_map[i].active = 0U;
+  for (uint32_t i = 0; i < socket_map_slot_count(); ++i) {
+    socket_flow_mapping_t row;
+    if (!socket_map_slot_read(i, &row)) continue;
+    if (row.protocol == NETWORK_IP_PROTO_UDP && row.flow_id == flow_id) {
+      row.active = 0U;
+      socket_map_slot_write(i, &row);
     }
   }
   flow->rx_buf = 0;
@@ -889,93 +879,6 @@ static uint32_t tcp_apply_sack_blocks(
   if (released > flow->in_flight) released = flow->in_flight;
   flow->in_flight -= released;
   return released;
-}
-
-static network_listener_ex_t *find_listener_ex(uint16_t port,
-                                                uint8_t protocol) {
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
-        g_listeners_ex[i].protocol == protocol)
-      return &g_listeners_ex[i];
-  }
-  return 0;
-}
-
-static network_listener_ex_t *find_listener_by_socket(uint64_t sockfd,
-                                                       uint8_t protocol) {
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active && g_listeners_ex[i].sockfd == sockfd &&
-        g_listeners_ex[i].protocol == protocol) {
-      return &g_listeners_ex[i];
-    }
-  }
-  return 0;
-}
-
-static int listener_enqueue_backlog(uint16_t port, uint32_t flow_id,
-                                     uint32_t peer_ip, uint16_t peer_port,
-                                     const xaios_ip_addr_t *peer_addr) {
-  listener_lock();
-  network_listener_ex_t *l = find_listener_ex(port, NETWORK_IP_PROTO_TCP);
-  if (!l) { listener_unlock(); return 0; }
-  if (l->backlog_count >= NETWORK_LISTENER_BACKLOG) { listener_unlock(); return 0; }
-  listener_accept_entry_t *e = &l->backlog[l->backlog_count++];
-  e->flow_id = flow_id;
-  e->peer_ip = peer_ip;
-  if (peer_addr) e->peer_addr = *peer_addr;
-  else { xaios_ip_addr_zero(&e->peer_addr); e->peer_addr.family = XAIOS_IP_FAMILY_V4; }
-  e->peer_port = peer_port;
-  e->local_port = port;
-  e->payload_len = 0;
-  e->active = 1;
-  network_readiness_note();
-  { listener_unlock(); return 1; }
-  listener_unlock();
-}
-
-static int listener_dequeue_backlog(uint16_t port, uint32_t *out_flow_id,
-                                     uint32_t *out_peer_ip,
-                                     uint16_t *out_peer_port,
-                                     xaios_ip_addr_t *out_peer_addr) {
-  listener_lock();
-  network_listener_ex_t *l = find_listener_ex(port, NETWORK_IP_PROTO_TCP);
-  if (!l || l->backlog_count == 0) { listener_unlock(); return 0; }
-  listener_accept_entry_t *e = &l->backlog[0];
-  if (out_flow_id) *out_flow_id = e->flow_id;
-  if (out_peer_ip) *out_peer_ip = e->peer_ip;
-  if (out_peer_port) *out_peer_port = e->peer_port;
-  if (out_peer_addr) *out_peer_addr = e->peer_addr;
-  for (uint32_t i = 1; i < l->backlog_count; ++i)
-    l->backlog[i - 1] = l->backlog[i];
-  l->backlog_count--;
-  { listener_unlock(); return 1; }
-  listener_unlock();
-}
-
-static int udp_listener_enqueue(uint16_t port, uint32_t flow_id,
-                                uint16_t peer_port,
-                                const xaios_ip_addr_t *peer_addr,
-                                uint16_t payload_len) {
-  listener_lock();
-  network_listener_ex_t *listener =
-      find_listener_ex(port, NETWORK_IP_PROTO_UDP);
-  if (listener == 0) {
-    { listener_unlock(); return 0; }
-  }
-  if (listener->backlog_count >= NETWORK_LISTENER_BACKLOG) {
-    { listener_unlock(); return 0; }
-  }
-  listener_accept_entry_t *entry =
-      &listener->backlog[listener->backlog_count++];
-  entry->flow_id = flow_id;
-  entry->peer_ip = 0;
-  entry->peer_addr = *peer_addr;
-  entry->peer_port = peer_port;
-  entry->local_port = port;
-  entry->payload_len = payload_len;
-  entry->active = 1;
-  { listener_unlock(); return 1; }
-  listener_unlock();
 }
 
 static int network_ipv6_is_global_unicast(const xaios_ip_addr_t *address) {
@@ -1749,7 +1652,7 @@ xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
 
 void network_stack_init(void) {
   g_tcp_drain_cursor = 0U;
-  g_socket_map_exhausted_count = 0U;
+  socket_map_reset_exhausted();
   g_poll_last_ns = 0U;
   g_poll_gap_max_ns = 0U;
   g_poll_gap_outage_count = 0U;
@@ -1809,11 +1712,10 @@ void network_stack_init(void) {
     g_packet_descs[i].created_ns = 0;
   }
 
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    g_listeners_ex[i].active = 0;
-    g_listeners_ex[i].port = 0;
-    g_listeners_ex[i].sockfd = 0;
-    g_listeners_ex[i].backlog_count = 0;
+  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+    network_listener_ex_t row;
+    net_wire_bytes_zero(&row, sizeof(row));
+    network_listener_slot_write(i, &row);
   }
 
   g_next_flow_id = 1U;
@@ -1988,12 +1890,23 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
     for (uint32_t i = 4U; i < 16U; ++i) {
       peer_addr.addr[i] = 0;
     }
-    /* The row stays live for the length of this block, so the registry guard
-       covers the use and not merely the lookup. */
+    /* The row is copied out under the guard, so no pointer into the registry
+       is held across udp_listener_enqueue(), which takes the same reentrant
+       guard again. */
     listener_lock();
-    network_listener_ex_t *listener =
-        find_listener_ex(dst_port, NETWORK_IP_PROTO_UDP);
-    if (listener != 0) {
+    network_listener_ex_t listener_row;
+    uint32_t listener_backlog = 0U;
+    int listener_found = 0;
+    for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+      if (!network_listener_slot_read(i, &listener_row)) continue;
+      if (listener_row.port == dst_port &&
+          listener_row.protocol == NETWORK_IP_PROTO_UDP) {
+        listener_backlog = listener_row.backlog_count;
+        listener_found = 1;
+        break;
+      }
+    }
+    if (listener_found != 0) {
       /* A datagram that does not fit is dropped here, whole, and counted; it is
          never queued in part. The test is against `sockbuf_available`, the flow
          ring's *free space*, so this is backpressure as much as a size policy:
@@ -2015,7 +1928,7 @@ xaios_status_t network_stack_process_udp_frame(const uint8_t *frame,
          is truncated silently and told nothing. A truncation flag is what would
          make that last case honest, and it is a syscall change rather than a
          stack one. */
-      if (listener->backlog_count >= NETWORK_LISTENER_BACKLOG ||
+      if (listener_backlog >= NETWORK_LISTENER_BACKLOG ||
           data_len > sockbuf_available(flow->rx_buf) ||
           sockbuf_write(flow->rx_buf, udp_payload, data_len) != data_len ||
           !udp_listener_enqueue(dst_port, flow->flow_id, src_port, &peer_addr,
@@ -2339,260 +2252,6 @@ static void tcp_drain_pending(void) {
   }
 }
 
-/* ---- Listener Registry Functions ---- */
-
-static xaios_status_t network_stack_register_listener_unlocked(uint16_t port,
-                                                              uint64_t sockfd) {
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (!g_listeners_ex[i].active) {
-      g_listeners_ex[i].port = port;
-      g_listeners_ex[i].protocol = NETWORK_IP_PROTO_TCP;
-      g_listeners_ex[i].sockfd = sockfd;
-      g_listeners_ex[i].active = 1;
-      g_listeners_ex[i].backlog_count = 0;
-      return XAIOS_OK;
-    }
-  }
-  klog("network: listener registry full (port=%u)\n", port);
-  return XAIOS_ERR_NO_MEMORY;
-}
-
-xaios_status_t network_stack_register_listener(uint16_t port, uint64_t sockfd) {
-  listener_lock();
-  const xaios_status_t status =
-      network_stack_register_listener_unlocked(port, sockfd);
-  listener_unlock();
-  /* A full registry is not a detail the caller can be spared: the row is what
-     makes the port answer, so a listener that was not given one cannot receive
-     and must not be reported as listening (B-78). */
-  return status;
-}
-
-static xaios_status_t network_stack_register_udp_listener_unlocked(
-    uint16_t port, uint64_t sockfd) {
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (!g_listeners_ex[i].active) {
-      g_listeners_ex[i].port = port;
-      g_listeners_ex[i].protocol = NETWORK_IP_PROTO_UDP;
-      g_listeners_ex[i].sockfd = sockfd;
-      g_listeners_ex[i].active = 1;
-      g_listeners_ex[i].backlog_count = 0;
-      return XAIOS_OK;
-    }
-  }
-  klog("network: UDP listener registry full (port=%u)\n", port);
-  return XAIOS_ERR_NO_MEMORY;
-}
-
-xaios_status_t network_stack_register_udp_listener(uint16_t port,
-                                                   uint64_t sockfd) {
-  listener_lock();
-  const xaios_status_t status =
-      network_stack_register_udp_listener_unlocked(port, sockfd);
-  listener_unlock();
-  return status;
-}
-
-static void network_stack_unregister_listener_unlocked(uint16_t port) {
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
-        g_listeners_ex[i].protocol == NETWORK_IP_PROTO_TCP) {
-      g_listeners_ex[i].active = 0;
-      g_listeners_ex[i].backlog_count = 0;
-      return;
-    }
-  }
-}
-
-void network_stack_unregister_listener(uint16_t port) {
-  listener_lock();
-  network_stack_unregister_listener_unlocked(port);
-  listener_unlock();
-}
-
-static void network_stack_unregister_udp_listener_unlocked(uint16_t port) {
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active && g_listeners_ex[i].port == port &&
-        g_listeners_ex[i].protocol == NETWORK_IP_PROTO_UDP) {
-      g_listeners_ex[i].active = 0;
-      g_listeners_ex[i].backlog_count = 0;
-      return;
-    }
-  }
-}
-
-void network_stack_unregister_udp_listener(uint16_t port) {
-  listener_lock();
-  network_stack_unregister_udp_listener_unlocked(port);
-  listener_unlock();
-}
-
-int network_stack_has_listener(uint16_t port) {
-  listener_lock();
-  int found = find_listener_ex(port, NETWORK_IP_PROTO_TCP) != 0;
-  listener_unlock();
-  return found;
-}
-
-/* ---- Accept Queue Functions ---- */
-
-static int accept_queue_enqueue(uint32_t flow_id, uint32_t peer_ip,
-                                 uint16_t peer_port, uint16_t local_port,
-                                 const xaios_ip_addr_t *peer_addr) {
-  return listener_enqueue_backlog(local_port, flow_id, peer_ip, peer_port,
-                                  peer_addr);
-}
-
-static xaios_status_t network_stack_accept_connection_unlocked(uint16_t listen_port,
-                                                uint32_t *out_flow_id,
-                                                uint32_t *out_peer_ip,
-                                                uint16_t *out_peer_port,
-                                                xaios_ip_addr_t *out_peer_addr) {
-  if (!out_flow_id || !out_peer_ip || !out_peer_port || !out_peer_addr)
-    return XAIOS_ERR_INVALID;
-  if (listener_dequeue_backlog(listen_port, out_flow_id, out_peer_ip,
-                               out_peer_port, out_peer_addr))
-    return XAIOS_OK;
-  return XAIOS_ERR_NOT_FOUND;
-}
-
-xaios_status_t network_stack_accept_connection(uint16_t listen_port,
-                                                uint32_t *out_flow_id,
-                                                uint32_t *out_peer_ip,
-                                                uint16_t *out_peer_port,
-                                                xaios_ip_addr_t *out_peer_addr) {
-  network_lock();
-  xaios_status_t result = network_stack_accept_connection_unlocked(listen_port, out_flow_id, out_peer_ip, out_peer_port, out_peer_addr);
-  network_unlock();
-  return result;
-}
-
-/* ---- Socket-to-Flow Mapping Functions ---- */
-
-/* B-47. This used to return void and fall off the end when both scans failed,
-   so a full table was indistinguishable from a successful mapping. The accept
-   that called it still allocated a descriptor, still wrote the peer address
-   back to userspace and still logged "syscall: net_accept" -- and the socket
-   it handed out had no flow behind it, so every later send and recv on that
-   descriptor looked up nothing and did nothing. A connection accepted and then
-   never progressed, with not one line anywhere saying why.
-
-   The table is NETWORK_TCP_CONNECTIONS + NETWORK_UDP_FLOWS entries, which
-   reads like "one slot per flow, so it cannot run out before flows do". That
-   is not what bounds it. A row is keyed by descriptor, not by flow, and is
-   cleared on net_close or when the owning process is torn down -- for UDP also
-   when the flow itself is released, but for TCP not: release_tcp_flow leaves
-   the row standing. So the occupancy is the number of open mapped
-   descriptors, and the kernel socket table holds at least 256 of those
-   (KERNEL_SOCK_MIN_CAPACITY) against 160 rows here. A process that opens
-   connections and leaves the descriptors open while their flows die -- a
-   leak, a peer that resets, a plain idle timeout -- fills this table with an
-   empty flow table. Sizing does not protect it; the refusal below does. */
-static xaios_status_t network_stack_map_socket_unlocked(uint64_t sockfd,
-                                uint32_t flow_id,
-                                uint8_t protocol) {
-  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
-    if (g_socket_flow_map[i].active != 0 &&
-        g_socket_flow_map[i].sockfd == sockfd) {
-      g_socket_flow_map[i].flow_id = flow_id;
-      g_socket_flow_map[i].protocol = protocol;
-      return XAIOS_OK;
-    }
-  }
-  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
-    if (g_socket_flow_map[i].active == 0) {
-      g_socket_flow_map[i].sockfd = sockfd;
-      g_socket_flow_map[i].flow_id = flow_id;
-      g_socket_flow_map[i].protocol = protocol;
-      g_socket_flow_map[i].active = 1;
-      return XAIOS_OK;
-    }
-  }
-  ++g_socket_map_exhausted_count;
-  /* Loud, but not loud enough to drown the console: a caller that retries in a
-     tight loop would otherwise turn one exhausted table into a serial flood,
-     and an unread serial pipe stalls the guest. First occurrence, then every
-     sixty-fourth. */
-  if (g_socket_map_exhausted_count == 1U ||
-      (g_socket_map_exhausted_count % 64U) == 0U) {
-    klog("network: socket-to-flow map exhausted size=%u sockfd=%lu flow=%u "
-         "protocol=%u refusals=%lu\n",
-         (unsigned)NETWORK_SOCK_FLOW_MAP_SIZE, (unsigned long)sockfd, flow_id,
-         (unsigned)protocol, g_socket_map_exhausted_count);
-  }
-  return XAIOS_ERR_NO_MEMORY;
-}
-
-xaios_status_t network_stack_map_socket(uint64_t sockfd, uint32_t flow_id,
-                                uint8_t protocol) {
-  network_lock();
-  xaios_status_t status =
-      network_stack_map_socket_unlocked(sockfd, flow_id, protocol);
-  network_unlock();
-  return status;
-}
-
-uint64_t network_stack_socket_map_exhausted_count(void) {
-  return g_socket_map_exhausted_count;
-}
-
-uint32_t network_stack_socket_map_capacity(void) {
-  return NETWORK_SOCK_FLOW_MAP_SIZE;
-}
-
-uint32_t network_stack_socket_map_count(void) {
-  uint32_t used = 0U;
-  network_lock();
-  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
-    if (g_socket_flow_map[i].active != 0U) ++used;
-  }
-  network_unlock();
-  return used;
-}
-
-static socket_flow_mapping_t *network_stack_get_socket_mapping_unlocked(uint64_t sockfd) {
-  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
-    if (g_socket_flow_map[i].active != 0 &&
-        g_socket_flow_map[i].sockfd == sockfd) {
-      return &g_socket_flow_map[i];
-    }
-  }
-  return 0;
-}
-
-/* Copy the row out under the guard rather than handing back a pointer into the
-   table. The old signature released the guard and returned an interior pointer,
-   so a caller read the row with nothing holding it still: a concurrent close
-   could clear that row between the lookup and the dereference, and the caller
-   would then act on a flow that had already been released. Harmless while one
-   CPU ran the kernel; reachable the moment syscalls run on several. */
-int network_stack_get_socket_mapping(uint64_t sockfd,
-                                     socket_flow_mapping_t *out) {
-  if (out == 0) return 0;
-  network_lock();
-  socket_flow_mapping_t *found = network_stack_get_socket_mapping_unlocked(sockfd);
-  int present = found != 0;
-  if (present) *out = *found;
-  network_unlock();
-  return present;
-}
-
-static void network_stack_unmap_socket_unlocked(uint64_t sockfd) {
-  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
-    if (g_socket_flow_map[i].active != 0 &&
-        g_socket_flow_map[i].sockfd == sockfd) {
-      g_socket_flow_map[i].active = 0;
-      return;
-    }
-  }
-}
-
-void network_stack_unmap_socket(uint64_t sockfd) {
-  network_lock();
-  network_stack_unmap_socket_unlocked(sockfd);
-  network_unlock();
-}
-
 /* ---- TCP Send / Close API ---- */
 
 static xaios_status_t network_stack_tcp_send_unlocked(uint32_t flow_id, const uint8_t *data,
@@ -2879,18 +2538,25 @@ int network_stack_socket_ready(uint64_t sockfd, uint8_t protocol,
   int ready = 0;
   network_lock();
   if (listening != 0U) {
-    network_listener_ex_t *listener =
-        protocol == NETWORK_IP_PROTO_UDP
-            ? find_listener_by_socket(sockfd, NETWORK_IP_PROTO_UDP)
-            : find_listener_ex(port, NETWORK_IP_PROTO_TCP);
-    ready = listener != 0 && listener->backlog_count != 0U;
+    for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+      network_listener_ex_t row;
+      if (!network_listener_slot_read(i, &row)) continue;
+      const int match =
+          protocol == NETWORK_IP_PROTO_UDP
+              ? (row.sockfd == sockfd && row.protocol == NETWORK_IP_PROTO_UDP)
+              : (row.port == port && row.protocol == NETWORK_IP_PROTO_TCP);
+      if (match) {
+        ready = row.backlog_count != 0U;
+        break;
+      }
+    }
   } else {
-    socket_flow_mapping_t *mapping =
-        network_stack_get_socket_mapping_unlocked(sockfd);
-    if (mapping != 0 && mapping->protocol == XAIOS_NETWORK_PROTOCOL_TCP) {
+    socket_flow_mapping_t mapping;
+    if (network_stack_get_socket_mapping_unlocked(sockfd, &mapping) != 0 &&
+        mapping.protocol == XAIOS_NETWORK_PROTOCOL_TCP) {
       int found = 0;
       for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
-        if (g_tcp_flows[i].flow_id != mapping->flow_id) continue;
+        if (g_tcp_flows[i].flow_id != mapping.flow_id) continue;
         found = 1;
         if (g_tcp_flows[i].rx_buf != 0 && g_tcp_flows[i].rx_buf->count != 0U) {
           ready = 1;
@@ -2899,7 +2565,7 @@ int network_stack_socket_ready(uint64_t sockfd, uint8_t protocol,
       }
       if (ready == 0 &&
           (found == 0 ||
-           network_stack_tcp_peer_closed_unlocked(mapping->flow_id) != 0)) {
+           network_stack_tcp_peer_closed_unlocked(mapping.flow_id) != 0)) {
         ready = 1;
       }
     }
@@ -2914,18 +2580,29 @@ static uint32_t network_stack_udp_recv_unlocked(uint64_t sockfd, uint8_t *buffer
                                 uint16_t *source_port,
                                 uint32_t *flow_id) {
   listener_lock();
-  network_listener_ex_t *listener =
-      find_listener_by_socket(sockfd, NETWORK_IP_PROTO_UDP);
-  if (listener == 0 || listener->backlog_count == 0 || buffer == 0 ||
+  network_listener_ex_t listener_row;
+  uint32_t listener_index = 0U;
+  int listener_found = 0;
+  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+    if (!network_listener_slot_read(i, &listener_row)) continue;
+    if (listener_row.sockfd == sockfd &&
+        listener_row.protocol == NETWORK_IP_PROTO_UDP) {
+      listener_index = i;
+      listener_found = 1;
+      break;
+    }
+  }
+  if (listener_found == 0 || listener_row.backlog_count == 0 || buffer == 0 ||
       buffer_size == 0) {
     { listener_unlock(); return 0; }
   }
 
-  listener_accept_entry_t entry = listener->backlog[0];
-  for (uint32_t i = 1; i < listener->backlog_count; ++i) {
-    listener->backlog[i - 1U] = listener->backlog[i];
+  listener_accept_entry_t entry = listener_row.backlog[0];
+  for (uint32_t i = 1; i < listener_row.backlog_count; ++i) {
+    listener_row.backlog[i - 1U] = listener_row.backlog[i];
   }
-  --listener->backlog_count;
+  --listener_row.backlog_count;
+  network_listener_slot_write(listener_index, &listener_row);
 
   for (uint32_t i = 0; i < NETWORK_UDP_FLOWS; ++i) {
     network_udp_flow_t *udp_flow = &g_udp_flows[i];
@@ -3430,12 +3107,23 @@ xaios_status_t network_stack_process_udp_frame_v6(const uint8_t *frame,
     /* IPv6 header is 40 bytes at offset 14 */
     const uint8_t *udp_payload = frame + 14U + 40U + 8U;
     uint32_t data_len = (uint32_t)(payload_len - 8U);
-    /* Same as the IPv4 path: the row is live for this whole block. */
+    /* Same as the IPv4 path: the row is copied out under the guard, so no
+       pointer into the registry crosses udp_listener_enqueue(). */
     listener_lock();
-    network_listener_ex_t *listener =
-        find_listener_ex(dst_port, NETWORK_IP_PROTO_UDP);
-    if (listener != 0) {
-      if (listener->backlog_count >= NETWORK_LISTENER_BACKLOG ||
+    network_listener_ex_t listener_row;
+    uint32_t listener_backlog = 0U;
+    int listener_found = 0;
+    for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+      if (!network_listener_slot_read(i, &listener_row)) continue;
+      if (listener_row.port == dst_port &&
+          listener_row.protocol == NETWORK_IP_PROTO_UDP) {
+        listener_backlog = listener_row.backlog_count;
+        listener_found = 1;
+        break;
+      }
+    }
+    if (listener_found != 0) {
+      if (listener_backlog >= NETWORK_LISTENER_BACKLOG ||
           data_len > sockbuf_available(flow->rx_buf) ||
           sockbuf_write(flow->rx_buf, udp_payload, data_len) != data_len ||
           !udp_listener_enqueue(dst_port, flow->flow_id, src_port, &src_addr,
@@ -4973,17 +4661,20 @@ void network_init_persistent(void) {
     g_udp_flows[i].flow_id = 0;
     g_udp_flows[i].rx_buf = 0;
   }
-  for (uint32_t i = 0; i < NETWORK_MAX_LISTENERS; ++i) {
-    g_listeners_ex[i].active = 0;
-    g_listeners_ex[i].backlog_count = 0;
+  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
+    network_listener_ex_t row;
+    net_wire_bytes_zero(&row, sizeof(row));
+    network_listener_slot_write(i, &row);
   }
-  for (uint32_t i = 0; i < NETWORK_SOCK_FLOW_MAP_SIZE; ++i) {
-    g_socket_flow_map[i].active = 0;
+  for (uint32_t i = 0; i < socket_map_slot_count(); ++i) {
+    socket_flow_mapping_t row;
+    net_wire_bytes_zero(&row, sizeof(row));
+    socket_map_slot_write(i, &row);
   }
   /* The boot self-test fills this table on purpose and leaves its refusals
      counted. Zero them here so a non-zero figure in a running machine means
      a running machine ran out. */
-  g_socket_map_exhausted_count = 0U;
+  socket_map_reset_exhausted();
   g_poll_last_ns = 0U;
   g_poll_gap_max_ns = 0U;
   g_poll_gap_outage_count = 0U;
@@ -5188,11 +4879,9 @@ static int network_reassemble_incoming(uint8_t *frame, uint32_t *frame_len,
    otherwise report enormous gaps that mean nothing -- a metric that fires on
    an idle machine is a metric nobody reads. */
 static uint32_t listeners_active_unlocked(void) {
-  uint32_t active = 0U;
-  for (uint32_t i = 0U; i < NETWORK_MAX_LISTENERS; ++i) {
-    if (g_listeners_ex[i].active != 0U) ++active;
-  }
-  return active;
+  /* The registry counts its own live rows now; this keeps the name the
+     poll-gap code below reads. */
+  return network_listener_active_count();
 }
 
 static void network_note_poll_gap(uint64_t now_ns) {

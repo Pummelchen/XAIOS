@@ -50,7 +50,7 @@ kernel/runtime/app_store.c 932
 kernel/runtime/control_protocol.c 2667
 kernel/runtime/cpu_ai_runtime.c 1055
 kernel/runtime/git_workspace.c 697
-kernel/runtime/network_stack.c 5468
+kernel/runtime/network_stack.c 5157
 kernel/runtime/operations.c 857
 kernel/runtime/remote_login.c 3576
 kernel/runtime/security.c 753
