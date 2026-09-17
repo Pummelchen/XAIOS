@@ -80,6 +80,7 @@ else
   $KERNEL_BUILD_DIR/early_timer_discover.o
   $KERNEL_BUILD_DIR/early_exception.o
   $KERNEL_BUILD_DIR/early_contract.o
+  $KERNEL_BUILD_DIR/early_idt.o
   $KERNEL_BUILD_DIR/early_post_smp.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
@@ -90,6 +91,8 @@ else
   $KERNEL_BUILD_DIR/smp.o
   $KERNEL_BUILD_DIR/virtio_transport_pci_probe.o
   $KERNEL_BUILD_DIR/virtio_transport_pci_queue.o
+  $KERNEL_BUILD_DIR/mmu_boot.o
+  $KERNEL_BUILD_DIR/mmu_user.o
   "
 fi
 KERNEL_OBJECTS="
@@ -105,6 +108,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/klog.o
   $KERNEL_BUILD_DIR/idle_wake.o
   $KERNEL_BUILD_DIR/input.o
+  $KERNEL_BUILD_DIR/input_queue.o
+  $KERNEL_BUILD_DIR/input_hid.o
   $KERNEL_BUILD_DIR/klog_ring.o
   $KERNEL_BUILD_DIR/telemetry.o
   $KERNEL_BUILD_DIR/panic.o
@@ -282,6 +287,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/network_stack_tcp_frame_v6.o
   $KERNEL_BUILD_DIR/network_config.o
   $KERNEL_BUILD_DIR/git_workspace.o
+  $KERNEL_BUILD_DIR/git_workspace_hash.o
+  $KERNEL_BUILD_DIR/git_workspace_selftest.o
   $KERNEL_BUILD_DIR/agent_protocol.o
   $KERNEL_BUILD_DIR/pmm.o
   $KERNEL_BUILD_DIR/numa.o

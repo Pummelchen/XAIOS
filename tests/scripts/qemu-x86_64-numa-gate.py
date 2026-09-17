@@ -195,7 +195,10 @@ def run_profile(profile: str, markers: "tuple[str, ...]") -> None:
 
 def main() -> int:
     entry_source = (ROOT / "kernel/arch/x86_64/entry.S").read_text()
-    platform_source = (ROOT / "kernel/arch/x86_64/early.c").read_text()
+    # The IDT install lives in its own translation unit as of the file-size
+    # split; the assertion is unchanged, only the file that carries the
+    # idiom it looks for. entry.S stays in the parent arch source.
+    platform_source = (ROOT / "kernel/arch/x86_64/early_idt.c").read_text()
     if entry_source.count("orq $0x200, %rax") < 2:
         raise RuntimeError("x86 user entry must enable RFLAGS.IF")
     if "IDT_PRESENT | UINT8_C(0x60) | IDT_TRAP_GATE" not in platform_source:

@@ -15,6 +15,7 @@
 #include <xaios_engine/packed.h>
 
 #include "early_module.h"
+#include "early_idt.h"
 #include "early_lapic.h"
 #include "early_serial.h"
 #include "early_exception.h"
@@ -54,6 +55,14 @@
 #define install_gdt_tss xaios_x86_gdt_install
 #define install_ap_gdt_tss xaios_x86_gdt_install_ap
 
+/* The IDT and its gate builders moved to early_idt.c; these aliases keep the
+ * one call site in x86_64_kmain and the table name x86_64_ap_entry's IDTR
+ * reload uses spelling them the way they did. The module defines the object
+ * early_idt.h declares as g_x86_idt; nothing else about either statement
+ * changes. */
+#define install_idt xaios_x86_idt_install
+#define g_idt g_x86_idt
+
 /* The exception entry and its controlled round-trip moved to early_exception.c;
  * this alias keeps the one call site in x86_64_kmain spelling it the way it
  * did. The entry itself keeps its name because entry.S calls it by that name. */
@@ -91,19 +100,10 @@
 /* X86_KERNEL_STACK_SIZE, _GUARD_BYTES and _GUARD_VALUE moved to
  * early_module.h: early_gdt.c sizes the BSP syscall stack with them and this
  * file guards the kernel and syscall stacks with them. */
-#define IDT_PRESENT UINT8_C(0x80)
-#define IDT_INTERRUPT_GATE UINT8_C(0x0e)
-#define IDT_TRAP_GATE UINT8_C(0x0f)
-
-typedef struct x86_64_idt_entry {
-  uint16_t offset_low;
-  uint16_t selector;
-  uint8_t ist;
-  uint8_t type_attr;
-  uint16_t offset_mid;
-  uint32_t offset_high;
-  uint32_t zero;
-} __attribute__((packed)) x86_64_idt_entry_t;
+/* IDT_PRESENT, IDT_INTERRUPT_GATE, IDT_TRAP_GATE and the x86_64_idt_entry_t
+ * gate layout moved to early_idt.h and early_idt.c with install_idt, their only
+ * user; this file still reads that layout through the header, because
+ * x86_64_ap_entry reloads the table the module built. */
 
 /* x86_64_idtr_t moved to early_module.h, where early_gdt.c's builder and the
  * two loaders in this file both read it. */
@@ -115,44 +115,8 @@ typedef struct x86_64_idt_entry {
 /* x86_64_contract_state_t and x86_64_hardware_gate_state_t moved to
  * early_contract.c with the two report functions that were their only users. */
 
-extern void x86_64_isr_0(void);
-extern void x86_64_isr_1(void);
-extern void x86_64_isr_2(void);
-extern void x86_64_isr_3(void);
-extern void x86_64_isr_4(void);
-extern void x86_64_isr_5(void);
-extern void x86_64_isr_6(void);
-extern void x86_64_isr_7(void);
-extern void x86_64_isr_8(void);
-extern void x86_64_isr_9(void);
-extern void x86_64_isr_10(void);
-extern void x86_64_isr_11(void);
-extern void x86_64_isr_12(void);
-extern void x86_64_isr_13(void);
-extern void x86_64_isr_14(void);
-extern void x86_64_isr_15(void);
-extern void x86_64_isr_16(void);
-extern void x86_64_isr_17(void);
-extern void x86_64_isr_18(void);
-extern void x86_64_isr_19(void);
-extern void x86_64_isr_20(void);
-extern void x86_64_isr_21(void);
-extern void x86_64_isr_22(void);
-extern void x86_64_isr_23(void);
-extern void x86_64_isr_24(void);
-extern void x86_64_isr_25(void);
-extern void x86_64_isr_26(void);
-extern void x86_64_isr_27(void);
-extern void x86_64_isr_28(void);
-extern void x86_64_isr_29(void);
-extern void x86_64_isr_30(void);
-extern void x86_64_isr_31(void);
-extern void x86_64_irq_32(void);
-extern void x86_64_irq_33(void);
-extern void x86_64_irq_34(void);
-extern void x86_64_irq_35(void);
-extern void x86_64_irq_128(void);
-extern void x86_64_irq_255(void);
+/* The x86_64_isr_N, x86_64_irq_N and x86_64_device_irq_stubs declarations
+ * moved to early_idt.c with install_idt, which was their only user. */
 /* x86_64_load_gdt/x86_64_load_tss are declared in early_gdt.c now: the two
  * functions here that called them moved there with them. */
 extern void x86_64_ring3_resume(void);
@@ -167,15 +131,15 @@ extern uint8_t x86_64_ap_trampoline_entry[];
 extern uint8_t x86_64_ap_trampoline_long_offset[];
 extern uint8_t x86_64_ap_trampoline_gdt_offset[];
 
-static x86_64_idt_entry_t g_idt[256] __attribute__((aligned(16)));
-extern void (*const x86_64_device_irq_stubs[64])(void);
+/* g_idt moved to early_idt.c as the exported g_x86_idt: this file reaches the
+ * table through the alias above, for x86_64_ap_entry's IDTR reload. */
 /* g_gdt, g_tss and g_syscall_stack moved to early_gdt.c with the builder that
  * fills them; this file reaches the BSP's rsp0 through the scalar accessors
  * xaios_x86_gdt_bsp_rsp0/_set_bsp_rsp0. A CPU record's own TSS is still here. */
 /* g_contract and g_hardware_gate moved to early_contract.c with the two
  * report functions that were their only readers and writers. */
-static uint32_t g_exception_vectors_installed;
-static uint16_t g_code_selector;
+/* g_exception_vectors_installed and g_code_selector moved to early_idt.c with
+ * install_idt: it was their only writer and their only reader. */
 /* The APIC-ready flag stays file-scope with the LAPIC timer self-test below,
  * which is its only writer, and so does the accessor early_irq.c and
  * early_platform.c call: that accessor reads the flag here instead of the flag
@@ -287,21 +251,8 @@ void panic_at(const char *file, int line, const char *fmt, ...) {
 }
 #endif
 
-static void idt_set_gate(uint8_t vector, void (*handler)(void)) {
-  uint64_t address = (uint64_t)(uintptr_t)handler;
-  g_idt[vector].offset_low = (uint16_t)(address & UINT64_C(0xffff));
-  g_idt[vector].selector = g_code_selector;
-  g_idt[vector].ist = 0;
-  g_idt[vector].type_attr = IDT_PRESENT | IDT_INTERRUPT_GATE;
-  g_idt[vector].offset_mid = (uint16_t)((address >> 16) & UINT64_C(0xffff));
-  g_idt[vector].offset_high = (uint32_t)(address >> 32);
-  g_idt[vector].zero = 0;
-}
-
-static void idt_set_user_gate(uint8_t vector, void (*handler)(void)) {
-  idt_set_gate(vector, handler);
-  g_idt[vector].type_attr = IDT_PRESENT | UINT8_C(0x60) | IDT_TRAP_GATE;
-}
+/* idt_set_gate and idt_set_user_gate moved to early_idt.c with install_idt,
+ * which was their only caller. */
 
 /* install_gdt_tss and install_ap_gdt_tss moved to early_gdt.c as
  * xaios_x86_gdt_install and xaios_x86_gdt_install_ap, together with g_gdt,
@@ -312,48 +263,9 @@ static void idt_set_user_gate(uint8_t vector, void (*handler)(void)) {
  * calls it, under the same XAIOS_X86_COMMON_RUNTIME guard. Nothing else in
  * this file used it. */
 
-static void install_idt(uint16_t serial_base) {
-  void (*handlers[32])(void) = {
-      x86_64_isr_0,  x86_64_isr_1,  x86_64_isr_2,  x86_64_isr_3,
-      x86_64_isr_4,  x86_64_isr_5,  x86_64_isr_6,  x86_64_isr_7,
-      x86_64_isr_8,  x86_64_isr_9,  x86_64_isr_10, x86_64_isr_11,
-      x86_64_isr_12, x86_64_isr_13, x86_64_isr_14, x86_64_isr_15,
-      x86_64_isr_16, x86_64_isr_17, x86_64_isr_18, x86_64_isr_19,
-      x86_64_isr_20, x86_64_isr_21, x86_64_isr_22, x86_64_isr_23,
-      x86_64_isr_24, x86_64_isr_25, x86_64_isr_26, x86_64_isr_27,
-      x86_64_isr_28, x86_64_isr_29, x86_64_isr_30, x86_64_isr_31};
-
-  __asm__ volatile("mov %%cs, %0" : "=r"(g_code_selector));
-  for (uint32_t i = 0; i < 256; ++i) {
-    g_idt[i] = (x86_64_idt_entry_t){0};
-  }
-  for (uint8_t i = 0; i < 32; ++i) {
-    idt_set_gate(i, handlers[i]);
-  }
-  idt_set_gate(32U, x86_64_irq_32);
-  idt_set_gate(33U, x86_64_irq_33);
-  idt_set_gate(34U, x86_64_irq_34);
-  idt_set_gate(35U, x86_64_irq_35);
-  for (uint32_t vector = 64U; vector < 128U; ++vector) {
-    idt_set_gate((uint8_t)vector, x86_64_device_irq_stubs[vector - 64U]);
-  }
-  idt_set_user_gate(128U, x86_64_irq_128);
-  idt_set_gate(255U, x86_64_irq_255);
-
-  x86_64_idtr_t idtr = {
-      .limit = (uint16_t)(sizeof(g_idt) - 1U),
-      .base = (uint64_t)(uintptr_t)g_idt,
-  };
-  __asm__ volatile("lidt %0" : : "m"(idtr) : "memory");
-  g_exception_vectors_installed = 32;
-  serial_puts(serial_base, "x86_64: IDT installed vectors=");
-  serial_dec(serial_base, g_exception_vectors_installed);
-  serial_puts(serial_base, " code_selector=");
-  serial_hex64(serial_base, g_code_selector);
-  serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: early exception path online\n");
-  serial_puts(serial_base, "x86_64: IRQ vector 32 installed\n");
-}
+/* install_idt moved to early_idt.c as xaios_x86_idt_install, called at this
+ * same point in x86_64_kmain through the alias above; the gate builders, the
+ * ISR declarations and the table moved with it. */
 
 /* The LAPIC register accessors, the CPU-identity pair and the MSR/CR/TSC/CPUID
  * accessors that stood here -- lapic_read, lapic_write, lapic_id, lapic_send,
