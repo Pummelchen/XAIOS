@@ -722,6 +722,7 @@ else
   $KERNEL_BUILD_DIR/early_serial.o
   $KERNEL_BUILD_DIR/early_acpi.o
   $KERNEL_BUILD_DIR/early_fpu.o
+  $KERNEL_BUILD_DIR/early_irq.o
   $KERNEL_BUILD_DIR/early_gdt.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
@@ -758,6 +759,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/block_device.o
   $KERNEL_BUILD_DIR/virtio_blk.o
   $KERNEL_BUILD_DIR/virtio_blk_handles.o
+  $KERNEL_BUILD_DIR/virtio_blk_request.o
+  $KERNEL_BUILD_DIR/virtio_blk_backend.o
   $KERNEL_BUILD_DIR/virtio_net.o
   $KERNEL_BUILD_DIR/virtio_net_selftest.o
   $KERNEL_BUILD_DIR/virtio_net_tx.o
@@ -788,6 +791,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/xbfs_selfcheck.o
   $KERNEL_BUILD_DIR/fat.o
   $KERNEL_BUILD_DIR/fat_codec.o
+  $KERNEL_BUILD_DIR/fat_dir.o
+  $KERNEL_BUILD_DIR/fat_file_io.o
   $KERNEL_BUILD_DIR/vfs.o
   $KERNEL_BUILD_DIR/vfs_xaiboot.o
   $KERNEL_BUILD_DIR/vfs_initramfs.o
@@ -831,6 +836,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/remote_login_parse.o
   $KERNEL_BUILD_DIR/operations.o
   $KERNEL_BUILD_DIR/admin_control.o
+  $KERNEL_BUILD_DIR/admin_control_config.o
+  $KERNEL_BUILD_DIR/admin_control_auth.o
   $KERNEL_BUILD_DIR/control_protocol.o
   $KERNEL_BUILD_DIR/control_storage_ops.o
   $KERNEL_BUILD_DIR/control_ops.o
@@ -881,6 +888,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/network_stack_local.o
   $KERNEL_BUILD_DIR/network_stack_app.o
   $KERNEL_BUILD_DIR/network_stack_selftest.o
+  $KERNEL_BUILD_DIR/network_stack_tcp_stats.o
+  $KERNEL_BUILD_DIR/network_stack_lifecycle.o
   $KERNEL_BUILD_DIR/network_config.o
   $KERNEL_BUILD_DIR/git_workspace.o
   $KERNEL_BUILD_DIR/agent_protocol.o
@@ -903,6 +912,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/socket_buffer.o
   $KERNEL_BUILD_DIR/routing.o
   $KERNEL_BUILD_DIR/dns.o
+  $KERNEL_BUILD_DIR/dns_resolver.o
+  $KERNEL_BUILD_DIR/dns_selftest.o
   $KERNEL_BUILD_DIR/dnssec.o
   $KERNEL_BUILD_DIR/ntp.o
   $KERNEL_BUILD_DIR/elf_loader.o
@@ -917,6 +928,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/engine_sha256_accel.o
   $KERNEL_BUILD_DIR/engine_sha256_dispatch.o
   $KERNEL_BUILD_DIR/kernel_ssh_crypto.o
+  $KERNEL_BUILD_DIR/kernel_ssh_crypto_symmetric.o
+  $KERNEL_BUILD_DIR/kernel_ssh_crypto_curve25519.o
   $KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o
 "
 if [ "$TARGET_ARCH" = aarch64 ]; then
@@ -971,6 +984,7 @@ compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_pci.c" "$KERNEL_BUILD_DIR/ear
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_serial.c" "$KERNEL_BUILD_DIR/early_serial.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_acpi.c" "$KERNEL_BUILD_DIR/early_acpi.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_fpu.c" "$KERNEL_BUILD_DIR/early_fpu.o"
+compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_irq.c" "$KERNEL_BUILD_DIR/early_irq.o"
 compile_kernel "$ROOT_DIR/kernel/arch/x86_64/early_gdt.c" "$KERNEL_BUILD_DIR/early_gdt.o"
   compile_kernel_simd "$ROOT_DIR/engine/src/packed.c" "$KERNEL_BUILD_DIR/engine_packed.o"
   compile_kernel "$ROOT_DIR/kernel/arch/x86_64/timer.c" "$KERNEL_BUILD_DIR/timer.o"
@@ -1002,6 +1016,8 @@ fi
 compile_kernel "$ROOT_DIR/kernel/dev/block_device.c" "$KERNEL_BUILD_DIR/block_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk_handles.c" "$KERNEL_BUILD_DIR/virtio_blk_handles.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk_request.c" "$KERNEL_BUILD_DIR/virtio_blk_request.o"
+compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk_backend.c" "$KERNEL_BUILD_DIR/virtio_blk_backend.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net.c" "$KERNEL_BUILD_DIR/virtio_net.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net_selftest.c" "$KERNEL_BUILD_DIR/virtio_net_selftest.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_net_tx.c" "$KERNEL_BUILD_DIR/virtio_net_tx.o"
@@ -1032,6 +1048,8 @@ compile_kernel "$ROOT_DIR/kernel/fs/xbfs_format.c" "$KERNEL_BUILD_DIR/xbfs_forma
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_selfcheck.c" "$KERNEL_BUILD_DIR/xbfs_selfcheck.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat_codec.c" "$KERNEL_BUILD_DIR/fat_codec.o"
+compile_kernel "$ROOT_DIR/kernel/fs/fat_dir.c" "$KERNEL_BUILD_DIR/fat_dir.o"
+compile_kernel "$ROOT_DIR/kernel/fs/fat_file_io.c" "$KERNEL_BUILD_DIR/fat_file_io.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs.c" "$KERNEL_BUILD_DIR/vfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_xaiboot.c" "$KERNEL_BUILD_DIR/vfs_xaiboot.o"
 compile_kernel "$ROOT_DIR/kernel/fs/vfs_initramfs.c" "$KERNEL_BUILD_DIR/vfs_initramfs.o"
@@ -1075,6 +1093,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_meta.c" "$KERNEL_BUILD_DIR
 compile_kernel "$ROOT_DIR/kernel/runtime/remote_login_parse.c" "$KERNEL_BUILD_DIR/remote_login_parse.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/operations.c" "$KERNEL_BUILD_DIR/operations.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/admin_control.c" "$KERNEL_BUILD_DIR/admin_control.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/admin_control_config.c" "$KERNEL_BUILD_DIR/admin_control_config.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/admin_control_auth.c" "$KERNEL_BUILD_DIR/admin_control_auth.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_protocol.c" "$KERNEL_BUILD_DIR/control_protocol.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_storage_ops.c" "$KERNEL_BUILD_DIR/control_storage_ops.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/control_ops.c" "$KERNEL_BUILD_DIR/control_ops.o"
@@ -1125,6 +1145,8 @@ compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_poll.c" "$KERNEL_BUILD_DI
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_local.c" "$KERNEL_BUILD_DIR/network_stack_local.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_app.c" "$KERNEL_BUILD_DIR/network_stack_app.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_selftest.c" "$KERNEL_BUILD_DIR/network_stack_selftest.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_tcp_stats.c" "$KERNEL_BUILD_DIR/network_stack_tcp_stats.o"
+compile_kernel "$ROOT_DIR/kernel/runtime/network_stack_lifecycle.c" "$KERNEL_BUILD_DIR/network_stack_lifecycle.o"
 compile_kernel "$ROOT_DIR/kernel/net/network_config.c" "$KERNEL_BUILD_DIR/network_config.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/git_workspace.c" "$KERNEL_BUILD_DIR/git_workspace.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/agent_protocol.c" "$KERNEL_BUILD_DIR/agent_protocol.o"
@@ -1149,6 +1171,8 @@ compile_kernel "$ROOT_DIR/kernel/net/dhcpv6.c" "$KERNEL_BUILD_DIR/dhcpv6.o"
 compile_kernel "$ROOT_DIR/kernel/net/socket_buffer.c" "$KERNEL_BUILD_DIR/socket_buffer.o"
 compile_kernel "$ROOT_DIR/kernel/net/routing.c" "$KERNEL_BUILD_DIR/routing.o"
 compile_kernel "$ROOT_DIR/kernel/net/dns.c" "$KERNEL_BUILD_DIR/dns.o"
+compile_kernel "$ROOT_DIR/kernel/net/dns_resolver.c" "$KERNEL_BUILD_DIR/dns_resolver.o"
+compile_kernel "$ROOT_DIR/kernel/net/dns_selftest.c" "$KERNEL_BUILD_DIR/dns_selftest.o"
 compile_kernel "$ROOT_DIR/kernel/net/dnssec.c" "$KERNEL_BUILD_DIR/dnssec.o"
 compile_kernel "$ROOT_DIR/kernel/net/ntp.c" "$KERNEL_BUILD_DIR/ntp.o"
 compile_kernel "$ROOT_DIR/kernel/mm/elf_loader.c" "$KERNEL_BUILD_DIR/elf_loader.o"
@@ -1167,6 +1191,8 @@ compile_kernel "$ROOT_DIR/engine/src/sha256.c" "$KERNEL_BUILD_DIR/engine_sha256.
 compile_kernel_simd "$ROOT_DIR/engine/src/sha256_accel.c" "$KERNEL_BUILD_DIR/engine_sha256_accel.o"
 compile_kernel "$ROOT_DIR/kernel/runtime/engine_sha256_dispatch.c" "$KERNEL_BUILD_DIR/engine_sha256_dispatch.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/ssh_crypto.c" "$KERNEL_BUILD_DIR/kernel_ssh_crypto.o"
+compile_kernel "$ROOT_DIR/userspace/sshd/ssh_crypto_symmetric.c" "$KERNEL_BUILD_DIR/kernel_ssh_crypto_symmetric.o"
+compile_kernel "$ROOT_DIR/userspace/sshd/ssh_crypto_curve25519.c" "$KERNEL_BUILD_DIR/kernel_ssh_crypto_curve25519.o"
 compile_kernel "$ROOT_DIR/userspace/sshd/tweetnacl_subset.c" "$KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o"
 KERNEL_RESPONSE_FILE="$KERNEL_BUILD_DIR/objects.rsp"
 printf '%s\n' "$KERNEL_OBJECTS" | while IFS= read -r object_path; do
@@ -1597,7 +1623,7 @@ for app in $USER_APPS; do
     # disagreement would only show at the login prompt.
     SETUP_CRYPTO_OBJ="$INIT_BUILD_DIR/setup-ssh-crypto.o"
     SETUP_NACL_OBJ="$INIT_BUILD_DIR/setup-tweetnacl.o"
-    for setup_src in ssh_crypto tweetnacl_subset; do
+    for setup_src in ssh_crypto ssh_crypto_symmetric tweetnacl_subset; do
       "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
         -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
         -Wall -Wextra -Werror \
@@ -1606,6 +1632,7 @@ for app in $USER_APPS; do
         -o "$INIT_BUILD_DIR/setup-$setup_src.o"
     done
     SETUP_CRYPTO_OBJ="$INIT_BUILD_DIR/setup-ssh_crypto.o"
+    SETUP_CRYPTO_SYMMETRIC_OBJ="$INIT_BUILD_DIR/setup-ssh_crypto_symmetric.o"
     SETUP_NACL_OBJ="$INIT_BUILD_DIR/setup-tweetnacl_subset.o"
     "$LD_LLD" \
       -nostdlib \
@@ -1616,6 +1643,7 @@ for app in $USER_APPS; do
       "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" \
       "$app_obj" \
       "$SETUP_CRYPTO_OBJ" \
+      "$SETUP_CRYPTO_SYMMETRIC_OBJ" \
       "$SETUP_NACL_OBJ"
   elif [ "$app" = "xaiosctl" ] ||
       [ "$app" = "xtop" ]; then
@@ -1674,6 +1702,8 @@ USER_INFLATE_OBJ="$INIT_BUILD_DIR/xutils-inflate.o"
 
 for app in $UTILITY_APPS; do
   app_obj="$INIT_BUILD_DIR/xutils-$app.o"
+  app_file_obj="$INIT_BUILD_DIR/xutils-file-$app.o"
+  app_text_obj="$INIT_BUILD_DIR/xutils-text-$app.o"
   app_archive_obj="$INIT_BUILD_DIR/xutils-archive-$app.o"
   app_elf="$INIT_BUILD_DIR/$app.elf"
   printf '%s\n' "Building userspace /bin/$app utility ELF..."
@@ -1709,6 +1739,38 @@ for app in $UTILITY_APPS; do
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/apps/xutils_archive.c" \
     -o "$app_archive_obj"
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils_file.c" \
+    -o "$app_file_obj"
+  "$CLANG" \
+    --target="$TARGET_TRIPLE" \
+    $USER_ARCH_CFLAGS \
+    -std=c99 \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils_text.c" \
+    -o "$app_text_obj"
   "$LD_LLD" \
     -nostdlib \
     -T "$ROOT_DIR/userspace/init/linker.ld" \
@@ -1718,6 +1780,8 @@ for app in $UTILITY_APPS; do
     "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" \
     "$USER_INFLATE_OBJ" \
     "$app_archive_obj" \
+    "$app_file_obj" \
+    "$app_text_obj" \
     "$app_obj"
   set -- "$@" "/bin/$app=$app_elf"
 done
@@ -1798,7 +1862,7 @@ if [ -n "$SSHD_CFLAGS_EXTRA" ]; then
 fi
 SSHD_RESPONSE_FILE="$INIT_BUILD_DIR/sshd-objects.rsp"
 : > "$SSHD_RESPONSE_FILE"
-for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c sshd_console_programs.c sshd_auth.c sshd_keys.c sshd_diagnostics.c sshd_console_ui.c sshd_config.c sshd_console_session.c ssh_crypto.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_channel_shell.c ssh_channel_stream.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
+for sshd_src in sshd.c sshd_audit.c sshd_rate_limit.c sshd_kex.c sshd_console_screen.c sshd_console_programs.c sshd_auth.c sshd_keys.c sshd_diagnostics.c sshd_console_ui.c sshd_config.c sshd_console_session.c ssh_crypto.c ssh_crypto_symmetric.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_channel.c ssh_alt_screen.c ssh_channel_shell.c ssh_channel_stream.c ssh_client_proxy.c ssh_host_key.c ssh_connection.c sftp_server.c less_pager.c; do
   sshd_obj="$INIT_BUILD_DIR/sshd-${sshd_src%.c}.o"
   sshd_opt=""
   if [ "$sshd_src" = "sshd.c" ] || [ "$sshd_src" = "sshd_audit.c" ] ||
@@ -1879,7 +1943,7 @@ set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
 printf '%s\n' "Building userspace /bin/ssh child client ELF..."
 SSH_CLIENT_RESPONSE_FILE="$INIT_BUILD_DIR/ssh-client-objects.rsp"
 : > "$SSH_CLIENT_RESPONSE_FILE"
-for ssh_client_src in ssh.c ssh_client.c ssh_sftp.c ssh_client_scp.c ssh_client_kex.c ssh_client_handshake.c ssh_client_auth.c ssh_client_command.c ssh_known_hosts.c ssh_crypto.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
+for ssh_client_src in ssh.c ssh_client.c ssh_sftp.c ssh_client_scp.c ssh_client_kex.c ssh_client_handshake.c ssh_client_auth.c ssh_client_command.c ssh_known_hosts.c ssh_crypto.c ssh_crypto_symmetric.c ssh_identity.c ssh_mlkem.c tweetnacl_subset.c ssh_protocol.c ssh_connection.c; do
   ssh_client_obj="$INIT_BUILD_DIR/ssh-client-${ssh_client_src%.c}.o"
   ssh_client_path="$ROOT_DIR/userspace/apps/$ssh_client_src"
   if [ "$ssh_client_src" != "ssh.c" ]; then

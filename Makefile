@@ -1449,12 +1449,12 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Ikernel/include kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
-	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_codec.c \
+	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_dir.c kernel/fs/fat_file_io.c kernel/fs/fat_codec.c \
 	  tests/storage/test_storage_admin.c \
 	  -o build/hosted/test-storage-admin
 	./build/hosted/test-storage-admin
 	$(HOST_CC) $(HOST_CFLAGS) \
-	  -Ikernel/include kernel/dev/block_device.c kernel/fs/fat.c kernel/fs/fat_codec.c \
+	  -Ikernel/include kernel/dev/block_device.c kernel/fs/fat.c kernel/fs/fat_dir.c kernel/fs/fat_file_io.c kernel/fs/fat_codec.c \
 	  tests/storage/test_fat.c -o build/hosted/test-fat
 	./build/hosted/test-fat build/hosted/fat-long-names.img
 	@# The reciprocal check: an implementation that is not this one, reading
@@ -1472,10 +1472,10 @@ hosted-test: engine-cli
 	  -Ikernel/include -Iengine/include -Iengine/src -Iuserspace/include \
 	  -Iuserspace/sshd kernel/dev/block_device.c kernel/lib/crc32.c \
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
-	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_codec.c \
+	  kernel/storage/storage_admin.c kernel/fs/fat.c kernel/fs/fat_dir.c kernel/fs/fat_file_io.c kernel/fs/fat_codec.c \
 	  kernel/fs/xai_fs_admin.c \
 	  engine/src/xai_fs.c engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c \
-	  engine/src/sha256.c userspace/sshd/ssh_crypto.c \
+	  engine/src/sha256.c userspace/sshd/ssh_crypto.c userspace/sshd/ssh_crypto_symmetric.c userspace/sshd/ssh_crypto_curve25519.c \
 	  userspace/sshd/tweetnacl_subset.c \
 	  tests/storage/test_xai_fs_admin.c \
 	  -o build/hosted/test-xaifs-admin
@@ -1526,8 +1526,8 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) -D_DEFAULT_SOURCE \
 	  -Ikernel/include -Iuserspace/include -Iuserspace/sshd -Ithird_party/bearssl/inc \
 	  -Ithird_party/bearssl/src -Ibuild/hosted \
-	  kernel/net/dns.c kernel/net/dnssec.c kernel/net/ipv4.c \
-	  userspace/sshd/ssh_crypto.c userspace/sshd/tweetnacl_subset.c \
+	  kernel/net/dns.c kernel/net/dns_resolver.c kernel/net/dns_selftest.c kernel/net/dnssec.c kernel/net/ipv4.c \
+	  userspace/sshd/ssh_crypto.c userspace/sshd/ssh_crypto_symmetric.c userspace/sshd/ssh_crypto_curve25519.c userspace/sshd/tweetnacl_subset.c \
 	  $$(find third_party/bearssl/src -name '*.c' | LC_ALL=C sort) \
 	  tests/crashtest/test_dns.c -o build/hosted/test-dns
 	./build/hosted/test-dns
@@ -1544,7 +1544,7 @@ hosted-test: engine-cli
 	  -f build/hosted/id-ed25519-encrypted
 	$(HOST_CC) $(HOST_CFLAGS) -DXAIOS_IDENTITY_HOSTED=1 -Wno-unknown-attributes \
 	  -Iuserspace/include -Iuserspace/sshd -Ithird_party/openbsd-compat \
-	  userspace/sshd/ssh_identity.c userspace/sshd/ssh_crypto.c \
+	  userspace/sshd/ssh_identity.c userspace/sshd/ssh_crypto.c userspace/sshd/ssh_crypto_symmetric.c userspace/sshd/ssh_crypto_curve25519.c \
 	  userspace/sshd/tweetnacl_subset.c \
 	  third_party/openbsd-compat/blowfish.c \
 	  third_party/openbsd-compat/bcrypt_pbkdf.c \
@@ -1577,7 +1577,7 @@ hosted-test: engine-cli
 	  -Ikernel/include engine/src/xai_fs.c \
 	  engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c engine/src/model_file.c \
 	  engine/src/sha256.c \
-	  userspace/sshd/ssh_crypto.c userspace/sshd/tweetnacl_subset.c \
+	  userspace/sshd/ssh_crypto.c userspace/sshd/ssh_crypto_symmetric.c userspace/sshd/ssh_crypto_curve25519.c userspace/sshd/tweetnacl_subset.c \
 	  tests/xai_fs/test_xai_fs_reader.c \
 	  -o build/hosted/test-xaifs-reader
 	./build/hosted/test-xaifs-reader \

@@ -81,9 +81,8 @@
 #define APIC_TIMER_DIVIDE UINT32_C(0x3e0)
 #define X2APIC_MSR_BASE UINT32_C(0x800)
 #define X2APIC_ICR_MSR UINT32_C(0x830)
-#define X86_USER_BASE UINT64_C(0x100000000)
-#define X86_USER_WINDOW_SIZE UINT64_C(0x1000000)
-#define X86_USER_LOG_MAX UINT64_C(4096)
+/* X86_USER_BASE, _WINDOW_SIZE and _LOG_MAX moved to early_irq.c with the
+ * ring-3 syscall dispatch that was their only user. */
 /* X86_KERNEL_STACK_SIZE, _GUARD_BYTES and _GUARD_VALUE moved to
  * early_module.h: early_gdt.c sizes the BSP syscall stack with them and this
  * file guards the kernel and syscall stacks with them. */
@@ -104,28 +103,9 @@ typedef struct x86_64_idt_entry {
 /* x86_64_idtr_t moved to early_module.h, where early_gdt.c's builder and the
  * two loaders in this file both read it. */
 
-typedef struct x86_64_exception_frame {
-  uint64_t r15;
-  uint64_t r14;
-  uint64_t r13;
-  uint64_t r12;
-  uint64_t r11;
-  uint64_t r10;
-  uint64_t r9;
-  uint64_t r8;
-  uint64_t rbp;
-  uint64_t rdi;
-  uint64_t rsi;
-  uint64_t rdx;
-  uint64_t rcx;
-  uint64_t rbx;
-  uint64_t rax;
-  uint64_t vector;
-  uint64_t error_code;
-  uint64_t rip;
-  uint64_t cs;
-  uint64_t rflags;
-} x86_64_exception_frame_t;
+/* x86_64_exception_frame_t moved to early_module.h: the exception entry below
+ * and the interrupt dispatch in early_irq.c both name it, and its layout is
+ * entry.S's. */
 
 typedef struct x86_64_contract_state {
   uint32_t userspace_contract_ready;
@@ -570,26 +550,9 @@ static void idt_set_user_gate(uint8_t vector, void (*handler)(void)) {
  * g_tss and g_syscall_stack. The aliases at the top of this file keep both
  * call sites -- x86_64_kmain and x86_64_ap_entry -- spelling them as before. */
 
-#if XAIOS_X86_COMMON_RUNTIME
-static int kernel_stack_guard_valid(uint32_t ordinal) {
-  if (ordinal >= g_cpu_record_count ||
-      g_cpu_records[ordinal].kernel_stack_top < X86_KERNEL_STACK_SIZE ||
-      g_cpu_records[ordinal].syscall_stack_top < X86_KERNEL_STACK_SIZE) {
-    return 0;
-  }
-  const uint8_t *kernel_guard = (const uint8_t *)(uintptr_t)(
-      g_cpu_records[ordinal].kernel_stack_top - X86_KERNEL_STACK_SIZE);
-  const uint8_t *syscall_guard = (const uint8_t *)(uintptr_t)(
-      g_cpu_records[ordinal].syscall_stack_top - X86_KERNEL_STACK_SIZE);
-  for (uint32_t i = 0U; i < X86_KERNEL_STACK_GUARD_BYTES; ++i) {
-    if (kernel_guard[i] != X86_KERNEL_STACK_GUARD_VALUE ||
-        syscall_guard[i] != X86_KERNEL_STACK_GUARD_VALUE) {
-      return 0;
-    }
-  }
-  return 1;
-}
-#endif
+/* kernel_stack_guard_valid moved to early_irq.c with the syscall dispatch that
+ * calls it, under the same XAIOS_X86_COMMON_RUNTIME guard. Nothing else in
+ * this file used it. */
 
 static void install_idt(uint16_t serial_base) {
   void (*handlers[32])(void) = {
@@ -722,6 +685,15 @@ uint32_t xaios_x86_early_current_ordinal_fast(void) {
   return current_ordinal_fast();
 }
 
+/* The two more primitives early_irq.c's interrupt dispatch calls, exported
+ * under the names early_module.h declares. They are the same flag and the same
+ * write the rest of this file uses, not copies. */
+uint32_t xaios_x86_early_lapic_ready(void) { return g_lapic_ready; }
+
+void xaios_x86_early_lapic_write(uint32_t offset, uint32_t value) {
+  lapic_write(offset, value);
+}
+
 /* The serial and panic primitives this block used to define now live in
  * early_serial.c, which defines them once under the exported names
  * early_module.h and early_serial.h declare. */
@@ -751,156 +723,6 @@ uint32_t xaios_x86_early_lapic_id(void) { return lapic_id(); }
 static void tsc_delay(uint64_t cycles) {
   uint64_t deadline = rdtsc() + cycles;
   while ((int64_t)(rdtsc() - deadline) < 0) __asm__ volatile("pause");
-}
-
-/* The body of the trap entry, wrapped below so that the per-CPU trap depth is
- * maintained on every path out -- the function has a return per vector class
- * and the wrapper is the one place that can see them all. */
-static uint64_t x86_64_interrupt_entry_body(x86_64_exception_frame_t *frame) {
-  /* Liveness and last-vector, per CPU: a TLB shootdown that times out prints
-   * these for the CPU that did not answer, which is how "it never took the
-   * interrupt" is told apart from "it took it and answered the wrong
-   * generation" (B-123). The ring-3 syscall arrives through this same entry
-   * and is not an interrupt, so it is not counted. */
-  if (frame != 0 && g_cpu_records != 0 && frame->vector >= 32U &&
-      frame->vector != 128U) {
-    uint32_t ordinal = current_ordinal_fast();
-    if (ordinal < g_cpu_record_count) {
-      x86_64_cpu_record_t *record = &g_cpu_records[ordinal];
-      __atomic_add_fetch(&record->interrupts_taken, 1U, __ATOMIC_RELAXED);
-      __atomic_store_n(&record->last_vector, frame->vector, __ATOMIC_RELEASE);
-    }
-  }
-  if (frame != 0 && frame->vector == 128U) {
-    if ((frame->cs & 3U) != 3U) panic_halt(COM1_PORT, "ring3 syscall CPL");
-    xaios_x86_mem_note_ring3_call();
-#if XAIOS_X86_COMMON_RUNTIME
-    uint64_t result = syscall_dispatch(frame->rax, frame->rdi, frame->rsi,
-                                       frame->rdx);
-    uint32_t ordinal = x86_64_platform_current_ordinal();
-    if (!kernel_stack_guard_valid(ordinal)) {
-      panic_halt(COM1_PORT, "kernel syscall stack overflow");
-    }
-    if ((result & XAIOS_USER_EXIT_RETURN_MASK) ==
-        XAIOS_USER_EXIT_RETURN_MAGIC) {
-      x86_64_platform_set_user_return(result);
-      return (uint64_t)(uintptr_t)x86_64_ring3_resume;
-    }
-    frame->rax = result;
-    return 0U;
-#else
-    if (frame->rax == 1U) {
-      uint64_t address = frame->rdi;
-      uint64_t length = frame->rsi;
-      if (length == 0U || length > X86_USER_LOG_MAX ||
-          address < X86_USER_BASE ||
-          address > X86_USER_BASE + X86_USER_WINDOW_SIZE - length) {
-        panic_halt(COM1_PORT, "ring3 log buffer");
-      }
-      const char *text = (const char *)(uintptr_t)address;
-      for (uint64_t i = 0U; i < length; ++i) {
-        if (text[i] == '\n') serial_putc(COM1_PORT, '\r');
-        serial_putc(COM1_PORT, text[i]);
-      }
-      frame->rax = 0U;
-      return 0U;
-    }
-    if (frame->rax == 2U) {
-      xaios_x86_mem_set_ring3_exit(frame->rdi);
-      return (uint64_t)(uintptr_t)x86_64_ring3_resume;
-    }
-    panic_halt(COM1_PORT, "ring3 syscall number");
-#endif
-  }
-  if (frame != 0 && frame->vector == 33U && g_cpu_records != 0) {
-#if XAIOS_X86_COMMON_RUNTIME
-    x86_64_platform_eoi();
-    return 0U;
-#else
-    uint32_t current_id = lapic_id();
-    for (uint32_t i = 0U; i < g_cpu_record_count; ++i) {
-      x86_64_cpu_record_t *record = &g_cpu_records[i];
-      if (record->apic_id != current_id) continue;
-      uint32_t generation = __atomic_load_n(
-          &record->requested_generation, __ATOMIC_ACQUIRE);
-      uint64_t value = UINT64_C(0xcbf29ce484222325) ^ current_id;
-      for (uint32_t step = 0U; step < 4096U; ++step) {
-        value ^= (uint64_t)step + ((uint64_t)i << 32U);
-        value *= UINT64_C(0x100000001b3);
-      }
-      record->checksum = value;
-      __atomic_store_n(&record->completed_generation, generation,
-                       __ATOMIC_RELEASE);
-      lapic_write(APIC_EOI, 0U);
-      return 0U;
-    }
-    panic_halt(COM1_PORT, "AP worker identity");
-#endif
-  }
-  if (frame != 0 && frame->vector == 34U && g_lapic_ready != 0U) {
-    xaios_x86_pci_note_msix_interrupt();
-    lapic_write(APIC_EOI, 0U);
-    return 0U;
-  }
-  if (frame != 0 && frame->vector == 35U && g_lapic_ready != 0U) {
-    /* The shootdown's own state lives in early_tlb.c now; this is the same
-     * read the inline block did, in the same place in the dispatch order. */
-    xaios_x86_early_tlb_note_interrupt();
-    lapic_write(APIC_EOI, 0U);
-    return 0U;
-  }
-  if (frame != 0 && frame->vector >= 64U && frame->vector < 128U &&
-      g_lapic_ready != 0U) {
-    (void)gic_dispatch_interrupt((uint32_t)frame->vector);
-    lapic_write(APIC_EOI, 0U);
-    return 0U;
-  }
-  if (frame != 0 && frame->vector == 32U && g_lapic_ready != 0U) {
-    ++g_x86_lapic_timer_interrupts;
-#if XAIOS_X86_COMMON_RUNTIME
-    x86_64_platform_timer_irq();
-#endif
-    lapic_write(APIC_EOI, 0U);
-    return 0U;
-  }
-  if (frame != 0 && frame->vector == 255U) return 0U;
-  panic_halt(COM1_PORT, "unexpected external interrupt");
-  return 0U;
-}
-
-uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame) {
-  uint32_t ordinal = current_ordinal_fast();
-  x86_64_cpu_record_t *record =
-      g_cpu_records != 0 && ordinal < g_cpu_record_count ? &g_cpu_records[ordinal]
-                                                         : 0;
-  /* A ring-3 syscall arrives through this same entry and is *not* a handler for
-   * this purpose: it runs on behalf of a thread, so a line it prints may wait
-   * for the console lock the way a thread's may. Counting it as a handler
-   * shortened that wait and the smoke showed the consequence immediately --
-   * `klog: 1 log lines dropped, the console lock was held in_handler=1
-   * masked=0`, which is a syscall context reported as a handler. Only a trap
-   * that interrupted kernel work counts. */
-  int is_trap = frame != 0 && frame->vector != 128U;
-  if (record != 0 && is_trap) {
-    __atomic_add_fetch(&record->state.interrupt_depth, 1U, __ATOMIC_ACQ_REL);
-  }
-  uint64_t result = x86_64_interrupt_entry_body(frame);
-  if (record != 0 && is_trap) {
-    __atomic_sub_fetch(&record->state.interrupt_depth, 1U, __ATOMIC_ACQ_REL);
-  }
-  return result;
-}
-
-/* Whether this CPU is inside a trap. Exact here, because the depth above is
- * maintained for every vector through the one entry. */
-uint32_t xaios_cpu_in_interrupt(void) {
-  if (g_cpu_records == 0) return 0U;
-  uint32_t ordinal = current_ordinal_fast();
-  if (ordinal >= g_cpu_record_count) return 0U;
-  return __atomic_load_n(&g_cpu_records[ordinal].state.interrupt_depth,
-                         __ATOMIC_ACQUIRE) != 0U
-             ? 1U
-             : 0U;
 }
 
 void x86_64_ap_entry(uint32_t ordinal) {

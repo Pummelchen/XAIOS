@@ -86,17 +86,29 @@
  * state at all; they read this file's flag and MAC through those same existing
  * accessors.
  *
- * The rest of this file -- the TCP flow table, its counters, the flow
- * lifecycle and the TCP frame handlers -- is still file-scope state, and the
- * row-copying accessors are the pattern the next cut should follow. The TCP
- * frame handlers hold a live pointer into the flow table across hundreds of
- * lines, so they stay with it until that table's own cursor-plus-commit cut is
- * made deliberately rather than alongside something else.
+ * The two cuts after those are this file's counters and its boot lifecycle.
+ * The TCP counters, the queue/core mismatch counter, the TCP latency samples
+ * and the sliding-window self-check -- pinned to the retransmit counter it
+ * saves and restores -- live in network_stack_tcp_stats.c, reached through
+ * network_stack_tcp_stats.h. The stack init and persistent-mode bring-up and
+ * the readiness generation live in network_stack_lifecycle.c; the flow table's
+ * two zeroing loops and the five scalars those entry points reset stay here as
+ * the seeds declared in network_stack_lifecycle.h, beside the state they
+ * touch.
+ *
+ * The rest of this file -- the TCP flow table, its allocation, the connection
+ * lifecycle that walks it and the TCP frame handlers -- is still file-scope
+ * state, and the row-copying accessors are the pattern the next cut should
+ * follow. The TCP frame handlers hold a live pointer into the flow table
+ * across hundreds of lines, so they stay with it until that table's own
+ * cursor-plus-commit cut is made deliberately rather than alongside something
+ * else: a row copy per frame is 17 KB and a module-static lease would still
+ * pay that memcpy on the receive path.
  *
  * The layout, for navigation:
  *
  *   constants and types            declarations, sizes, protocol numbers
- *   shared state                   counters, TCP flow table
+ *   shared state                   flags, MAC, TCP flow table
  *   guard                          see xaios_reentrant_lock; C-01
  *   helpers                        byte order, checksums, frame construction
  *   TCP flow table                 find, allocate, lifecycle, timers
@@ -111,6 +123,8 @@
  *   boot self-test                 moved to network_stack_selftest.c
  *   poll, dispatch, gap accounting moved to network_stack_poll.c
  *   local-address accessors        moved to network_stack_local.c
+ *   TCP counters, self-check       moved to network_stack_tcp_stats.c
+ *   init, persistent, readiness    moved to network_stack_lifecycle.c
  *   public API                     the entry points a syscall reaches
  */
 
@@ -122,6 +136,8 @@
 #include "network_stack_packet.h"
 #include "network_stack_poll.h"
 #include "network_stack_selftest.h"
+#include "network_stack_tcp_stats.h"
+#include "network_stack_lifecycle.h"
 #include "network_stack_udp.h"
 #include "network_stack_udp_rx.h"
 #include "network_stack_v6.h"
@@ -259,28 +275,11 @@ void net_stack_note_ipv6_rx(void) { ++g_ipv6_rx_count; }
    behind the accessors declared in network_stack_v6.h. Nothing here hands out
    a pointer into it; every reader gets a copy. */
 
-static uint64_t g_tcp_handshake_count;
-static uint64_t g_tcp_reset_count;
-static uint64_t g_tcp_timeout_count;
-static uint64_t g_tcp_retransmit_count;
-static uint64_t g_tcp_established_count;
-static uint64_t g_tcp_closed_count;
-
-/* The two increments the TCP flow module makes, kept beside the counters it
-   writes and declared in network_stack_tcp.h. Caller holds the stack guard;
-   each is the plain increment the moved code made in place of these. */
-void net_tcp_note_closed(void) { ++g_tcp_closed_count; }
-void net_tcp_note_retransmit(void) { ++g_tcp_retransmit_count; }
-static uint64_t g_flow_core_mismatch_count;
-
-/* The queue/core mismatch increment the moved UDP receive handlers make; the
-   counter stays here with the rest of the stack's counters. Caller holds the
-   guard, and this is the plain `++` it replaced. Declared in
-   network_stack_udp_rx.h. */
-void net_stack_note_flow_core_mismatch(void) { ++g_flow_core_mismatch_count; }
-
-static uint64_t g_tcp_latency_samples[NETWORK_MAX_SAMPLES];
-static uint32_t g_tcp_latency_count;
+/* The TCP counters, the queue/core mismatch counter and the TCP latency
+   samples now live in network_stack_tcp_stats.c; network_stack_tcp_stats.h
+   declares the increments this file and the moved timers make and the reset
+   the moved network_stack_init() calls. The counter readers moved with the
+   state they read. */
 
 
 /* The listener registry and the socket-to-flow map now live in
@@ -290,13 +289,8 @@ static uint32_t g_tcp_latency_count;
 
 /* The local-address accessors and network_stack_adopt_dhcpv6() moved to
    network_stack_local.c; they own no state here and read this file's flag and
-   MAC through the existing accessors. */
-static void record_latency(uint64_t *samples, uint32_t *count, uint64_t value) {
-  if (*count < NETWORK_MAX_SAMPLES) {
-    samples[*count] = value;
-    ++(*count);
-  }
-}
+   MAC through the existing accessors. The latency recording that used to sit
+   here moved to network_stack_tcp_stats.c with the samples it fills. */
 
 /* The queue-binding registry, the queue rings and the packet-descriptor pool
    now live in network_stack_packet.c; network_stack_packet.h declares the
@@ -634,7 +628,7 @@ static xaios_status_t network_stack_tcp_abort_flow_unlocked(uint32_t flow_id) {
         g_half_open_count > 0U) {
       --g_half_open_count;
     }
-    ++g_tcp_closed_count;
+    net_tcp_note_closed();
     net_tcp_release_flow(flow);
     return XAIOS_OK;
   }
@@ -648,12 +642,16 @@ xaios_status_t network_stack_tcp_abort_flow(uint32_t flow_id) {
   return result;
 }
 
-void network_stack_init(void) {
-  g_tcp_drain_cursor = 0U;
-  socket_map_reset_exhausted();
-  net_poll_reset_gap();
-  net_packet_reset();
+/* The seeds the moved lifecycle module (network_stack_lifecycle.c) calls into:
+   the TCP flow table's two zeroing loops and the five scalars around it. They
+   stay with the state they touch, so the moved boot code never names
+   g_tcp_flows, g_next_flow_id, g_tcp_drain_cursor, g_half_open_count,
+   g_ipv6_rx_count or g_persistent_initialized. Each replaces a direct write
+   that ran single-threaded at boot, at the same point and in the same order;
+   none of them takes a lock, exactly as before. Declared in
+   network_stack_lifecycle.h. */
 
+void net_tcp_table_init(void) {
   for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
     g_tcp_flows[i].state = XAIOS_NETWORK_FLOW_FREE;
     g_tcp_flows[i].flow_id = 0;
@@ -670,31 +668,29 @@ void network_stack_init(void) {
     g_tcp_flows[i].packets_rx = 0;
     g_tcp_flows[i].packets_tx = 0;
   }
-
-  net_udp_reset();
-
-  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
-    network_listener_ex_t row;
-    net_wire_bytes_zero(&row, sizeof(row));
-    network_listener_slot_write(i, &row);
-  }
-
-  g_next_flow_id = 1U;
-  g_tcp_handshake_count = 0;
-  g_tcp_reset_count = 0;
-  g_tcp_timeout_count = 0;
-  g_tcp_retransmit_count = 0;
-  g_tcp_established_count = 0;
-  g_tcp_closed_count = 0;
-  g_tcp_latency_count = 0;
-  g_flow_core_mismatch_count = 0;
-
-  for (uint32_t i = 0; i < NETWORK_MAX_SAMPLES; ++i) {
-    g_tcp_latency_samples[i] = 0;
-  }
-
-  klog("network: stack initialized\n");
 }
+
+void net_tcp_table_clear_active(void) {
+  for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
+    g_tcp_flows[i].state = XAIOS_NETWORK_FLOW_FREE;
+    g_tcp_flows[i].flow_id = 0;
+    g_tcp_flows[i].rx_buf = 0;
+    g_tcp_flows[i].tx_buf = 0;
+    g_tcp_flows[i].pending_synack = 0;
+    g_tcp_flows[i].pending_ack = 0;
+    g_tcp_flows[i].pending_fin = 0;
+  }
+}
+
+void net_stack_flow_id_reset(void) { g_next_flow_id = 1U; }
+
+void net_tcp_drain_cursor_reset(void) { g_tcp_drain_cursor = 0U; }
+
+void net_tcp_half_open_reset(void) { g_half_open_count = 0; }
+
+void net_stack_reset_ipv6_rx(void) { g_ipv6_rx_count = 0; }
+
+void net_stack_mark_persistent_ready(void) { g_persistent_initialized = 1; }
 
 /* network_stack_bind_queue() and network_stack_release_queue() moved to
    network_stack_packet.c with the binding table they own. */
@@ -922,15 +918,9 @@ static int network_stack_tcp_peer_closed_unlocked(uint32_t flow_id) {
   return 1;
 }
 
-static volatile uint64_t g_readiness_generation;
-
-void network_readiness_note(void) {
-  __atomic_add_fetch(&g_readiness_generation, 1U, __ATOMIC_RELAXED);
-}
-
-uint64_t network_readiness_generation(void) {
-  return __atomic_load_n(&g_readiness_generation, __ATOMIC_RELAXED);
-}
+/* The readiness generation moved to network_stack_lifecycle.c with the counter
+   it bumps; the poll loop and the listener registry reach it through the
+   public declarations in network_stack.h. */
 
 int network_stack_tcp_peer_closed(uint32_t flow_id) {
   network_lock();
@@ -983,7 +973,7 @@ int network_stack_socket_ready(uint64_t sockfd, uint8_t protocol,
 xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
                                             uint64_t frame_len) {
   if (frame == 0 || frame_len < 54U) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_INVALID;
   }
@@ -997,12 +987,12 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
 
   if (net_wire_parse_tcp(frame, frame_len, &src_port, &dst_port, &seq, &ack, &flags) ==
       0) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_INVALID;
   }
   if (src_port == 0U || dst_port == 0U) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_INVALID;
   }
@@ -1022,7 +1012,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
                 : net_queue_binding_select(dst_port, src_port, local_address,
                                            remote_address, &binding);
   if (have_binding == 0) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_NOT_FOUND;
   }
@@ -1031,7 +1021,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       net_packet_alloc(binding.queue_id, frame_len, start, src_port, dst_port,
                        remote_address, local_address, 0, 0);
   if (packet == 0) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     return XAIOS_ERR_NO_MEMORY;
   }
 
@@ -1070,12 +1060,11 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     flow->keepalive_last_rx_ns = start;
     if (g_half_open_count > 0U) --g_half_open_count;
     ++flow->packets_rx;
-    ++g_tcp_handshake_count;
-    ++g_tcp_established_count;
+    net_tcp_note_handshake();
+    net_tcp_note_established();
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                   timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
@@ -1086,8 +1075,8 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
         return XAIOS_ERR_INVALID;
       }
       xaios_network_flow_state_t prev_state = flow->state;
-      ++g_tcp_reset_count;
-      ++g_tcp_closed_count;
+      net_tcp_note_reset();
+      net_tcp_note_closed();
       if ((prev_state == XAIOS_NETWORK_FLOW_SYN_RECV ||
            prev_state == XAIOS_NETWORK_FLOW_SYN_SENT) &&
           g_half_open_count > 0) {
@@ -1109,13 +1098,13 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
   if (flow == 0 && (flags & NETWORK_TCP_FLAG_SYN) != 0U) {
     /* Check if there's a listener for this port */
     if (!network_stack_has_listener(dst_port)) {
-      ++g_tcp_reset_count;
+      net_tcp_note_reset();
       net_packet_mark_dropped(packet);
       return XAIOS_ERR_NOT_FOUND;
     }
     flow = alloc_tcp_flow(dst_port, src_port, remote_address, 0);
     if (flow == 0) {
-      ++g_tcp_reset_count;
+      net_tcp_note_reset();
       net_packet_mark_dropped(packet);
       return XAIOS_ERR_NO_MEMORY;
     }
@@ -1183,11 +1172,10 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       flow->peer_window = peer_window_raw;
     }
 
-    ++g_tcp_handshake_count;
+    net_tcp_note_handshake();
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                  timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
@@ -1216,12 +1204,11 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
     flow->keepalive_last_rx_ns = start;
     flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     ++flow->packets_rx;
-    ++g_tcp_handshake_count;
-    ++g_tcp_established_count;
+    net_tcp_note_handshake();
+    net_tcp_note_established();
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                  timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
@@ -1313,8 +1300,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
       if (ack_result > 0) {
         net_packet_mark_tx(packet);
         net_packet_mark_complete(packet);
-        record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                       timer_now_ns() - start);
+        net_tcp_record_latency(timer_now_ns() - start);
         return XAIOS_OK;
       }
     }
@@ -1329,12 +1315,11 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
 
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                  timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
-  ++g_tcp_reset_count;
+  net_tcp_note_reset();
   net_packet_mark_dropped(packet);
   return XAIOS_ERR_INVALID;
 }
@@ -1342,7 +1327,7 @@ xaios_status_t network_stack_process_tcp_frame(const uint8_t *frame,
 xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
                                                   uint64_t frame_len) {
   if (frame == 0 || frame_len < 74U) { /* 14 + 40 + 20 minimum */
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_INVALID;
   }
@@ -1360,12 +1345,12 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
 
   if (net_wire_parse_tcp_v6(frame, frame_len, &src_port, &dst_port, &seq, &ack_v,
                    &flags, &src_addr, &dst_addr) == 0) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_INVALID;
   }
   if (src_port == 0U || dst_port == 0U) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_INVALID;
   }
@@ -1383,7 +1368,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
                                      xaios_ip_addr_hash(&dst_addr),
                                      xaios_ip_addr_hash(&src_addr), &binding);
   if (have_binding == 0) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     net_note_packet_drop();
     return XAIOS_ERR_NOT_FOUND;
   }
@@ -1392,7 +1377,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
       net_packet_alloc(binding.queue_id, frame_len, start, src_port, dst_port,
                        0, 0, &src_addr, &dst_addr);
   if (packet == 0) {
-    ++g_tcp_reset_count;
+    net_tcp_note_reset();
     return XAIOS_ERR_NO_MEMORY;
   }
 
@@ -1432,13 +1417,12 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     flow->keepalive_last_rx_ns = start;
     if (g_half_open_count > 0U) --g_half_open_count;
     ++flow->packets_rx;
-    ++g_tcp_handshake_count;
-    ++g_tcp_established_count;
+    net_tcp_note_handshake();
+    net_tcp_note_established();
     ++g_ipv6_rx_count;
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                   timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
@@ -1449,8 +1433,8 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
         return XAIOS_ERR_INVALID;
       }
       xaios_network_flow_state_t prev_state = flow->state;
-      ++g_tcp_reset_count;
-      ++g_tcp_closed_count;
+      net_tcp_note_reset();
+      net_tcp_note_closed();
       if (prev_state == XAIOS_NETWORK_FLOW_SYN_RECV && g_half_open_count > 0) {
         g_half_open_count--;
       }
@@ -1470,13 +1454,13 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
   if (flow == 0 && (flags & NETWORK_TCP_FLAG_SYN) != 0U) {
     /* Check if there's a listener for this port */
     if (!network_stack_has_listener(dst_port)) {
-      ++g_tcp_reset_count;
+      net_tcp_note_reset();
       net_packet_mark_dropped(packet);
       return XAIOS_ERR_NOT_FOUND;
     }
     flow = alloc_tcp_flow(dst_port, src_port, 0, &src_addr);
     if (flow == 0) {
-      ++g_tcp_reset_count;
+      net_tcp_note_reset();
       net_packet_mark_dropped(packet);
       return XAIOS_ERR_NO_MEMORY;
     }
@@ -1534,12 +1518,11 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
       flow->our_ws = 0U;
       flow->peer_window = peer_window_raw;
     }
-    ++g_tcp_handshake_count;
+    net_tcp_note_handshake();
     ++g_ipv6_rx_count;
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                  timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
@@ -1564,12 +1547,11 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
     flow->keepalive_last_rx_ns = start;
     flow->peer_window = net_wire_tcp_scaled_window(peer_window_raw, flow->peer_ws);
     ++flow->packets_rx;
-    ++g_tcp_handshake_count;
-    ++g_tcp_established_count;
+    net_tcp_note_handshake();
+    net_tcp_note_established();
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                  timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
@@ -1657,8 +1639,7 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
       if (ack_result > 0) {
         net_packet_mark_tx(packet);
         net_packet_mark_complete(packet);
-        record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                       timer_now_ns() - start);
+        net_tcp_record_latency(timer_now_ns() - start);
         return XAIOS_OK;
       }
     }
@@ -1672,12 +1653,11 @@ xaios_status_t network_stack_process_tcp_frame_v6(const uint8_t *frame,
 
     net_packet_mark_tx(packet);
     net_packet_mark_complete(packet);
-    record_latency(g_tcp_latency_samples, &g_tcp_latency_count,
-                  timer_now_ns() - start);
+    net_tcp_record_latency(timer_now_ns() - start);
     return XAIOS_OK;
   }
 
-  ++g_tcp_reset_count;
+  net_tcp_note_reset();
   net_packet_mark_dropped(packet);
   return XAIOS_ERR_INVALID;
 }
@@ -1697,7 +1677,7 @@ uint64_t network_stack_retransmit_tcp_flows(uint64_t now_ns) {
         g_tcp_flows[i].pending_syn = 1U;
       else
         g_tcp_flows[i].pending_synack = 1U;
-      ++g_tcp_retransmit_count;
+      net_tcp_note_retransmit();
       ++retransmitted;
       klog("network: tcp flow id=%u retransmit=%u queue=%u cell=%u\n",
            g_tcp_flows[i].flow_id, g_tcp_flows[i].retransmits,
@@ -1716,7 +1696,7 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
     if (flow->state == XAIOS_NETWORK_FLOW_TIME_WAIT &&
         now_ns > flow->last_seen_ns &&
         now_ns - flow->last_seen_ns >= UINT64_C(60000000000)) {
-      ++g_tcp_closed_count;
+      net_tcp_note_closed();
       ++expired;
       klog("network: tcp flow id=%u TIME_WAIT expired\n", flow->flow_id);
       net_tcp_release_flow(flow);
@@ -1729,7 +1709,7 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
          flow->state == XAIOS_NETWORK_FLOW_LAST_ACK) &&
         now_ns > flow->last_seen_ns &&
         now_ns - flow->last_seen_ns >= UINT64_C(60000000000)) {
-      ++g_tcp_closed_count;
+      net_tcp_note_closed();
       ++expired;
       klog("network: tcp flow id=%u close timeout\n", flow->flow_id);
       net_tcp_release_flow(flow);
@@ -1741,8 +1721,8 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
          flow->state == XAIOS_NETWORK_FLOW_SYN_SENT) &&
         now_ns > flow->last_seen_ns &&
         now_ns - flow->last_seen_ns >= NETWORK_TCP_SYN_TIMEOUT_NS) {
-      ++g_tcp_timeout_count;
-      ++g_tcp_closed_count;
+      net_tcp_note_timeout();
+      net_tcp_note_closed();
       net_note_packet_drop();
       ++expired;
       if (g_half_open_count > 0) {
@@ -1764,8 +1744,8 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
           now_ns > flow->tx_segments[oldest].last_tx_ns &&
           now_ns - flow->tx_segments[oldest].last_tx_ns >= flow->rto_ns) {
       if (flow->tx_segments[oldest].retries >= NETWORK_TCP_MAX_RETRANSMITS) {
-        ++g_tcp_timeout_count;
-        ++g_tcp_closed_count;
+        net_tcp_note_timeout();
+        net_tcp_note_closed();
         ++expired;
         klog("network: tcp flow id=%u data retransmit limit\n",
              flow->flow_id);
@@ -1779,7 +1759,7 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
       flow->tx_segments[oldest].pending = 1U;
       flow->tx_segments[oldest].retransmitted = 1U;
       net_tcp_backoff_rto(flow);
-      ++g_tcp_retransmit_count;
+      net_tcp_note_retransmit();
       ++expired;
       klog("network: tcp flow id=%u retransmit=%u rto=%lu\n",
            flow->flow_id, flow->retransmits, flow->rto_ns);
@@ -1792,8 +1772,8 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
         now_ns > flow->fin_last_tx_ns &&
         now_ns - flow->fin_last_tx_ns >= flow->rto_ns) {
       if (flow->fin_retries >= NETWORK_TCP_MAX_RETRANSMITS) {
-        ++g_tcp_timeout_count;
-        ++g_tcp_closed_count;
+        net_tcp_note_timeout();
+        net_tcp_note_closed();
         ++expired;
         klog("network: tcp flow id=%u FIN retransmit limit\n",
              flow->flow_id);
@@ -1802,7 +1782,7 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
       }
       ++flow->fin_retries;
       ++flow->retransmits;
-      ++g_tcp_retransmit_count;
+      net_tcp_note_retransmit();
       ++expired;
       flow->fin_last_tx_ns = now_ns;
       flow->pending_fin = 1U;
@@ -1824,7 +1804,7 @@ uint64_t network_stack_expire_tcp_flows(uint64_t now_ns) {
         flow->pending_keepalive = 1U;
       } else {
         /* No response to keepalive probes — close connection */
-        ++g_tcp_closed_count;
+        net_tcp_note_closed();
         ++expired;
         klog("network: tcp flow id=%u keepalive timeout\n", flow->flow_id);
         net_tcp_release_flow(flow);
@@ -1849,245 +1829,16 @@ uint64_t network_stack_tcp_connections(void) {
   return active;
 }
 
-uint64_t network_stack_tcp_handshake_count(void) {
-  return g_tcp_handshake_count;
-}
+/* The TCP and mismatch counter accessors, the latency percentiles and the
+   sliding-window self-check moved to network_stack_tcp_stats.c with the
+   counters and samples they read; the self-check followed the retransmit
+   counter it saves and restores. Declared in network_stack.h and, for the
+   self-check, network_stack_selftest.h. */
 
-uint64_t network_stack_tcp_reset_count(void) {
-  return g_tcp_reset_count;
-}
-
-uint64_t network_stack_tcp_timeout_count(void) {
-  return g_tcp_timeout_count;
-}
-
-uint64_t network_stack_tcp_retransmit_count(void) {
-  return g_tcp_retransmit_count;
-}
-
-uint64_t network_stack_tcp_established_count(void) {
-  return g_tcp_established_count;
-}
-
-uint64_t network_stack_tcp_closed_count(void) {
-  return g_tcp_closed_count;
-}
-
-uint64_t network_stack_flow_core_mismatch_count(void) {
-  return g_flow_core_mismatch_count;
-}
-
-uint64_t network_stack_tcp_latency_p50_ns(void) {
-  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 50U);
-}
-
-uint64_t network_stack_tcp_latency_p95_ns(void) {
-  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 95U);
-}
-
-uint64_t network_stack_tcp_latency_p99_ns(void) {
-  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 99U);
-}
-
-uint64_t network_stack_tcp_latency_p999_ns(void) {
-  return net_wire_percentile(g_tcp_latency_samples, g_tcp_latency_count, 999U);
-}
-
-void net_stack_tcp_sliding_window_self_test(void) {
-  network_tcp_flow_t flow;
-  uint8_t payload[10];
-  net_wire_bytes_zero(&flow, sizeof(flow));
-  for (uint32_t i = 0U; i < sizeof(payload); ++i) {
-    payload[i] = (uint8_t)(i + 1U);
-  }
-  flow.state = XAIOS_NETWORK_FLOW_ESTABLISHED;
-  flow.tx_buf = sockbuf_alloc();
-  kassert(flow.tx_buf != 0);
-  flow.local_seq = 100U;
-  flow.next_send_seq = 100U;
-  flow.highest_acked = 100U;
-  flow.peer_mss = 4U;
-  flow.peer_window = 12U;
-  flow.cwnd = 12U;
-  flow.rto_ns = NETWORK_TCP_RETRANSMIT_NS;
-  kassert(sockbuf_write(flow.tx_buf, payload, sizeof(payload)) ==
-          sizeof(payload));
-
-  net_tcp_queue_send_window(&flow);
-  kassert(net_tcp_tx_segment_count(&flow) == 3U);
-  kassert(flow.in_flight == 10U && flow.next_send_seq == 110U);
-  kassert(flow.tx_segments[0].seq == 100U &&
-          flow.tx_segments[0].len == 4U);
-  kassert(flow.tx_segments[1].seq == 104U &&
-          flow.tx_segments[1].len == 4U);
-  kassert(flow.tx_segments[2].seq == 108U &&
-          flow.tx_segments[2].len == 2U);
-
-  kassert(net_tcp_acknowledge(&flow, 106U, 1U) == 0);
-  kassert(net_tcp_tx_segment_count(&flow) == 2U);
-  kassert(flow.in_flight == 4U && flow.local_seq == 106U);
-  kassert(flow.tx_segments[1].seq == 106U &&
-          flow.tx_segments[1].len == 2U &&
-          flow.tx_segments[1].data[0] == 7U);
-  kassert(net_tcp_acknowledge(&flow, 110U, 2U) == 0);
-  kassert(net_tcp_tx_segment_count(&flow) == 0U && flow.in_flight == 0U);
-  sockbuf_free(flow.tx_buf);
-
-  uint8_t option_header[60];
-  tcp_parsed_options_t options;
-  net_wire_bytes_zero(option_header, sizeof(option_header));
-  option_header[20] = TCP_OPT_SACK_PERMITTED;
-  option_header[21] = 2U;
-  option_header[22] = TCP_OPT_SACK;
-  option_header[23] = 10U;
-  net_wire_write_be32(option_header + 24U, 204U);
-  net_wire_write_be32(option_header + 28U, 208U);
-  kassert(net_wire_parse_tcp_options(option_header, 32U, &options) != 0);
-  kassert(options.sack_permitted == 1U && options.sack_count == 1U);
-
-  net_wire_bytes_zero(&flow, sizeof(flow));
-  flow.state = XAIOS_NETWORK_FLOW_ESTABLISHED;
-  flow.local_seq = 200U;
-  flow.next_send_seq = 212U;
-  flow.in_flight = 12U;
-  flow.cwnd = 12U;
-  flow.ssthresh = 12U;
-  for (uint32_t i = 0U; i < 3U; ++i) {
-    flow.tx_segments[i].seq = 200U + i * 4U;
-    flow.tx_segments[i].len = 4U;
-    flow.tx_segments[i].in_use = 1U;
-  }
-  kassert(net_tcp_apply_sack_blocks(&flow, &options) == 4U);
-  kassert(flow.tx_segments[1].in_use == 0U && flow.in_flight == 8U);
-  uint64_t retransmits_before = g_tcp_retransmit_count;
-  kassert(net_tcp_acknowledge(&flow, 200U, 10U) == 0);
-  kassert(net_tcp_acknowledge(&flow, 200U, 11U) == 0);
-  kassert(net_tcp_acknowledge(&flow, 200U, 12U) == 0);
-  kassert(flow.in_retransmit == 1U &&
-          flow.tx_segments[0].retransmitted == 1U);
-  g_tcp_retransmit_count = retransmits_before;
-
-  net_wire_bytes_zero(&flow, sizeof(flow));
-  flow.state = XAIOS_NETWORK_FLOW_ESTABLISHED;
-  flow.tx_buf = sockbuf_alloc();
-  kassert(flow.tx_buf != 0);
-  flow.next_send_seq = 300U;
-  flow.peer_mss = 8U;
-  flow.peer_window = 0U;
-  flow.cwnd = 8U;
-  kassert(sockbuf_write(flow.tx_buf, payload, 4U) == 4U);
-  net_tcp_queue_send_window(&flow);
-  kassert(flow.zero_window_probe == 1U && flow.in_flight == 1U &&
-          flow.tx_segments[0].len == 1U);
-  sockbuf_free(flow.tx_buf);
-
-  net_wire_bytes_zero(&flow, sizeof(flow));
-  flow.rx_buf = sockbuf_alloc();
-  kassert(flow.rx_buf != 0);
-  flow.expected_seq = 400U;
-  flow.window_size = 32U;
-  flow.peer_sack_permitted = 1U;
-  kassert(net_tcp_ooo_buffer_store(&flow, 404U, payload + 4U, 4U,
-                           flow.expected_seq) == 4U);
-  uint8_t generated[40];
-  uint32_t generated_len =
-      net_tcp_build_options(&flow, NETWORK_TCP_FLAG_ACK, generated);
-  net_wire_bytes_zero(option_header, sizeof(option_header));
-  for (uint32_t i = 0U; i < generated_len; ++i) {
-    option_header[20U + i] = generated[i];
-  }
-  kassert(net_wire_parse_tcp_options(option_header, 20U + generated_len, &options) != 0);
-  kassert(options.sack_count == 1U && options.sack_left[0] == 404U &&
-          options.sack_right[0] == 408U);
-  kassert(sockbuf_write(flow.rx_buf, payload, 4U) == 4U);
-  flow.expected_seq += 4U;
-  kassert(net_tcp_ooo_buffer_drain(&flow) == 4U && flow.expected_seq == 408U);
-  uint8_t reordered[8];
-  kassert(sockbuf_read(flow.rx_buf, reordered, sizeof(reordered)) ==
-          sizeof(reordered));
-  for (uint32_t i = 0U; i < sizeof(reordered); ++i) {
-    kassert(reordered[i] == payload[i]);
-  }
-  sockbuf_free(flow.rx_buf);
-
-  net_wire_bytes_zero(&flow, sizeof(flow));
-  flow.rto_ns = NETWORK_TCP_RETRANSMIT_NS;
-  flow.cwnd = NETWORK_TCP_MSS * 8U;
-  net_tcp_backoff_rto(&flow);
-  kassert(flow.rto_ns == NETWORK_TCP_RETRANSMIT_NS * 2U &&
-          flow.cwnd == NETWORK_TCP_MSS);
-  net_tcp_backoff_rto(&flow);
-  kassert(flow.rto_ns == NETWORK_TCP_RETRANSMIT_NS * 4U);
-
-  option_header[20] = TCP_OPT_SACK;
-  option_header[21] = 9U;
-  kassert(net_wire_parse_tcp_options(option_header, 29U, &options) == 0);
-  klog("network: TCP sliding-window self-test passed segments=3 cumulative_ack=1 partial_ack=1 sack=1 fast_retransmit=1 zero_window=1 reorder=1 rto_backoff=1\n");
-}
-
-void network_init_persistent(void) {
-  if (g_persistent_initialized != 0) {
-    return;
-  }
-  if (network_device_get_mac(g_local_mac) == XAIOS_OK) {
-    klog("network: local mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
-         g_local_mac[0], g_local_mac[1], g_local_mac[2],
-         g_local_mac[3], g_local_mac[4], g_local_mac[5]);
-  }
-  arp_init();
-  ndp_init();
-  ntp_init();
-  ipv4_frag_init();
-  ipv6_frag_init();
-  for (uint32_t i = 0; i < NETWORK_TCP_CONNECTIONS; ++i) {
-    g_tcp_flows[i].state = XAIOS_NETWORK_FLOW_FREE;
-    g_tcp_flows[i].flow_id = 0;
-    g_tcp_flows[i].rx_buf = 0;
-    g_tcp_flows[i].tx_buf = 0;
-    g_tcp_flows[i].pending_synack = 0;
-    g_tcp_flows[i].pending_ack = 0;
-    g_tcp_flows[i].pending_fin = 0;
-  }
-  net_udp_clear_active();
-  for (uint32_t i = 0; i < network_listener_slot_count(); ++i) {
-    network_listener_ex_t row;
-    net_wire_bytes_zero(&row, sizeof(row));
-    network_listener_slot_write(i, &row);
-  }
-  for (uint32_t i = 0; i < socket_map_slot_count(); ++i) {
-    socket_flow_mapping_t row;
-    net_wire_bytes_zero(&row, sizeof(row));
-    socket_map_slot_write(i, &row);
-  }
-  /* The boot self-test fills this table on purpose and leaves its refusals
-     counted. Zero them here so a non-zero figure in a running machine means
-     a running machine ran out. */
-  socket_map_reset_exhausted();
-  net_poll_reset_gap();
-  g_half_open_count = 0;
-  g_tcp_drain_cursor = 0U;
-  sockbuf_pool_init();
-  routing_init();
-  if (network_stack_queue_bindings() == 0U) {
-    kassert(network_stack_bind_queue(0, 1, 1U) == XAIOS_OK);
-  }
-  net_v6_init(g_local_mac);
-  g_persistent_initialized = 1;
-  net_poll_reset_ticks();
-  net_icmp_reset();
-  g_ipv6_rx_count = 0;
-  /* RFC 4861 has a host solicit a router on startup rather than wait for the
-     next unsolicited advertisement, which may be minutes away or never come.
-     Without this the stack has a link-local address and no global one, and
-     IPv6 works only on the local link. */
-  xaios_ip_addr_t link_local_v6;
-  net_v6_link_local(&link_local_v6);
-  if (ndp_send_router_solicitation(g_local_mac, &link_local_v6) !=
-      XAIOS_OK) {
-    klog("network: router solicitation could not be sent\n");
-  }
-  klog("network: persistent mode initialized (dual-stack)\n");
-}
+/* network_stack_init() and network_init_persistent() moved to
+   network_stack_lifecycle.c with the boot orchestration they are; the flow
+   table's two zeroing loops and the five scalars they reset stay here as the
+   seeds declared in network_stack_lifecycle.h, beside the state they touch. */
 
 /* The local-address accessors and network_stack_adopt_dhcpv6() moved to
    network_stack_local.c; the receive dispatch, its fragment reassembly and the

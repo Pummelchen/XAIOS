@@ -3,11 +3,11 @@
 
 /* The private seam between kernel/arch/x86_64/early.c and the modules split
  * out of it (early_tlb.c, early_cpu.c, early_serial.c, early_mem.c,
- * early_pci.c, early_acpi.c, early_fpu.c and early_gdt.c). Every one of those
- * files includes this header and nothing in it is visible outside them: the
- * x86_64 CPU record, the per-CPU TLB bookkeeping, and the early.c primitives
- * the moved code calls are shared here, while the globals stay file-scope in
- * whichever file owns them.
+ * early_pci.c, early_acpi.c, early_fpu.c, early_gdt.c and early_irq.c). Every
+ * one of those files includes this header and nothing in it is visible outside
+ * them: the x86_64 CPU record, the per-CPU TLB bookkeeping, the trap frame and
+ * the early.c primitives the moved code calls are shared here, while the
+ * globals stay file-scope in whichever file owns them.
  * Declarations and type definitions only -- the functions are defined exactly
  * once, in the file the comment beside them names. */
 
@@ -44,6 +44,33 @@ typedef struct x86_64_idtr {
   uint16_t limit;
   uint64_t base;
 } __attribute__((packed)) x86_64_idtr_t;
+
+/* The frame entry.S pushes before it calls the C trap entry, in the order the
+ * stub pushes it. Shared because early.c's exception entry and early_irq.c's
+ * interrupt dispatch both name it; the layout is entry.S's, so it is defined
+ * once here rather than on either side of the seam. */
+typedef struct x86_64_exception_frame {
+  uint64_t r15;
+  uint64_t r14;
+  uint64_t r13;
+  uint64_t r12;
+  uint64_t r11;
+  uint64_t r10;
+  uint64_t r9;
+  uint64_t r8;
+  uint64_t rbp;
+  uint64_t rdi;
+  uint64_t rsi;
+  uint64_t rdx;
+  uint64_t rcx;
+  uint64_t rbx;
+  uint64_t rax;
+  uint64_t vector;
+  uint64_t error_code;
+  uint64_t rip;
+  uint64_t cs;
+  uint64_t rflags;
+} x86_64_exception_frame_t;
 
 typedef struct x86_64_cpu_record {
   uint32_t apic_id;
@@ -97,6 +124,12 @@ uint32_t xaios_x86_early_current_ordinal_fast(void);
 void xaios_x86_early_serial_puts(uint16_t base, const char *message);
 void xaios_x86_early_serial_dec(uint16_t base, uint64_t value);
 void xaios_x86_early_panic_halt(uint16_t serial_base, const char *message);
+
+/* The two more early.c primitives early_irq.c's dispatch calls: the APIC-ready
+ * flag and the local-APIC register write. Both are the same functions early.c
+ * uses, not copies. */
+uint32_t xaios_x86_early_lapic_ready(void);
+void xaios_x86_early_lapic_write(uint32_t offset, uint32_t value);
 
 /* The idle-loop probe globals stay in early.c, which also reads them on the
  * idle path; the self-test's getters live with the rest of the shootdown, so
@@ -168,5 +201,18 @@ uint64_t xaios_x86_early_read_cr3(void);
 void xaios_x86_early_write_cr3(uint64_t value);
 uint64_t xaios_x86_early_rdtsc(void);
 uint32_t xaios_x86_early_lapic_id(void);
+
+/* entry.S symbols that now cross between early.c and early_irq.c.
+ * g_x86_lapic_timer_interrupts is defined in early.c, which owns the timer
+ * self-test that resets and prints it, and incremented by early_irq.c on the
+ * vector 32 path; entry.S also polls it by name. x86_64_ring3_resume is the
+ * label in entry.S the ring-3 exit paths return through. */
+extern volatile uint64_t g_x86_lapic_timer_interrupts;
+extern void x86_64_ring3_resume(void);
+
+/* Defined in early_irq.c: the C half of the trap entry entry.S calls, and the
+ * per-CPU trap-depth query the klog lock uses. */
+uint64_t x86_64_interrupt_entry(x86_64_exception_frame_t *frame);
+uint32_t xaios_cpu_in_interrupt(void);
 
 #endif

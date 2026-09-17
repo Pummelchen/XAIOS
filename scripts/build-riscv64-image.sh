@@ -300,7 +300,7 @@ for app in $USER_APPS; do
     done
   fi
   if [ "$app" = "xaios-setup" ]; then
-    for setup_src in ssh_crypto tweetnacl_subset; do
+    for setup_src in ssh_crypto ssh_crypto_symmetric tweetnacl_subset; do
       "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
         -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
         -fno-pie -Wall -Wextra -Werror \
@@ -375,6 +375,16 @@ for app in $UTILITY_APPS; do
     -Wall -Wextra -Werror -DXAIOS_UTILITY_NAME=\"$app\" \
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/apps/xutils_archive.c" -o "$BUILD_DIR/xutils-archive-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -Wall -Wextra -Werror -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils_file.c" -o "$BUILD_DIR/xutils-file-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -Wall -Wextra -Werror -DXAIOS_UTILITY_NAME=\"$app\" \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/apps/xutils_text.c" -o "$BUILD_DIR/xutils-text-$app.o"
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-xaios-shell.o" \
     "$BUILD_DIR/lib-xaios-shell.o" "$BUILD_DIR/control-xaios-shell.o" \
@@ -382,7 +392,8 @@ for app in $UTILITY_APPS; do
     "$BUILD_DIR/control-system-xaios-shell.o" \
     "$BUILD_DIR/control-storage-xaios-shell.o" \
     "$BUILD_DIR/control-ops-xaios-shell.o" "$BUILD_DIR/control-config-xaios-shell.o" "$BUILD_DIR/control-request-xaios-shell.o" \
-    "$BUILD_DIR/xutils-inflate.o" "$BUILD_DIR/xutils-archive-$app.o" "$BUILD_DIR/xutils-$app.o"
+    "$BUILD_DIR/xutils-inflate.o" "$BUILD_DIR/xutils-archive-$app.o" \
+    "$BUILD_DIR/xutils-file-$app.o" "$BUILD_DIR/xutils-text-$app.o" "$BUILD_DIR/xutils-$app.o"
   APP_ARGS="$APP_ARGS /bin/$app=$BUILD_DIR/$app.elf"
 done
 
@@ -453,7 +464,7 @@ fi
 # stops at a setup prompt and there is nothing to log into.
 printf '%s\n' "Building /bin/sshd..."
 SSHD_OBJS=""
-for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen sshd_console_programs sshd_auth sshd_keys sshd_diagnostics sshd_console_ui sshd_config sshd_console_session ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
+for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen sshd_console_programs sshd_auth sshd_keys sshd_diagnostics sshd_console_ui sshd_config sshd_console_session ssh_crypto ssh_crypto_symmetric ssh_mlkem tweetnacl_subset ssh_protocol \
     ssh_channel ssh_alt_screen ssh_channel_shell ssh_channel_stream ssh_client_proxy ssh_host_key ssh_connection sftp_server \
     less_pager; do
   sshd_opt=""
@@ -515,7 +526,7 @@ SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 # bidirectional interoperability suite is entirely about.
 printf '%s\n' "Building /bin/ssh and /bin/scp..."
 SSH_CLIENT_OBJS=""
-for ssh_client_src in ssh ssh_client ssh_client_scp ssh_client_kex ssh_client_handshake ssh_client_auth ssh_client_command ssh_known_hosts ssh_crypto ssh_identity \
+for ssh_client_src in ssh ssh_client ssh_client_scp ssh_client_kex ssh_client_handshake ssh_client_auth ssh_client_command ssh_known_hosts ssh_crypto ssh_crypto_symmetric ssh_identity \
     ssh_mlkem tweetnacl_subset ssh_protocol ssh_connection ssh_sftp; do
   ssh_client_path="$ROOT_DIR/userspace/sshd/$ssh_client_src.c"
   [ "$ssh_client_src" = ssh ] && \

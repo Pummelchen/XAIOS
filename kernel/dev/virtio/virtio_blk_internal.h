@@ -1,15 +1,20 @@
-/* Private interface shared by the two halves of the virtio block driver.
+/* Private interface shared by the four files of the virtio block driver.
  *
- * virtio_blk.c keeps the device bring-up, the request engine and the block
- * backend; the handle lifecycle -- opening, transferring on and closing a
- * device found by slot, ordinal or PCI ordinal -- lives in
- * virtio_blk_handles.c. Both halves need the driver's layout, so the type
- * block lives here. The primary driver pointer `g_blk' does not: the handle
- * code asks for its value through virtio_blk_primary_driver() and never names
- * the variable itself.
+ * virtio_blk.c keeps the driver state, feature negotiation, queue and geometry
+ * bring-up, device registration and the public entry points;
+ * virtio_blk_request.c holds the request engine -- submission, completion
+ * polling and the wait/recovery loops; virtio_blk_backend.c holds the
+ * block-layer backend and the power-on self-test; and the handle lifecycle --
+ * opening, transferring on and closing a device found by slot, ordinal or PCI
+ * ordinal -- lives in virtio_blk_handles.c. All of them need the driver's
+ * layout and the driver's interface macros, so both live here. The primary
+ * driver pointer `g_blk' does not: every file asks for its value through
+ * virtio_blk_primary_driver() and never names the variable itself.
  *
- * Following remote_login_internal.h, the helpers shared between the two files
- * keep their plain names; this header, not a public one, is where they are
+ * Following remote_login_internal.h, the helpers that already crossed a file
+ * boundary keep their plain names (submit_sector_h, wait_sync, flush_h and the
+ * rest); the helpers introduced by the request/backend split carry the
+ * virtio_blk_ prefix. This header, not a public one, is where they are
  * declared.
  */
 #ifndef XAIOS_DEV_VIRTIO_VIRTIO_BLK_INTERNAL_H
@@ -26,6 +31,47 @@
 #define VIRTIO_BLK_T_IN UINT32_C(0)
 #define VIRTIO_BLK_T_OUT UINT32_C(1)
 #define VIRTIO_BLK_MAX_ASYNC_DEPTH VIRTQ_SIZE
+
+#define VIRTIO_MMIO_CONFIG 0x100U
+#define VRING_DESC_F_NEXT UINT16_C(1)
+#define VRING_DESC_F_WRITE UINT16_C(2)
+#define VRING_DESC_F_INDIRECT UINT16_C(4)
+#define VIRTIO_BLK_T_FLUSH UINT32_C(4)
+#define VIRTIO_BLK_T_DISCARD UINT32_C(11)
+#define VIRTIO_BLK_T_WRITE_ZEROES UINT32_C(13)
+#define VIRTIO_BLK_F_RO (UINT32_C(1) << 5U)
+#define VIRTIO_BLK_F_BLK_SIZE (UINT32_C(1) << 6U)
+#define VIRTIO_BLK_F_FLUSH (UINT32_C(1) << 9U)
+#define VIRTIO_BLK_F_TOPOLOGY (UINT32_C(1) << 10U)
+#define VIRTIO_BLK_F_DISCARD (UINT32_C(1) << 13U)
+#define VIRTIO_BLK_F_WRITE_ZEROES (UINT32_C(1) << 14U)
+#define VIRTIO_F_RING_INDIRECT_DESC (UINT32_C(1) << 28U)
+#define VIRTIO_F_RING_EVENT_IDX (UINT32_C(1) << 29U)
+#define VIRTIO_F_VERSION_1_HIGH UINT32_C(1)
+#define VIRTIO_BLK_CONFIG_BLK_SIZE 20U
+#define VIRTIO_BLK_CONFIG_PHYSICAL_BLOCK_EXP 24U
+#define VIRTIO_BLK_CONFIG_MAX_DISCARD_SECTORS 36U
+#define VIRTIO_BLK_CONFIG_MAX_DISCARD_SEG 40U
+#define VIRTIO_BLK_CONFIG_DISCARD_ALIGNMENT 44U
+#define VIRTIO_BLK_CONFIG_MAX_WRITE_ZEROES_SECTORS 48U
+#define VIRTIO_BLK_DIRECT_DEPTH 2U
+/* The largest span one request may carry.
+   
+   Bounded rather than unlimited: a descriptor length is 32 bits, the buffer
+   has to be physically contiguous across the whole of it, and a single
+   enormous request occupies a queue slot for as long as it takes. One
+   mebibyte is large enough that the per-request cost stops mattering --
+   4 MiB becomes four requests instead of eight thousand -- and small enough
+   that several fit in the queue at once.
+
+   Overridable at build time so the old one-sector behaviour can be rebuilt
+   and measured against, which is the only way a claim about the improvement
+   is checkable rather than asserted. */
+#ifndef VIRTIO_BLK_MAX_TRANSFER
+#define VIRTIO_BLK_MAX_TRANSFER UINT64_C(1048576)
+#endif
+#define VIRTIO_BLK_WAIT_TIMEOUT_NS UINT64_C(5000000000)
+#define VIRTIO_BLK_SELF_TEST_SECTOR UINT64_C(2999)
 
 typedef struct virtio_blk_req {
   uint32_t type;
@@ -131,11 +177,15 @@ typedef struct virtio_block_sync_wait {
    `g_blk' itself stays private to that file. */
 virtio_block_driver_t *virtio_blk_primary_driver(void);
 
-/* Defined in virtio_blk.c and used by the handle code. */
+/* Defined in virtio_blk.c and used by the handle code and the backend. */
 uint64_t read_capacity(const virtio_mmio_device_t *device);
 xaios_status_t configure_queue(virtio_block_driver_t *drv);
 xaios_status_t read_device_geometry(virtio_block_driver_t *drv);
 void virtio_block_interrupt(uint32_t intid, void *context);
+
+/* Defined in virtio_blk_request.c. The request entry points the handle code
+   already called keep their plain names; the helpers this split introduced
+   carry the virtio_blk_ prefix. */
 xaios_status_t submit_sector_h(
     virtio_block_driver_t *drv, uint64_t sector, void *buffer,
     uint64_t buffer_size, uint32_t type,
@@ -145,7 +195,19 @@ void sync_completion(uint64_t token, xaios_status_t status, void *context);
 xaios_status_t wait_sync(virtio_block_driver_t *drv,
                          virtio_block_sync_wait_t *wait);
 xaios_status_t wait_idle(virtio_block_driver_t *drv);
+void virtio_blk_bytes_zero(void *buffer, uint64_t size);
+void virtio_blk_bytes_copy(void *dst, const void *src, uint64_t size);
+uint64_t virtio_blk_dma_address(const void *ptr);
+void virtio_blk_io_trace(virtio_block_driver_t *drv, const char *what,
+                         uint64_t sector, uint64_t bytes);
+xaios_status_t virtio_blk_recover_queue(virtio_block_driver_t *drv);
+
+/* Defined in virtio_blk_backend.c. flush_h() serves the handle code; the ops
+   table is what register_block_device() hands to the block registry. */
 xaios_status_t flush_h(virtio_block_driver_t *drv);
+extern const xaios_block_backend_ops_t k_virtio_blk_backend_ops;
+
+/* Defined in virtio_blk.c. */
 xaios_status_t register_block_device(virtio_block_driver_t *drv);
 
 /* Defined in virtio_blk_handles.c and used by virtio_blk.c's bring-up. */

@@ -286,6 +286,8 @@ for source in "$ROOT_DIR/engine/src/architecture.c" \
     "$ROOT_DIR/engine/src/xai_fs_writer_rewrite.c" \
     "$ROOT_DIR/engine/src/xai_fs_writer_util.c" \
     "$ROOT_DIR/userspace/sshd/ssh_crypto.c" \
+    "$ROOT_DIR/userspace/sshd/ssh_crypto_symmetric.c" \
+    "$ROOT_DIR/userspace/sshd/ssh_crypto_curve25519.c" \
     "$ROOT_DIR/userspace/sshd/tweetnacl_subset.c"; do
   compile_shared "$source"
 done
