@@ -2,10 +2,10 @@
  * The RISC-V IOMMU (B-130), from docs/RISCV-IOMMU.md.
  *
  * QEMU's `virt` board can carry one with `-device riscv-iommu-pci`, and this
- * file looks for it, names it, and -- once it is there -- programs it. The
- * plain board has none, and that is still the result of a look rather than a
- * compile-time sentence: `smmu: riscv64 has no IOMMU on this board` is printed
- * only after `pci_find_device` came back empty.
+ * file looks for it, names it, and -- once it is there -- proves it is doing
+ * its job. The plain board has none, and that is still the result of a look
+ * rather than a compile-time sentence: `smmu: riscv64 has no IOMMU on this
+ * board` is printed only after `pci_find_device` came back empty.
  *
  * Three facts about this device shape everything below.
  *
@@ -28,11 +28,12 @@
  * so the fault queue is drained by reading `FQH`/`FQT`, and that is the
  * stronger evidence rather than a workaround.
  *
- * Milestone 2 of the plan is what is implemented here: the device directory,
- * the command and fault queues, an `IOFENCE.C` round trip and an
- * `IODIR.INVAL_DDT`, with the identity contexts installed in the same step.
- * The page tables, the translation for one device and the isolation proof are
- * the milestones that follow.
+ * The register interface and the two queues live in iommu_hw.c, and the device
+ * directory table with its identity, translation and mediated first-stage
+ * contexts in iommu_ddt.c. This file keeps the first-stage page tables, the
+ * QEMU test device and the self-test that reads the machine's behaviour back
+ * out. The split is a size split: register offsets, queue layout and
+ * translation semantics are unchanged.
  */
 
 #include <xaios/arch_cpu.h>
@@ -46,72 +47,18 @@
 #include <xaios/types.h>
 #include <xaios/vmm.h>
 
-#define RISCV_IOMMU_PCI_VENDOR XAIOS_PCI_VENDOR_REDHAT
-#define RISCV_IOMMU_PCI_DEVICE UINT16_C(0x0014)
+#include "iommu_internal.h"
 
-/* One 4 KiB register page. Offsets from the 1.0 specification, section 5. */
-#define IOMMU_REG_CAP   UINT32_C(0x0000)
-#define IOMMU_REG_FCTL  UINT32_C(0x0008)
-#define IOMMU_REG_DDTP  UINT32_C(0x0010)
-#define IOMMU_REG_CQB   UINT32_C(0x0018)
-#define IOMMU_REG_CQH   UINT32_C(0x0020)
-#define IOMMU_REG_CQT   UINT32_C(0x0024)
-#define IOMMU_REG_FQB   UINT32_C(0x0028)
-#define IOMMU_REG_FQH   UINT32_C(0x0030)
-#define IOMMU_REG_FQT   UINT32_C(0x0034)
-#define IOMMU_REG_CQCSR UINT32_C(0x0048)
-#define IOMMU_REG_FQCSR UINT32_C(0x004c)
-#define IOMMU_REG_IPSR  UINT32_C(0x0054)
-
-/* CAP, only the fields this driver decides with. */
+/* CAP, only the fields this file's log line decides with. */
 #define IOMMU_CAP_VERSION UINT64_C(0xff)
 #define IOMMU_CAP_SV39    (UINT64_C(1) << 9)
 #define IOMMU_CAP_SV48    (UINT64_C(1) << 10)
 #define IOMMU_CAP_IGS     (UINT64_C(3) << 28)
 
-/* DDTP: mode in bits 3:0, busy bit 4, PPN in bits 53:10. */
-#define IOMMU_DDTP_MODE_MASK UINT64_C(0xf)
-#define IOMMU_DDTP_BUSY      (UINT64_C(1) << 4)
-#define IOMMU_DDTP_MODE_BARE UINT64_C(1)
-#define IOMMU_DDTP_MODE_1LVL UINT64_C(2)
-
-/* Queue base and CSR fields. The base stores log2(entries) - 1 in bits 4:0. */
-#define IOMMU_PPN_SHIFT         UINT32_C(10)
-#define IOMMU_QUEUE_LOG2SZ_MASK UINT64_C(0x1f)
-#define IOMMU_QUEUE_ENABLE      UINT32_C(1) << 0
-#define IOMMU_QUEUE_MEM_FAULT   UINT32_C(1) << 8
-#define IOMMU_QUEUE_OVERFLOW    UINT32_C(1) << 9
-#define IOMMU_CQCSR_CMD_ILL     UINT32_C(1) << 10
-#define IOMMU_QUEUE_ACTIVE      UINT32_C(1) << 16
-#define IOMMU_QUEUE_BUSY        UINT32_C(1) << 17
-
-/* Command encodings used here. */
-#define IOMMU_CMD_IOFENCE_C       UINT64_C(2)
-#define IOMMU_CMD_IODIR_INVAL_DDT UINT64_C(3)
-/* IOTINVAL.VMA with GV, PSCV and AV clear: every first-stage translation. */
-#define IOMMU_CMD_IOTINVAL_ALL    UINT64_C(1)
-
-/* Fault record header fields. */
-#define IOMMU_FQ_CAUSE_MASK UINT64_C(0xfff)
-#define IOMMU_FQ_TTYPE_LOW  34U
-#define IOMMU_FQ_DID_LOW    40U
-
-#define IOMMU_QUEUE_LOG2SZ 3U
-#define IOMMU_QUEUE_ENTRIES (1U << (IOMMU_QUEUE_LOG2SZ + 1U))
-#define IOMMU_COMMAND_BYTES 16U
-#define IOMMU_FAULT_BYTES   32U
-
-/* Extended contexts, one page of them: the format QEMU selects when MSI
-   translation is on, which is its reset state for this device. */
-#define IOMMU_DDT_CONTEXTS 64U
-
-#define IOMMU_TIMEOUT_NS UINT64_C(100000000)
-
 /* The generic QEMU test device (Red Hat 0x1b36:0x0005): BAR0 is a
    programmable DMA engine that writes a known word through its translated
    address space and reads it back from a chosen physical address, so a
    translation that lands where it should is observable from the CPU. */
-#define RISCV_IOMMU_TESTDEV_DEVICE UINT16_C(0x0005)
 #define ITD_DMA_TRIGGERING UINT32_C(0x00)
 #define ITD_DMA_GVA_LO     UINT32_C(0x04)
 #define ITD_DMA_GVA_HI     UINT32_C(0x08)
@@ -130,52 +77,6 @@
 /* The IOVA the test presents, deliberately above the identity-mapped RAM so a
    translation that is not there cannot be confused with a pass-through. */
 #define IOMMU_TEST_IOVA UINT64_C(0x0000000100000000)
-#define IOMMU_GIB UINT64_C(0x40000000)
-
-#define IOMMU_PTE_V UINT64_C(1)
-#define IOMMU_PTE_R (UINT64_C(1) << 1)
-#define IOMMU_PTE_W (UINT64_C(1) << 2)
-#define IOMMU_PTE_U (UINT64_C(1) << 4)
-#define IOMMU_PTE_A (UINT64_C(1) << 6)
-#define IOMMU_PTE_D (UINT64_C(1) << 7)
-/* Every leaf is R/W/U with A and D set by software: the context does not
-   enable hardware A/D, and the specification requires U for an access with no
-   process_id, which is every access here. */
-#define IOMMU_PTE_LEAF                                            \
-  (IOMMU_PTE_V | IOMMU_PTE_R | IOMMU_PTE_W | IOMMU_PTE_U |        \
-   IOMMU_PTE_A | IOMMU_PTE_D)
-#define IOMMU_FSC_MODE_SV39 (UINT64_C(8) << 60)
-#define IOMMU_FSC_MODE_SV48 (UINT64_C(9) << 60)
-
-typedef struct riscv_iommu_context {
-  uint64_t tc;
-  uint64_t iohgatp;
-  uint64_t ta;
-  uint64_t fsc;
-  uint64_t msiptp;
-  uint64_t msi_addr_mask;
-  uint64_t msi_addr_pattern;
-  uint64_t reserved;
-} riscv_iommu_context_t;
-
-/* tc.V, with both `iohgatp` and `fsc` left Bare: a pass-through context. */
-#define IOMMU_TC_V UINT64_C(1)
-
-static volatile uint8_t *g_regs;
-static uint32_t g_iommu_ready;
-static uint64_t g_cap;
-
-static riscv_iommu_context_t g_ddt[IOMMU_DDT_CONTEXTS]
-    __attribute__((aligned(4096)));
-static uint8_t g_cq[IOMMU_QUEUE_ENTRIES * IOMMU_COMMAND_BYTES]
-    __attribute__((aligned(4096)));
-static uint8_t g_fq[IOMMU_QUEUE_ENTRIES * IOMMU_FAULT_BYTES]
-    __attribute__((aligned(4096)));
-
-static uint32_t g_cq_tail;
-static uint32_t g_identity_contexts;
-static uint64_t g_command_count;
-static uint64_t g_fault_count;
 
 /* First-stage tables for the one device this driver translates. One tree
    serves both formats: `l2` is an Sv39 root, and an Sv48 root is one level
@@ -187,210 +88,6 @@ static uint64_t g_iommu_l1[512] __attribute__((aligned(4096)));
 static uint64_t g_iommu_l0[512] __attribute__((aligned(4096)));
 static uint8_t g_iommu_dma_target[4096] __attribute__((aligned(4096)));
 
-static uint64_t mmio_read64(uint32_t offset) {
-  return *(volatile const uint64_t *)(const void *)(g_regs + offset);
-}
-
-static uint32_t mmio_read32(uint32_t offset) {
-  return *(volatile const uint32_t *)(const void *)(g_regs + offset);
-}
-
-static void mmio_write64(uint32_t offset, uint64_t value) {
-  *(volatile uint64_t *)(void *)(g_regs + offset) = value;
-  xaios_cpu_io_barrier();
-}
-
-static void mmio_write32(uint32_t offset, uint32_t value) {
-  *(volatile uint32_t *)(void *)(g_regs + offset) = value;
-  xaios_cpu_io_barrier();
-}
-
-/* A physical address in the PPN field at bits 53:10. */
-static uint64_t ppn_field(uint64_t address) {
-  return (address >> 12U) << IOMMU_PPN_SHIFT;
-}
-
-static int wait_bit_clear(uint32_t offset, uint32_t bit) {
-  uint64_t deadline = timer_now_ns() + IOMMU_TIMEOUT_NS;
-  while ((mmio_read32(offset) & bit) != 0U) {
-    if (timer_now_ns() >= deadline) return 0;
-  }
-  return 1;
-}
-
-/* The identity context for one function: first and second stage both Bare, so
-   an address a device presents is the address it reaches. That is what keeps
-   a machine whose drivers were written against unmediated DMA working while
-   the table is in place, and it is the context the isolation test later takes
-   away from the device it is proving. */
-static void install_identity_context(uint32_t device_id) {
-  riscv_iommu_context_t *context = &g_ddt[device_id];
-  context->tc = IOMMU_TC_V;
-  context->iohgatp = 0U;
-  context->ta = 0U;
-  context->fsc = 0U;
-  context->msiptp = 0U;
-  context->msi_addr_mask = 0U;
-  context->msi_addr_pattern = 0U;
-  context->reserved = 0U;
-  xaios_cpu_io_barrier();
-}
-
-static int install_identity_contexts(void) {
-  uint32_t count = pci_device_count();
-  uint32_t testdevs = 0U;
-  for (uint32_t index = 0U; index < count; ++index) {
-    const xaios_pci_device_t *device = pci_device(index);
-    if (device == 0) continue;
-    uint32_t device_id = pci_stream_id(index);
-    if (device->vendor_id == RISCV_IOMMU_PCI_VENDOR &&
-        device->device_id == RISCV_IOMMU_TESTDEV_DEVICE) {
-      /* The test device does no DMA of its own, so the identity context it
-         would otherwise be given is not what keeps the machine booting -- it
-         is the device the isolation proof needs to find *unregistered*. Every
-         instance after the first is therefore left out of the table on
-         purpose, and its first transaction is the `DDT_INVALID` the gate
-         asserts. */
-      if (testdevs >= 1U) {
-        klog("riscv-iommu: leaving iommu-testdev stream_id=%u unregistered for "
-             "the isolation proof\n",
-             (unsigned)device_id);
-        ++testdevs;
-        continue;
-      }
-      ++testdevs;
-    }
-    if (device_id >= IOMMU_DDT_CONTEXTS) {
-      klog("riscv-iommu: stream_id=%u is wider than this table's %u device "
-           "ids; leaving the IOMMU in Bare\n",
-           (unsigned)device_id, (unsigned)IOMMU_DDT_CONTEXTS);
-      return 0;
-    }
-    install_identity_context(device_id);
-    ++g_identity_contexts;
-  }
-  return 1;
-}
-
-static int enable_command_queue(void) {
-  mmio_write64(IOMMU_REG_CQB,
-               ppn_field((uint64_t)(uintptr_t)g_cq) | IOMMU_QUEUE_LOG2SZ);
-  mmio_write32(IOMMU_REG_CQH, 0U);
-  mmio_write32(IOMMU_REG_CQT, 0U);
-  mmio_write32(IOMMU_REG_CQCSR, IOMMU_QUEUE_ENABLE);
-  if (wait_bit_clear(IOMMU_REG_CQCSR, IOMMU_QUEUE_BUSY) == 0 ||
-      (mmio_read32(IOMMU_REG_CQCSR) & IOMMU_QUEUE_ACTIVE) == 0U) {
-    klog("riscv-iommu: command queue did not come on csr=0x%x\n",
-         (unsigned)mmio_read32(IOMMU_REG_CQCSR));
-    return 0;
-  }
-  return 1;
-}
-
-static int enable_fault_queue(void) {
-  mmio_write64(IOMMU_REG_FQB,
-               ppn_field((uint64_t)(uintptr_t)g_fq) | IOMMU_QUEUE_LOG2SZ);
-  mmio_write32(IOMMU_REG_FQH, 0U);
-  mmio_write32(IOMMU_REG_FQT, 0U);
-  mmio_write32(IOMMU_REG_FQCSR, IOMMU_QUEUE_ENABLE);
-  if (wait_bit_clear(IOMMU_REG_FQCSR, IOMMU_QUEUE_BUSY) == 0 ||
-      (mmio_read32(IOMMU_REG_FQCSR) & IOMMU_QUEUE_ACTIVE) == 0U) {
-    klog("riscv-iommu: fault queue did not come on csr=0x%x\n",
-         (unsigned)mmio_read32(IOMMU_REG_FQCSR));
-    return 0;
-  }
-  return 1;
-}
-
-/* Put the device back in charge of nothing: DMA passes through unmediated
-   again, which is the state the machine boots in. */
-static void bail_to_bare(const char *why) {
-  mmio_write64(IOMMU_REG_DDTP, IOMMU_DDTP_MODE_BARE);
-  (void)wait_bit_clear(IOMMU_REG_DDTP, IOMMU_DDTP_BUSY);
-  g_iommu_ready = 0U;
-  klog("riscv-iommu: %s; device left in Bare and DMA is unmediated\n", why);
-}
-
-static int program_device(void) {
-  /* Queues before the table, so a fault taken while the table is being
-     installed has somewhere to land. */
-  if (enable_command_queue() == 0 || enable_fault_queue() == 0) {
-    bail_to_bare("a queue could not be enabled");
-    return 0;
-  }
-  /* The identity contexts are already in the page this points at, and both
-     writes are one step from the machine's point of view: the moment the mode
-     leaves Bare, every function the table does not describe stops. */
-  mmio_write64(IOMMU_REG_DDTP,
-               ppn_field((uint64_t)(uintptr_t)g_ddt) | IOMMU_DDTP_MODE_1LVL);
-  if (wait_bit_clear(IOMMU_REG_DDTP, IOMMU_DDTP_BUSY) == 0 ||
-      (mmio_read64(IOMMU_REG_DDTP) & IOMMU_DDTP_MODE_MASK) !=
-          IOMMU_DDTP_MODE_1LVL) {
-    bail_to_bare("the device directory table would not take 1LVL");
-    return 0;
-  }
-  g_iommu_ready = 1U;
-  return 1;
-}
-
-static int issue_command(uint64_t dword0, uint64_t dword1) {
-  uint32_t slot = g_cq_tail & (IOMMU_QUEUE_ENTRIES - 1U);
-  uint64_t *entry = (uint64_t *)(void *)(g_cq + slot * IOMMU_COMMAND_BYTES);
-  entry[0] = dword0;
-  entry[1] = dword1;
-  xaios_cpu_io_barrier();
-  ++g_cq_tail;
-  mmio_write32(IOMMU_REG_CQT, g_cq_tail);
-  ++g_command_count;
-
-  uint32_t want = g_cq_tail & (IOMMU_QUEUE_ENTRIES - 1U);
-  uint64_t deadline = timer_now_ns() + IOMMU_TIMEOUT_NS;
-  while ((mmio_read32(IOMMU_REG_CQH) & (IOMMU_QUEUE_ENTRIES - 1U)) != want) {
-    if (timer_now_ns() >= deadline) {
-      klog("riscv-iommu: command 0x%lx did not retire (head=%u want=%u)\n",
-           (unsigned long)dword0, (unsigned)mmio_read32(IOMMU_REG_CQH),
-           (unsigned)want);
-      return 0;
-    }
-  }
-
-  uint32_t csr = mmio_read32(IOMMU_REG_CQCSR);
-  if ((csr & (IOMMU_QUEUE_MEM_FAULT | IOMMU_CQCSR_CMD_ILL)) != 0U) {
-    klog("riscv-iommu: command 0x%lx was refused csr=0x%x\n",
-         (unsigned long)dword0, (unsigned)csr);
-    /* Both are write-1-to-clear, and leaving one set stops the queue. */
-    mmio_write32(IOMMU_REG_CQCSR,
-                 csr & (IOMMU_QUEUE_MEM_FAULT | IOMMU_CQCSR_CMD_ILL));
-    return 0;
-  }
-  return 1;
-}
-
-/* Faults are written whether or not anything is notified, so draining the
-   queue is the whole of reading them. Draining is also what keeps the next
-   fault from being an overflow instead of a record. */
-static uint64_t drain_faults(void) {
-  uint64_t drained = 0U;
-  for (;;) {
-    uint32_t head = mmio_read32(IOMMU_REG_FQH) & (IOMMU_QUEUE_ENTRIES - 1U);
-    uint32_t tail = mmio_read32(IOMMU_REG_FQT) & (IOMMU_QUEUE_ENTRIES - 1U);
-    if (head == tail) break;
-    const uint64_t *record =
-        (const uint64_t *)(const void *)(g_fq + head * IOMMU_FAULT_BYTES);
-    uint64_t header = record[0];
-    klog("riscv-iommu: fault cause=%lu did=%lu ttype=%lu iotval=0x%lx\n",
-         (unsigned long)(header & IOMMU_FQ_CAUSE_MASK),
-         (unsigned long)((header >> IOMMU_FQ_DID_LOW) & UINT64_C(0xffffff)),
-         (unsigned long)((header >> IOMMU_FQ_TTYPE_LOW) & UINT64_C(0x3f)),
-         (unsigned long)record[2]);
-    ++g_fault_count;
-    ++drained;
-    mmio_write32(IOMMU_REG_FQH, (head + 1U) & (IOMMU_QUEUE_ENTRIES - 1U));
-    if (drained >= IOMMU_QUEUE_ENTRIES) break;
-  }
-  return drained;
-}
-
 static uint64_t pte_pointer(const void *table) {
   return (((uint64_t)(uintptr_t)table >> 12U) << 10U) | IOMMU_PTE_V;
 }
@@ -400,12 +97,15 @@ static uint64_t pte_pointer(const void *table) {
    bits -- which is what `address & ~0xfff` produces -- makes the walk land at
    `address >> 2` and the transaction fails somewhere else entirely. That was
    measured, not reasoned about: the first leaf built this way translated the
-   test IOVA to 0x20177c000 for a target of 0x805df000. */
-static uint64_t pte_leaf(uint64_t address) {
+   test IOVA to 0x20177c000 for a target of 0x805df000.
+
+   Named rather than static because iommu_ddt.c's mediation builds its own
+   tree with the same leaf encoding. */
+uint64_t riscv64_iommu_pte_leaf(uint64_t address) {
   return ((address >> 12U) << 10U) | IOMMU_PTE_LEAF;
 }
 
-static uint64_t first_stage_fsc(const void *table, uint64_t mode) {
+uint64_t riscv64_iommu_first_stage_fsc(const void *table, uint64_t mode) {
   return (((uint64_t)(uintptr_t)table >> 12U) & UINT64_C(0xfffffffffff)) | mode;
 }
 
@@ -422,11 +122,12 @@ static void build_first_stage_tables(uint64_t target) {
     g_iommu_l0[entry] = 0U;
   }
   for (uint32_t gib = 0U; gib < 3U; ++gib) {
-    g_iommu_l2[gib] = pte_leaf((uint64_t)gib * IOMMU_GIB);
+    g_iommu_l2[gib] = riscv64_iommu_pte_leaf((uint64_t)gib * IOMMU_GIB);
   }
   g_iommu_l2[(IOMMU_TEST_IOVA >> 30U) & 0x1ffU] = pte_pointer(g_iommu_l1);
   g_iommu_l1[(IOMMU_TEST_IOVA >> 21U) & 0x1ffU] = pte_pointer(g_iommu_l0);
-  g_iommu_l0[(IOMMU_TEST_IOVA >> 12U) & 0x1ffU] = pte_leaf(target);
+  g_iommu_l0[(IOMMU_TEST_IOVA >> 12U) & 0x1ffU] =
+      riscv64_iommu_pte_leaf(target);
   g_iommu_root[0] = pte_pointer(g_iommu_l2);
   xaios_cpu_io_barrier();
 }
@@ -445,19 +146,6 @@ static void zero_dma_target(void) {
 
 static uint32_t dma_target_word(void) {
   return *(volatile const uint32_t *)(const void *)g_iommu_dma_target;
-}
-
-static void install_translation_context(uint32_t device_id, uint64_t fsc) {
-  riscv_iommu_context_t *context = &g_ddt[device_id];
-  context->tc = IOMMU_TC_V;
-  context->iohgatp = 0U;
-  context->ta = 0U;
-  context->fsc = fsc;
-  context->msiptp = 0U;
-  context->msi_addr_mask = 0U;
-  context->msi_addr_pattern = 0U;
-  context->reserved = 0U;
-  xaios_cpu_io_barrier();
 }
 
 static uint32_t find_iommu_testdev(uint32_t ordinal) {
@@ -504,9 +192,6 @@ static int run_testdev_dma(volatile uint32_t *bar, uint64_t iova,
   return (int)bar[ITD_DMA_RESULT / 4U];
 }
 
-uint64_t riscv64_iommu_fault_count(void) { return g_fault_count; }
-uint32_t riscv64_iommu_ready(void) { return g_iommu_ready; }
-
 void riscv64_iommu_self_test(void) {
   uint32_t index = pci_find_device(RISCV_IOMMU_PCI_VENDOR,
                                    RISCV_IOMMU_PCI_DEVICE);
@@ -538,12 +223,12 @@ void riscv64_iommu_self_test(void) {
          (unsigned long)base);
     return;
   }
-  g_regs = (volatile uint8_t *)(uintptr_t)base;
+  riscv64_iommu_bind(base);
 
   /* A read that faults and a read of all-ones mean the same thing here, and
      neither is fatal. */
   exception_mmio_probe_begin();
-  g_cap = mmio_read64(IOMMU_REG_CAP);
+  uint64_t cap = riscv64_iommu_read_cap();
   exception_mmio_probe_end();
   if (exception_mmio_probe_faulted() != 0) {
     klog("smmu: riscv64 riscv-iommu-pci at 0x%lx does not answer; DMA is "
@@ -554,33 +239,35 @@ void riscv64_iommu_self_test(void) {
 
   klog("riscv-iommu: found device=%u base=0x%lx cap=0x%lx version=0x%lx sv39=%u "
        "sv48=%u sv57=%u igs=%u\n",
-       (unsigned)index, (unsigned long)base, (unsigned long)g_cap,
-       (unsigned long)(g_cap & IOMMU_CAP_VERSION),
-       (unsigned)((g_cap & IOMMU_CAP_SV39) != 0U),
-       (unsigned)((g_cap & IOMMU_CAP_SV48) != 0U),
-       (unsigned)((g_cap & (UINT64_C(1) << 11)) != 0U),
-       (unsigned)((g_cap & IOMMU_CAP_IGS) >> 28));
+       (unsigned)index, (unsigned long)base, (unsigned long)cap,
+       (unsigned long)(cap & IOMMU_CAP_VERSION),
+       (unsigned)((cap & IOMMU_CAP_SV39) != 0U),
+       (unsigned)((cap & IOMMU_CAP_SV48) != 0U),
+       (unsigned)((cap & (UINT64_C(1) << 11)) != 0U),
+       (unsigned)((cap & IOMMU_CAP_IGS) >> 28));
 
   /* The table the driver builds must be describable by this device, and the
      contexts it fills are Bare on both stages, which every version supports. */
-  if (install_identity_contexts() == 0) return;
+  if (riscv64_iommu_install_identity_contexts() == 0) return;
 
-  if (program_device() == 0) return;
+  if (riscv64_iommu_program_device() == 0) return;
 
-  int fenced = issue_command(IOMMU_CMD_IOFENCE_C, 0U);
-  int ddt_invalidated = issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
+  int fenced = riscv64_iommu_issue_command(IOMMU_CMD_IOFENCE_C, 0U);
+  int ddt_invalidated =
+      riscv64_iommu_issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
   if (fenced == 0 || ddt_invalidated == 0) {
-    bail_to_bare("a first command did not complete");
+    riscv64_iommu_bail_to_bare("a first command did not complete");
     return;
   }
-  uint64_t faults = drain_faults();
+  uint64_t faults = riscv64_iommu_drain_faults();
   klog("riscv-iommu: queues and ddt enabled commands=%lu contexts=%u fence=%d "
        "invalidate_ddt=%d faults=%lu\n",
-       (unsigned long)g_command_count, (unsigned)g_identity_contexts,
-       fenced, ddt_invalidated, (unsigned long)faults);
+       (unsigned long)riscv64_iommu_command_count(),
+       (unsigned)riscv64_iommu_identity_contexts(), fenced, ddt_invalidated,
+       (unsigned long)faults);
   kassert(fenced != 0);
   kassert(ddt_invalidated != 0);
-  kassert(g_identity_contexts != 0U);
+  kassert(riscv64_iommu_identity_contexts() != 0U);
 
   /* Milestones 4 and 5: translation for one device, then its removal and the
      device this table never described. Both need the two test instances the
@@ -623,7 +310,7 @@ void riscv64_iommu_self_test(void) {
      never read -- and separating the two is worth one transaction. */
   zero_dma_target();
   int identity_result = run_testdev_dma(authorized_bar, target, target);
-  uint64_t identity_faults = drain_faults();
+  uint64_t identity_faults = riscv64_iommu_drain_faults();
   klog("riscv-iommu: identity DMA result=0x%x target=0x%x faults=%lu\n",
        identity_result, dma_target_word(), (unsigned long)identity_faults);
   kassert(identity_result == 0);
@@ -636,13 +323,14 @@ void riscv64_iommu_self_test(void) {
      IOTINVAL. Without the second the first identity context could still
      answer, which is exactly the stale entry the later test needs to be able
      to flush. */
-  install_translation_context(authorized_id,
-                              first_stage_fsc(g_iommu_l2, IOMMU_FSC_MODE_SV39));
-  (void)issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
-  (void)issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
+  riscv64_iommu_install_translation_context(
+      authorized_id,
+      riscv64_iommu_first_stage_fsc(g_iommu_l2, IOMMU_FSC_MODE_SV39));
+  (void)riscv64_iommu_issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
+  (void)riscv64_iommu_issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
   zero_dma_target();
   int translated = run_testdev_dma(authorized_bar, IOMMU_TEST_IOVA, target);
-  uint64_t translated_faults = drain_faults();
+  uint64_t translated_faults = riscv64_iommu_drain_faults();
   klog("riscv-iommu: sv39 translated DMA result=0x%x target=0x%x iova=0x%lx "
        "did=%u faults=%lu\n",
        translated, dma_target_word(), (unsigned long)IOMMU_TEST_IOVA,
@@ -653,14 +341,15 @@ void riscv64_iommu_self_test(void) {
   /* Then Sv48 through the same tree one level deeper, because the format is
      part of the context rather than of the tables and a driver that only ever
      built one would report a capability it never used. */
-  install_translation_context(
-      authorized_id, first_stage_fsc(g_iommu_root, IOMMU_FSC_MODE_SV48));
-  (void)issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
-  (void)issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
+  riscv64_iommu_install_translation_context(
+      authorized_id,
+      riscv64_iommu_first_stage_fsc(g_iommu_root, IOMMU_FSC_MODE_SV48));
+  (void)riscv64_iommu_issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
+  (void)riscv64_iommu_issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
   zero_dma_target();
   int translated_sv48 =
       run_testdev_dma(authorized_bar, IOMMU_TEST_IOVA, target);
-  uint64_t translated_sv48_faults = drain_faults();
+  uint64_t translated_sv48_faults = riscv64_iommu_drain_faults();
   klog("riscv-iommu: sv48 translated DMA result=0x%x target=0x%x did=%u "
        "faults=%lu\n",
        translated_sv48, dma_target_word(), (unsigned)authorized_id,
@@ -671,10 +360,10 @@ void riscv64_iommu_self_test(void) {
   /* Take the page away, flush, and the identical transaction must fault: the
      mapping is the only reason it worked a line ago. */
   unmap_test_page();
-  (void)issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
+  (void)riscv64_iommu_issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
   zero_dma_target();
   int stale = run_testdev_dma(authorized_bar, IOMMU_TEST_IOVA, target);
-  uint64_t stale_faults = drain_faults();
+  uint64_t stale_faults = riscv64_iommu_drain_faults();
   klog("riscv-iommu: stale mapping blocked result=0x%x target=0x%x "
        "faults=%lu\n",
        stale, dma_target_word(), (unsigned long)stale_faults);
@@ -686,7 +375,7 @@ void riscv64_iommu_self_test(void) {
      the walk stops before any page table and the reason is DDT_INVALID. */
   zero_dma_target();
   int refused = run_testdev_dma(unregistered_bar, IOMMU_TEST_IOVA, target);
-  uint64_t refused_faults = drain_faults();
+  uint64_t refused_faults = riscv64_iommu_drain_faults();
   klog("riscv-iommu: unregistered device refused result=0x%x target=0x%x "
        "did=%u faults=%lu\n",
        refused, dma_target_word(), (unsigned)unregistered_id,
@@ -697,123 +386,5 @@ void riscv64_iommu_self_test(void) {
 
   klog("riscv-iommu: isolation self-test passed authorized=1 forbidden=1 "
        "stale_mapping=blocked faults=%lu\n",
-       (unsigned long)g_fault_count);
+       (unsigned long)riscv64_iommu_fault_count());
 }
-
-/* --- First-stage contexts for the functions that actually do DMA (B-130) ---
- *
- * Every PCI function starts with a pass-through context, which is what keeps a
- * machine whose drivers were written for unmediated DMA booting. That is not a
- * translation: the IOMMU is in the path and there is no table for it to walk.
- * This is the other half -- a PCI function whose DMA is a walk.
- *
- * The table identity-maps three gigabytes with 1 GiB leaves in Sv39. It is
- * identity because a driver allocates a device's buffers wherever physical
- * memory happens to be, and the point of this step is that the walk happens,
- * not that the addresses move. What it buys is the thing a pass-through cannot
- * have: the mapping is a table this driver owns, so an entry can be taken away
- * (that is a revocation) and the table's contents can be read back from the CPU
- * and asserted, rather than inferred from a device that happens to work.
- *
- * The mediation happens when a transport hands a queue to a device, which is
- * the moment the device first has memory to reach; `virtio_transport_pci.c`
- * calls it from `setup_queue`. Passing the rings rather than every buffer is
- * deliberate: they are the memory the transport itself knows about, and the
- * identity mapping is what lets the driver keep allocating its data buffers the
- * way it always did.
- */
-
-#define IOMMU_MEDIATED_MAX 4U
-
-static uint64_t g_mediated_table[IOMMU_MEDIATED_MAX][512]
-    __attribute__((aligned(4096)));
-static uint32_t g_mediated_stream[IOMMU_MEDIATED_MAX];
-static uint32_t g_mediated_count;
-static uint64_t g_mediated_pages;
-static uint64_t g_mediated_regions;
-
-/* What the table resolves `address` to, read back out of the table. A leaf at
- * this level covers 1 GiB, so the offset within it is the address's low thirty
- * bits; a table that resolved to something else would be one whose context
- * pointed at the wrong root, and asserting the walk is what tells the two
- * apart without a device in the loop. */
-static uint64_t mediated_walk(const uint64_t *table, uint64_t address) {
-  uint64_t entry = table[(address >> 30U) & 0x1ffU];
-  if ((entry & (IOMMU_PTE_V | IOMMU_PTE_R | IOMMU_PTE_W)) !=
-      (IOMMU_PTE_V | IOMMU_PTE_R | IOMMU_PTE_W)) {
-    return UINT64_MAX;
-  }
-  return ((entry >> 10U) << 12U) | (address & UINT64_C(0x3fffffff));
-}
-
-/* The slot for `stream_id`, building and installing its table the first time.
- * Returns -1 when the slots are full, which is a refusal rather than a
- * fall-back to pass-through: a device this driver cannot mediate is one it
- * must not claim to. */
-static int mediated_slot(uint32_t stream_id) {
-  for (uint32_t slot = 0U; slot < g_mediated_count; ++slot) {
-    if (g_mediated_stream[slot] == stream_id) return (int)slot;
-  }
-  if (g_mediated_count >= IOMMU_MEDIATED_MAX) return -1;
-  uint32_t slot = g_mediated_count;
-  g_mediated_stream[slot] = stream_id;
-  for (uint32_t entry = 0U; entry < 512U; ++entry) {
-    g_mediated_table[slot][entry] = 0U;
-  }
-  for (uint32_t gib = 0U; gib < 3U; ++gib) {
-    g_mediated_table[slot][gib] = pte_leaf((uint64_t)gib * IOMMU_GIB);
-  }
-  xaios_cpu_io_barrier();
-  /* One table serves as the Sv39 root: its entries are 1 GiB leaves, which is
-   * level two's leaf size in this format, so no second level is needed to
-   * describe memory a device can reach. */
-  install_translation_context(
-      stream_id, first_stage_fsc(g_mediated_table[slot], IOMMU_FSC_MODE_SV39));
-  (void)issue_command(IOMMU_CMD_IODIR_INVAL_DDT, 0U);
-  (void)issue_command(IOMMU_CMD_IOTINVAL_ALL, 0U);
-  ++g_mediated_count;
-  klog("riscv-iommu: first-stage context stream_id=%u leaves=3 ram=3GiB "
-       "format=sv39\n",
-       (unsigned)stream_id);
-  return (int)slot;
-}
-
-int riscv64_iommu_mediate_dma(uint32_t stream_id, uint64_t physical,
-                              uint64_t size) {
-  int slot;
-  uint64_t page;
-  uint64_t resolved;
-  uint64_t pages;
-
-  if (g_iommu_ready == 0U || size == 0U) return 0;
-  if (stream_id >= IOMMU_DDT_CONTEXTS) return 0;
-  slot = mediated_slot(stream_id);
-  if (slot < 0) {
-    klog("riscv-iommu: no first-stage slot left for stream_id=%u; its DMA "
-         "stays unmediated\n",
-         (unsigned)stream_id);
-    return 0;
-  }
-  page = physical & ~UINT64_C(0xfff);
-  resolved = mediated_walk(g_mediated_table[slot], page);
-  if (resolved != page) {
-    klog("riscv-iommu: first-stage walk for stream_id=%u address=0x%lx "
-         "resolved=0x%lx; refusing to claim the mapping\n",
-         (unsigned)stream_id, (unsigned long)page, (unsigned long)resolved);
-    return 0;
-  }
-  pages = (size + 4095U) / 4096U;
-  g_mediated_pages += pages;
-  ++g_mediated_regions;
-  klog("riscv-iommu: mediated dma stream_id=%u region=0x%lx size=%lu "
-       "pages=%lu pte_ok=1\n",
-       (unsigned)stream_id, (unsigned long)physical, (unsigned long)size,
-       (unsigned long)pages);
-  return 1;
-}
-
-uint32_t riscv64_iommu_mediated_functions(void) { return g_mediated_count; }
-
-uint64_t riscv64_iommu_mediated_regions(void) { return g_mediated_regions; }
-
-uint64_t riscv64_iommu_mediated_pages(void) { return g_mediated_pages; }

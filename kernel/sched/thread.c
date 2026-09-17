@@ -1,80 +1,46 @@
+/* The thread table, the kernel-side lifecycle and the per-CPU dispatch.
+ *
+ * Split out of an 824-line thread.c: the user-thread path (create, join,
+ * cancel, drain, exit) moved to thread_user.c and the group runner and
+ * self-tests to thread_selftest.c, both of which reach this file's state
+ * through thread_internal.h. What stays here is the table itself, its
+ * initialization, the placement rules, the pending check and the run that
+ * claims a pending record.
+ *
+ * The order xaios_thread_runtime_init establishes is unchanged -- the thread
+ * table is allocated and kasserted before the per-CPU context array, ids
+ * start at one, and the round-robin ordinal is cleared under the same lock
+ * the create paths take.
+ */
+
+#include "thread_internal.h"
+
 #include <xaios/arch_cpu.h>
 #include <xaios/assert.h>
 #include <xaios/kheap.h>
 #include <xaios/klog.h>
 #include <xaios/smp.h>
 #include <xaios/spinlock.h>
-#include <xaios/thread.h>
 #include <xaios/timer.h>
 #include <xaios/user.h>
 #include <xaios/vmm.h>
 
 #define XAIOS_THREADS_PER_CPU 8U
-#define XAIOS_THREAD_SELF_TEST_TIMEOUT_NS UINT64_C(30000000000)
 
-typedef struct xaios_thread_record {
-  uint64_t id;
-  xaios_thread_entry_t entry;
-  void *context;
-  uint64_t result;
-  uint32_t target_cpu;
-  uint32_t running_cpu;
-  uint32_t owner_pid;
-  uint32_t release_context;
-  uint32_t detached;
-  xaios_thread_state_t state;
-} xaios_thread_record_t;
-
-typedef struct xaios_user_thread_context {
-  uint64_t entry;
-  uint64_t argument;
-  uint64_t stack_top;
-  uint64_t return_address;
-  uint64_t exit_result;
-  uint32_t owner_pid;
-  uint32_t exited;
-  /* Which CPU the thread was started on, and which one its exit syscall was
-     serviced by. B-02 is a worker that returns the exit magic -- so the exit
-     path ran and found *a* context -- while its own context is still not
-     marked exited, which can only mean the exit marked a different one. The
-     per-CPU slot is the only link between the two, so record both ends of it
-     rather than inferring. */
-  uint32_t entry_cpu;
-  uint32_t exit_cpu;
-} xaios_user_thread_context_t;
-
-typedef struct xaios_group_context {
-  uint64_t ordinal;
-  uint64_t iterations;
-  uint32_t expected_cpu;
-  uint32_t actual_cpu;
-} xaios_group_context_t;
-
-typedef struct xaios_cancel_test_context {
-  uint32_t started;
-  uint32_t release;
-} xaios_cancel_test_context_t;
-
-static xaios_thread_record_t *g_threads;
-static uint32_t g_thread_capacity;
+xaios_thread_record_t *g_threads;
+uint32_t g_thread_capacity;
 static uint64_t g_next_thread_id;
 static uint32_t g_round_robin_ordinal;
-static xaios_user_thread_context_t **g_current_user_thread_by_cpu;
-static uint32_t g_current_user_thread_capacity;
-static xaios_spinlock_t g_thread_lock = XAIOS_SPINLOCK_INIT;
+xaios_user_thread_context_t **g_current_user_thread_by_cpu;
+uint32_t g_current_user_thread_capacity;
+xaios_spinlock_t g_thread_lock = XAIOS_SPINLOCK_INIT;
 
-/* In the port's assembly, and named for the system rather than for the one
-   port that had it first -- see kernel/arch/aarch64/entry.S (B-109). */
-extern uint64_t xaios_enter_user_thread(uint64_t entry, uint64_t stack,
-                                          uint64_t argument,
-                                          uint64_t return_address);
-
-static void bytes_zero(void *buffer, uint64_t size) {
+void xaios_thread_bytes_zero(void *buffer, uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
   for (uint64_t i = 0; i < size; ++i) bytes[i] = 0;
 }
 
-static xaios_thread_record_t *find_thread_locked(uint64_t id) {
+xaios_thread_record_t *xaios_thread_find_locked(uint64_t id) {
   for (uint32_t i = 0; i < g_thread_capacity; ++i) {
     if (g_threads[i].state != XAIOS_THREAD_UNUSED && g_threads[i].id == id) {
       return &g_threads[i];
@@ -105,7 +71,7 @@ void xaios_thread_runtime_init(void) {
        g_thread_capacity, smp_online_count());
 }
 
-static xaios_status_t thread_create_on_cpu(
+xaios_status_t xaios_thread_create_on_cpu(
     xaios_thread_entry_t entry, void *context, uint32_t target_cpu,
     uint32_t owner_pid, uint32_t release_context, uint32_t detached,
     uint64_t *thread_id) {
@@ -158,7 +124,7 @@ xaios_status_t xaios_thread_create(xaios_thread_entry_t entry, void *context,
       return XAIOS_ERR_INVALID;
     }
   }
-  return thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 0U,
+  return xaios_thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 0U,
                               thread_id);
 }
 
@@ -175,7 +141,7 @@ xaios_status_t xaios_thread_create_off_current_cpu(
         cpu->role != XAIOS_CPU_ROLE_SCHEDULING || cpu->lease_owner_id != 0U) {
       continue;
     }
-    return thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 0U,
+    return xaios_thread_create_on_cpu(entry, context, target_cpu, 0U, 0U, 0U,
                                 thread_id);
   }
   return XAIOS_ERR_UNSUPPORTED;
@@ -241,12 +207,12 @@ xaios_status_t xaios_thread_create_detached_off_current_cpu(
   }
   xaios_spin_unlock(&g_thread_lock);
   if (chosen == UINT32_MAX) return XAIOS_ERR_UNSUPPORTED;
-  return thread_create_on_cpu(entry, context, chosen, 0U, 0U, 1U,
+  return xaios_thread_create_on_cpu(entry, context, chosen, 0U, 0U, 1U,
                               &ignored_id);
 }
 
-static xaios_status_t select_user_cpu(uint32_t preferred_cpu,
-                                      uint32_t *target_cpu) {
+xaios_status_t xaios_thread_select_user_cpu(uint32_t preferred_cpu,
+                                            uint32_t *target_cpu) {
   uint32_t current_cpu = smp_cpu_id();
   if (preferred_cpu != XAIOS_THREAD_CPU_ANY) {
     const xaios_cpu_state_t *cpu = smp_cpu_state(preferred_cpu);
@@ -306,127 +272,6 @@ static xaios_status_t select_user_cpu(uint32_t preferred_cpu,
   return XAIOS_ERR_UNSUPPORTED;
 }
 
-/* The last exit this kernel serviced, for the B-02 diagnostic below: a worker
-   whose own context was never marked needs to say which context was. */
-static volatile uint64_t g_last_exit_context;
-static volatile uint32_t g_last_exit_cpu = UINT32_MAX;
-static volatile uint64_t g_last_exit_count;
-
-static uint64_t user_thread_worker(void *opaque) {
-  xaios_user_thread_context_t *context =
-      (xaios_user_thread_context_t *)opaque;
-  uint32_t cpu_id = smp_cpu_id();
-  /* B-02. Five conditions here used to return the same UINT64_MAX, so a thread
-     that failed told the joiner only that something went wrong -- which is why
-     an intermittent failure under load has twice been recorded and twice gone
-     unexplained. Each one now names itself. The cost is a klog on paths that
-     already end in failure.
-     A cpu_id of UINT32_MAX is the case to watch: smp_cpu_id() returns that
-     when the running CPU cannot find itself among the online ones, which would
-     mean a CPU executing a thread while its own state says it is not there. */
-  if (context == 0) {
-    klog("threads: worker abandoned; no context\n");
-    return UINT64_MAX;
-  }
-  if (cpu_id >= g_current_user_thread_capacity) {
-    klog("threads: worker abandoned; cpu_id=%u capacity=%u owner=%u\n", cpu_id,
-         g_current_user_thread_capacity, context->owner_pid);
-    return UINT64_MAX;
-  }
-  if (user_bind_current_process(context->owner_pid) != XAIOS_OK) {
-    klog("threads: worker abandoned; cannot bind owner=%u on cpu=%u\n",
-         context->owner_pid, cpu_id);
-    return UINT64_MAX;
-  }
-  /* Save what this CPU was doing before borrowing it.
-
-     A user process waiting in xaios_thread_join runs pending threads on its
-     own CPU while it waits, so this worker can be entered from inside that
-     process's syscall -- the CPU already has a current process bound and its
-     address space active. Clearing to the kernel on the way out, which is
-     what this did, left the outer syscall with no current process and the
-     kernel's address space: every later capability check on it fails and
-     every user pointer it touches resolves in the wrong space.
-
-     That is B-02's shape. The failure needs a thread still pending when join
-     runs, which is what a loaded host produces and why it was intermittent,
-     and it lands on a later thread than the one that caused it, which is why
-     it never pointed at itself. */
-  const xaios_user_process_t *previous_process = user_current_process();
-  uint32_t previous_pid = previous_process != 0 ? previous_process->pid : 0U;
-  xaios_user_thread_context_t *previous_context =
-      g_current_user_thread_by_cpu[cpu_id];
-
-  user_switch_address_space(context->owner_pid);
-  context->entry_cpu = cpu_id;
-  context->exit_cpu = UINT32_MAX;
-  g_current_user_thread_by_cpu[cpu_id] = context;
-  uint64_t started_ns = timer_now_ns();
-  user_thread_runtime_start(context->owner_pid, cpu_id, started_ns);
-  uint64_t encoded = xaios_enter_user_thread(
-      context->entry, context->stack_top, context->argument,
-      context->return_address);
-  user_thread_runtime_stop(context->owner_pid, cpu_id, started_ns,
-                           timer_now_ns());
-  /* Put back what was there rather than clearing, so a nested run is
-     invisible to whatever was interrupted. */
-  g_current_user_thread_by_cpu[cpu_id] = previous_context;
-  if (previous_pid != 0U &&
-      user_bind_current_process(previous_pid) == XAIOS_OK) {
-    user_switch_address_space(previous_pid);
-  } else {
-    user_clear_current_process();
-    vmm_activate_kernel();
-  }
-  if ((encoded & XAIOS_USER_EXIT_RETURN_MASK) != XAIOS_USER_EXIT_RETURN_MAGIC) {
-    klog("threads: worker returned without the exit magic; encoded=0x%lx "
-         "owner=%u cpu=%u\n", encoded, context->owner_pid, cpu_id);
-    return UINT64_MAX;
-  }
-  if (context->exited == 0U) {
-    klog("threads: worker exit magic present but exited=0; owner=%u cpu=%u "
-         "entry_cpu=%u exit_cpu=%u this=0x%lx last_exit=0x%lx last_cpu=%u "
-         "exits=%lu encoded=0x%lx\n",
-         context->owner_pid, cpu_id, context->entry_cpu, context->exit_cpu,
-         (uint64_t)(uintptr_t)context, g_last_exit_context, g_last_exit_cpu,
-         g_last_exit_count, encoded);
-    return UINT64_MAX;
-  }
-  return context->exit_result;
-}
-
-xaios_status_t xaios_user_thread_create(uint64_t entry, uint64_t argument,
-                                        uint64_t stack_top,
-                                        uint64_t return_address,
-                                        uint32_t preferred_cpu,
-                                        uint32_t owner_pid,
-                                        uint64_t *thread_id) {
-  if (entry == 0U || stack_top == 0U || return_address == 0U ||
-      owner_pid == 0U || thread_id == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint32_t target_cpu = 0U;
-  xaios_status_t status = select_user_cpu(preferred_cpu, &target_cpu);
-  if (status != XAIOS_OK) return status;
-  xaios_user_thread_context_t *context =
-      (xaios_user_thread_context_t *)kheap_calloc(sizeof(*context), 16U);
-  if (context == 0) return XAIOS_ERR_NO_MEMORY;
-  context->entry = entry;
-  context->argument = argument;
-  context->stack_top = stack_top;
-  context->return_address = return_address;
-  context->owner_pid = owner_pid;
-  status = thread_create_on_cpu(user_thread_worker, context, target_cpu,
-                                owner_pid, 1U, 0U, thread_id);
-  if (status != XAIOS_OK) {
-    kheap_free(context);
-  } else {
-    klog("threads: user create id=%lu owner=%u target_cpu=%u\n", *thread_id,
-         owner_pid, target_cpu);
-  }
-  return status;
-}
-
 uint32_t xaios_thread_pending_on_cpu(uint32_t cpu_id) {
   if (g_threads == 0) return 0U;
   uint32_t pending = 0U;
@@ -471,185 +316,12 @@ uint32_t xaios_thread_run_pending(uint32_t cpu_id) {
          claimed->id, claimed->owner_pid, cpu_id, result);
   }
   if (claimed->detached != 0U) {
-    bytes_zero(claimed, sizeof(*claimed));
+    xaios_thread_bytes_zero(claimed, sizeof(*claimed));
   } else {
     __atomic_store_n(&claimed->state, XAIOS_THREAD_COMPLETE, __ATOMIC_RELEASE);
   }
   xaios_cpu_notify();
   return 1U;
-}
-
-static xaios_status_t thread_join_owned(uint64_t thread_id, uint64_t timeout_ns,
-                                        uint64_t *result, uint32_t owner_pid,
-                                        uint32_t enforce_owner) {
-  if (thread_id == 0U || result == 0 || g_threads == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t start = timer_now_ns();
-  uint32_t current_cpu = smp_cpu_id();
-  uint32_t reported_context_loss = 0U;
-  for (;;) {
-    xaios_spin_lock(&g_thread_lock);
-    xaios_thread_record_t *thread = find_thread_locked(thread_id);
-    if (thread == 0) {
-      xaios_spin_unlock(&g_thread_lock);
-      if (enforce_owner != 0U) {
-        klog("threads: user join id=%lu owner=%u not found\n", thread_id,
-             owner_pid);
-      }
-      return XAIOS_ERR_NOT_FOUND;
-    }
-    if (enforce_owner != 0U && thread->owner_pid != owner_pid) {
-      uint32_t actual_owner = thread->owner_pid;
-      xaios_spin_unlock(&g_thread_lock);
-      klog("threads: user join id=%lu owner=%u actual_owner=%u\n", thread_id,
-           owner_pid, actual_owner);
-      return XAIOS_ERR_INVALID;
-    }
-    xaios_thread_state_t state =
-        __atomic_load_n(&thread->state, __ATOMIC_ACQUIRE);
-    if (state == XAIOS_THREAD_COMPLETE || state == XAIOS_THREAD_CANCELLED) {
-      uint64_t value = thread->result;
-      void *context = thread->release_context != 0U ? thread->context : 0;
-      bytes_zero(thread, sizeof(*thread));
-      xaios_spin_unlock(&g_thread_lock);
-      if (context != 0) kheap_free(context);
-      *result = value;
-      return state == XAIOS_THREAD_COMPLETE ? XAIOS_OK : XAIOS_ERR_BUSY;
-    }
-    xaios_spin_unlock(&g_thread_lock);
-
-    if (current_cpu != UINT32_MAX) {
-      /* Running a pending thread here borrows this CPU, which may already be
-         inside the calling process's syscall. The worker restores what it
-         found; this checks that it did, because the cost of it not having is
-         a syscall that carries on with no process bound and the kernel's
-         address space -- which returns a wrong answer rather than an error,
-         and took two sightings to even name. Reported once per join so a
-         recurrence says so instead of being inferred later. */
-      const xaios_user_process_t *before = user_current_process();
-      (void)xaios_thread_run_pending(current_cpu);
-      const xaios_user_process_t *after = user_current_process();
-      if (after != before && reported_context_loss == 0U) {
-        reported_context_loss = 1U;
-        klog("threads: join lost its process context id=%lu owner=%u cpu=%u "
-             "before=%u after=%u\n",
-             thread_id, owner_pid, current_cpu,
-             before != 0 ? before->pid : 0U, after != 0 ? after->pid : 0U);
-      }
-    }
-    if (timeout_ns != 0U && timer_now_ns() - start >= timeout_ns) {
-      if (enforce_owner != 0U) {
-        xaios_spin_lock(&g_thread_lock);
-        thread = find_thread_locked(thread_id);
-        uint32_t state = thread == 0 ? XAIOS_THREAD_UNUSED : thread->state;
-        uint32_t target = thread == 0 ? UINT32_MAX : thread->target_cpu;
-        uint32_t running = thread == 0 ? UINT32_MAX : thread->running_cpu;
-        xaios_spin_unlock(&g_thread_lock);
-        klog("threads: user join timeout id=%lu owner=%u state=%u target=%u "
-             "running=%u\n",
-             thread_id, owner_pid, state, target, running);
-      }
-      return XAIOS_ERR_BUSY;
-    }
-    xaios_cpu_relax();
-  }
-}
-
-xaios_status_t xaios_thread_join(uint64_t thread_id, uint64_t timeout_ns,
-                                 uint64_t *result) {
-  return thread_join_owned(thread_id, timeout_ns, result, 0U, 0U);
-}
-
-xaios_status_t xaios_user_thread_join(uint64_t thread_id, uint32_t owner_pid,
-                                      uint64_t timeout_ns, uint64_t *result) {
-  return thread_join_owned(thread_id, timeout_ns, result, owner_pid, 1U);
-}
-
-static xaios_status_t thread_cancel_owned(uint64_t thread_id,
-                                          uint32_t owner_pid,
-                                          uint32_t enforce_owner) {
-  xaios_spin_lock(&g_thread_lock);
-  xaios_thread_record_t *thread = find_thread_locked(thread_id);
-  if (thread == 0) {
-    xaios_spin_unlock(&g_thread_lock);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  if (enforce_owner != 0U && thread->owner_pid != owner_pid) {
-    xaios_spin_unlock(&g_thread_lock);
-    return XAIOS_ERR_INVALID;
-  }
-  if (thread->state != XAIOS_THREAD_PENDING) {
-    xaios_spin_unlock(&g_thread_lock);
-    return XAIOS_ERR_BUSY;
-  }
-  __atomic_store_n(&thread->state, XAIOS_THREAD_CANCELLED, __ATOMIC_RELEASE);
-  xaios_spin_unlock(&g_thread_lock);
-  xaios_cpu_notify();
-  return XAIOS_OK;
-}
-
-xaios_status_t xaios_thread_cancel(uint64_t thread_id) {
-  return thread_cancel_owned(thread_id, 0U, 0U);
-}
-
-xaios_status_t xaios_user_thread_cancel(uint64_t thread_id,
-                                        uint32_t owner_pid) {
-  return thread_cancel_owned(thread_id, owner_pid, 1U);
-}
-
-xaios_status_t xaios_user_thread_drain(uint32_t owner_pid,
-                                       uint64_t timeout_ns) {
-  if (owner_pid == 0U || g_threads == 0) return XAIOS_ERR_INVALID;
-  uint64_t started = timer_now_ns();
-  for (;;) {
-    void *context = 0;
-    uint32_t owned = 0U;
-    xaios_spin_lock(&g_thread_lock);
-    for (uint32_t i = 0; i < g_thread_capacity; ++i) {
-      xaios_thread_record_t *thread = &g_threads[i];
-      if (thread->state == XAIOS_THREAD_UNUSED ||
-          thread->owner_pid != owner_pid) {
-        continue;
-      }
-      owned = 1U;
-      xaios_thread_state_t state =
-          __atomic_load_n(&thread->state, __ATOMIC_ACQUIRE);
-      if (state == XAIOS_THREAD_PENDING) {
-        __atomic_store_n(&thread->state, XAIOS_THREAD_CANCELLED,
-                         __ATOMIC_RELEASE);
-        state = XAIOS_THREAD_CANCELLED;
-      }
-      if (state == XAIOS_THREAD_COMPLETE || state == XAIOS_THREAD_CANCELLED) {
-        context = thread->release_context != 0U ? thread->context : 0;
-        bytes_zero(thread, sizeof(*thread));
-        break;
-      }
-    }
-    xaios_spin_unlock(&g_thread_lock);
-    if (context != 0) kheap_free(context);
-    if (owned == 0U) return XAIOS_OK;
-    if (timeout_ns != 0U && timer_now_ns() - started >= timeout_ns) {
-      return XAIOS_ERR_BUSY;
-    }
-    xaios_cpu_relax();
-  }
-}
-
-uint64_t xaios_user_thread_exit(uint64_t result) {
-  uint32_t cpu_id = smp_cpu_id();
-  if (cpu_id >= g_current_user_thread_capacity ||
-      g_current_user_thread_by_cpu[cpu_id] == 0) {
-    return UINT64_MAX;
-  }
-  xaios_user_thread_context_t *context = g_current_user_thread_by_cpu[cpu_id];
-  context->exit_cpu = cpu_id;
-  context->exit_result = result;
-  context->exited = 1U;
-  g_last_exit_context = (uint64_t)(uintptr_t)context;
-  g_last_exit_cpu = cpu_id;
-  __atomic_add_fetch(&g_last_exit_count, 1U, __ATOMIC_RELAXED);
-  return XAIOS_USER_EXIT_RETURN_MAGIC;
 }
 
 uint32_t xaios_thread_capacity(void) { return g_thread_capacity; }
@@ -662,163 +334,4 @@ uint32_t xaios_thread_active_count(void) {
   }
   xaios_spin_unlock(&g_thread_lock);
   return active;
-}
-
-static uint64_t group_worker(void *opaque) {
-  xaios_group_context_t *context = (xaios_group_context_t *)opaque;
-  uint64_t tid = context->ordinal;
-  uint32_t cpu = smp_cpu_id();
-  context->actual_cpu = cpu;
-  uint64_t local = (tid + 1U) * UINT64_C(0x100000001b3);
-  for (uint64_t i = 0; i < context->iterations; ++i) {
-    local ^= (i + 17U) + (tid << 8U) + cpu;
-    local *= UINT64_C(0x9e3779b185ebca87);
-    local = (local >> 11U) | (local << 53U);
-  }
-  return local + (tid << 32U);
-}
-
-static uint64_t cancel_test_blocker(void *opaque) {
-  xaios_cancel_test_context_t *context =
-      (xaios_cancel_test_context_t *)opaque;
-  __atomic_store_n(&context->started, 1U, __ATOMIC_RELEASE);
-  while (__atomic_load_n(&context->release, __ATOMIC_ACQUIRE) == 0U) {
-    xaios_cpu_relax();
-  }
-  return UINT64_C(0xcace11ed);
-}
-
-static uint64_t cancel_test_queued(void *opaque) {
-  (void)opaque;
-  return UINT64_C(0xbad);
-}
-
-xaios_status_t xaios_thread_run_group(uint64_t requested_threads,
-                                      uint64_t iterations,
-                                      uint64_t *ran_threads,
-                                      uint64_t *checksum) {
-  if (requested_threads == 0U || iterations == 0U || ran_threads == 0 ||
-      checksum == 0 || requested_threads > g_thread_capacity) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (iterations > UINT64_C(200000)) iterations = UINT64_C(200000);
-  xaios_group_context_t *contexts = (xaios_group_context_t *)kheap_calloc(
-      requested_threads * sizeof(*contexts), 16U);
-  uint64_t *ids =
-      (uint64_t *)kheap_calloc(requested_threads * sizeof(*ids), 16U);
-  if (contexts == 0 || ids == 0) {
-    if (contexts != 0) kheap_free(contexts);
-    if (ids != 0) kheap_free(ids);
-    return XAIOS_ERR_NO_MEMORY;
-  }
-
-  uint64_t created = 0U;
-  for (; created < requested_threads; ++created) {
-    uint32_t cpu = 0U;
-    if (smp_cpu_id_at((uint32_t)(created % smp_online_count()), &cpu) !=
-        XAIOS_OK) {
-      break;
-    }
-    contexts[created].ordinal = created;
-    contexts[created].iterations = iterations;
-    contexts[created].expected_cpu = cpu;
-    contexts[created].actual_cpu = UINT32_MAX;
-    if (xaios_thread_create(group_worker, &contexts[created], cpu,
-                            &ids[created]) != XAIOS_OK) {
-      break;
-    }
-  }
-
-  uint64_t total = 0U;
-  uint64_t joined = 0U;
-  for (; joined < created; ++joined) {
-    uint64_t value = 0U;
-    if (xaios_thread_join(ids[joined], XAIOS_THREAD_SELF_TEST_TIMEOUT_NS,
-                          &value) != XAIOS_OK ||
-        contexts[joined].actual_cpu != contexts[joined].expected_cpu) {
-      klog("threads: group join timed out joined=%lu created=%lu id=%lu "
-           "expected_cpu=%u actual_cpu=%u\n",
-           joined, created, ids[joined], contexts[joined].expected_cpu,
-           contexts[joined].actual_cpu);
-      for (uint64_t i = joined; i < created; ++i) {
-        xaios_spin_lock(&g_thread_lock);
-        xaios_thread_record_t *thread = find_thread_locked(ids[i]);
-        if (thread != 0) {
-          klog("threads: stalled id=%lu state=%u target_cpu=%u "
-               "running_cpu=%u actual_cpu=%u\n",
-               ids[i], (uint32_t)thread->state, thread->target_cpu,
-               thread->running_cpu, contexts[i].actual_cpu);
-        }
-        xaios_spin_unlock(&g_thread_lock);
-      }
-      break;
-    }
-    total ^= value;
-  }
-  for (uint64_t i = joined; i < created; ++i) {
-    (void)xaios_thread_cancel(ids[i]);
-    uint64_t ignored = 0U;
-    (void)xaios_thread_join(ids[i], XAIOS_THREAD_SELF_TEST_TIMEOUT_NS, &ignored);
-  }
-
-  kheap_free(ids);
-  kheap_free(contexts);
-  *ran_threads = joined;
-  *checksum = total;
-  if (joined != requested_threads) return XAIOS_ERR_BUSY;
-  klog("threads: concurrent group complete threads=%lu cpus=%u checksum=0x%lx\n",
-       joined, smp_online_count(), total);
-  return XAIOS_OK;
-}
-
-void xaios_thread_self_test(void) {
-  uint64_t count = smp_online_count();
-  if (count > g_thread_capacity) count = g_thread_capacity;
-  uint64_t ran = 0U;
-  uint64_t checksum = 0U;
-  kassert(xaios_thread_run_group(count, 128U, &ran, &checksum) == XAIOS_OK);
-  kassert(ran == count);
-  kassert(checksum != 0U);
-  kassert(xaios_thread_active_count() == 0U);
-  uint32_t target_cpu = UINT32_MAX;
-  for (uint32_t i = 0U; i < smp_online_count(); ++i) {
-    uint32_t candidate = UINT32_MAX;
-    if (smp_cpu_id_at(i, &candidate) == XAIOS_OK &&
-        candidate != smp_cpu_id()) {
-      target_cpu = candidate;
-      break;
-    }
-  }
-  if (target_cpu == UINT32_MAX) {
-    klog("threads: pending cancellation self-test skipped on uniprocessor\n");
-    klog("threads: concurrent scheduler self-test passed threads=%lu cpus=%u\n",
-         ran, smp_online_count());
-    return;
-  }
-  xaios_cancel_test_context_t context = {0U, 0U};
-  uint64_t blocker_id = 0U;
-  uint64_t queued_id = 0U;
-  kassert(xaios_thread_create(cancel_test_blocker, &context, target_cpu,
-                              &blocker_id) == XAIOS_OK);
-  uint64_t cancel_deadline =
-      timer_now_ns() + XAIOS_THREAD_SELF_TEST_TIMEOUT_NS;
-  while (__atomic_load_n(&context.started, __ATOMIC_ACQUIRE) == 0U) {
-    kassert(timer_now_ns() < cancel_deadline);
-    xaios_cpu_relax();
-  }
-  kassert(xaios_thread_create(cancel_test_queued, 0, target_cpu, &queued_id) ==
-          XAIOS_OK);
-  kassert(xaios_thread_cancel(queued_id) == XAIOS_OK);
-  __atomic_store_n(&context.release, 1U, __ATOMIC_RELEASE);
-  uint64_t result = 0U;
-  kassert(xaios_thread_join(blocker_id, XAIOS_THREAD_SELF_TEST_TIMEOUT_NS,
-                            &result) == XAIOS_OK);
-  kassert(result == UINT64_C(0xcace11ed));
-  kassert(xaios_thread_join(queued_id, XAIOS_THREAD_SELF_TEST_TIMEOUT_NS,
-                            &result) == XAIOS_ERR_BUSY);
-  kassert(xaios_thread_active_count() == 0U);
-  klog("threads: concurrent scheduler self-test passed threads=%lu cpus=%u\n",
-       ran, smp_online_count());
-  klog("threads: pending cancellation self-test passed target_cpu=%u\n",
-       target_cpu);
 }

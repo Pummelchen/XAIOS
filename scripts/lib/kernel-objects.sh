@@ -55,6 +55,8 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
   $KERNEL_BUILD_DIR/sve_canary.o
   $KERNEL_BUILD_DIR/virtio_transport_mmio.o
   $KERNEL_BUILD_DIR/virtio_transport_pci.o
+  $KERNEL_BUILD_DIR/virtio_transport_pci_probe.o
+  $KERNEL_BUILD_DIR/virtio_transport_pci_queue.o
   "
 else
   ARCH_KERNEL_OBJECTS="
@@ -83,6 +85,8 @@ else
   $KERNEL_BUILD_DIR/watchdog.o
   $KERNEL_BUILD_DIR/pci.o
   $KERNEL_BUILD_DIR/smp.o
+  $KERNEL_BUILD_DIR/virtio_transport_pci_probe.o
+  $KERNEL_BUILD_DIR/virtio_transport_pci_queue.o
   "
 fi
 KERNEL_OBJECTS="
@@ -90,6 +94,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/kmain.o
   $KERNEL_BUILD_DIR/boot_storage.o
   $KERNEL_BUILD_DIR/boot_apps.o
+  $KERNEL_BUILD_DIR/boot_platform.o
+  $KERNEL_BUILD_DIR/boot_runtime.o
   $KERNEL_BUILD_DIR/boot_ui.o
   $KERNEL_BUILD_DIR/boot_ui_render.o
   $KERNEL_BUILD_DIR/boot_ui_term.o
@@ -279,6 +285,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/sched_runqueue.o
   $KERNEL_BUILD_DIR/sched_stats.o
   $KERNEL_BUILD_DIR/thread.o
+  $KERNEL_BUILD_DIR/thread_user.o
+  $KERNEL_BUILD_DIR/thread_selftest.o
   $KERNEL_BUILD_DIR/topology.o
   $KERNEL_BUILD_DIR/arp.o
   $KERNEL_BUILD_DIR/ipv4.o

@@ -19,6 +19,8 @@ fi
 compile_kernel "$ROOT_DIR/kernel/core/kmain.c" "$KERNEL_BUILD_DIR/kmain.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_storage.c" "$KERNEL_BUILD_DIR/boot_storage.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_apps.c" "$KERNEL_BUILD_DIR/boot_apps.o"
+compile_kernel "$ROOT_DIR/kernel/core/boot_platform.c" "$KERNEL_BUILD_DIR/boot_platform.o"
+compile_kernel "$ROOT_DIR/kernel/core/boot_runtime.c" "$KERNEL_BUILD_DIR/boot_runtime.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_ui.c" "$KERNEL_BUILD_DIR/boot_ui.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_ui_render.c" "$KERNEL_BUILD_DIR/boot_ui_render.o"
 compile_kernel "$ROOT_DIR/kernel/core/boot_ui_term.c" "$KERNEL_BUILD_DIR/boot_ui_term.o"
@@ -88,10 +90,16 @@ if [ "$TARGET_ARCH" = aarch64 ]; then
     "$KERNEL_BUILD_DIR/virtio_transport_mmio.o" "-DXAIOS_VIRTIO_MMIO_BACKEND=1"
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" \
     "$KERNEL_BUILD_DIR/virtio_transport_pci.o" "-DXAIOS_VIRTIO_PCI_BACKEND=1"
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_probe.c" \
+    "$KERNEL_BUILD_DIR/virtio_transport_pci_probe.o" "-DXAIOS_VIRTIO_PCI_BACKEND=1"
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_queue.c" \
+    "$KERNEL_BUILD_DIR/virtio_transport_pci_queue.o" "-DXAIOS_VIRTIO_PCI_BACKEND=1"
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_dispatch.c" \
     "$KERNEL_BUILD_DIR/virtio_transport.o"
 else
   compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" "$KERNEL_BUILD_DIR/virtio_transport.o"
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_probe.c" "$KERNEL_BUILD_DIR/virtio_transport_pci_probe.o"
+  compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_queue.c" "$KERNEL_BUILD_DIR/virtio_transport_pci_queue.o"
 fi
 compile_kernel "$ROOT_DIR/kernel/dev/block_device.c" "$KERNEL_BUILD_DIR/block_device.o"
 compile_kernel "$ROOT_DIR/kernel/dev/virtio/virtio_blk.c" "$KERNEL_BUILD_DIR/virtio_blk.o"
@@ -264,6 +272,8 @@ compile_kernel "$ROOT_DIR/kernel/sched/scheduler.c" "$KERNEL_BUILD_DIR/scheduler
 compile_kernel "$ROOT_DIR/kernel/sched/sched_runqueue.c" "$KERNEL_BUILD_DIR/sched_runqueue.o"
 compile_kernel "$ROOT_DIR/kernel/sched/sched_stats.c" "$KERNEL_BUILD_DIR/sched_stats.o"
 compile_kernel "$ROOT_DIR/kernel/sched/thread.c" "$KERNEL_BUILD_DIR/thread.o"
+compile_kernel "$ROOT_DIR/kernel/sched/thread_user.c" "$KERNEL_BUILD_DIR/thread_user.o"
+compile_kernel "$ROOT_DIR/kernel/sched/thread_selftest.c" "$KERNEL_BUILD_DIR/thread_selftest.o"
 if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/sched/context.S" "$KERNEL_BUILD_DIR/context.o"
 fi

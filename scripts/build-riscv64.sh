@@ -237,9 +237,13 @@ compile "$ROOT_DIR/kernel/arch/riscv64/exception.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/exception_frame.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/exception_selftest.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/aia.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/aia_init.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/aia_selftest.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/irq.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/platform.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/iommu.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/iommu_hw.c"
+compile "$ROOT_DIR/kernel/arch/riscv64/iommu_ddt.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/isa_self_test.c"
 compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
 
@@ -257,7 +261,9 @@ compile "$ROOT_DIR/kernel/arch/riscv64/boot.c"
 # collided with both. Built the same way here, because this board offers
 # virtio on both transports exactly as AArch64 does.
 for source in $(find "$ROOT_DIR/kernel" -name '*.c' ! -path '*/arch/*' \
-    ! -name 'virtio_transport.c' ! -name 'virtio_transport_pci.c' | sort); do
+    ! -name 'virtio_transport.c' ! -name 'virtio_transport_pci.c' \
+    ! -name 'virtio_transport_pci_probe.c' \
+    ! -name 'virtio_transport_pci_queue.c' | sort); do
   compile_shared "$source"
 done
 # Each backend needs its own define, and both need to stay out of the glob:
@@ -269,8 +275,15 @@ $CC $BASE_CFLAGS -DXAIOS_VIRTIO_MMIO_BACKEND=1 \
 $CC $BASE_CFLAGS -DXAIOS_VIRTIO_PCI_BACKEND=1 \
   -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci.c" \
   -o "$BUILD_DIR/virtio_transport_pci.o"
+$CC $BASE_CFLAGS -DXAIOS_VIRTIO_PCI_BACKEND=1 \
+  -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_probe.c" \
+  -o "$BUILD_DIR/virtio_transport_pci_probe.o"
+$CC $BASE_CFLAGS -DXAIOS_VIRTIO_PCI_BACKEND=1 \
+  -c "$ROOT_DIR/kernel/dev/virtio/virtio_transport_pci_queue.c" \
+  -o "$BUILD_DIR/virtio_transport_pci_queue.o"
 OBJECTS="$OBJECTS $BUILD_DIR/virtio_transport_mmio.o \
-  $BUILD_DIR/virtio_transport_pci.o"
+  $BUILD_DIR/virtio_transport_pci.o $BUILD_DIR/virtio_transport_pci_probe.o \
+  $BUILD_DIR/virtio_transport_pci_queue.o"
 # Only the engine sources the kernel actually needs symbols from. sha256 and
 # model_v2 are reached through the kernel's own copies, and adding them here
 # produced duplicates rather than more capability.

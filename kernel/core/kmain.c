@@ -95,10 +95,8 @@
 
 #include "boot_apps_internal.h"
 #include "boot_storage_internal.h"
-
-/* Two NTP retransmits plus margin, well inside the client's own 10s
-   timeout, so a filtered UDP/123 costs a bounded pause and nothing more. */
-#define BOOT_NTP_DEADLINE_NS UINT64_C(6000000000)
+#include "boot_platform_internal.h"
+#include "boot_runtime_internal.h"
 
 static const char g_vmm_rodata_probe[] = "vmm-rodata";
 static uint64_t g_vmm_data_probe;
@@ -137,71 +135,12 @@ static void provision_ephemeral_credential(const char *path) {
        file->size);
 }
 
-static void early_spinlock_self_test(void) {
-  xaios_spinlock_t lock = XAIOS_SPINLOCK_INIT;
-  kassert(smp_online_count() <= 1U);
-  kassert(xaios_spin_trylock(&lock) == 1);
-  kassert(xaios_spin_held(&lock) == 1);
-  kassert(xaios_spin_trylock(&lock) == 0);
-  xaios_spin_unlock(&lock);
-  kassert(xaios_spin_held(&lock) == 0);
-  kassert(lock.next_ticket == 0U);
-  kassert(lock.serve == 0U);
-  kassert(lock.guard == 0U);
-  kassert(xaios_spin_trylock(&lock) == 1);
-  kassert(xaios_spin_held(&lock) == 1);
-  xaios_spin_unlock(&lock);
-  klog("spinlock: early single-core try-lock self-test passed\n");
-}
-
-/* Set the wall clock from NTP before any service starts.
-
-   The clock is otherwise whatever the RTC reports, and QEMU's PL031 commonly
-   reports epoch zero, leaving the system in 1970. Anything that checks a
-   certificate validity window then sees every certificate as not-yet-valid,
-   which is how xapt fails against the updater's publicly issued certificate.
-
-   Bounded and non-fatal. The default server is a bare address, so this needs
-   no DNS, but UDP/123 is filtered on some networks and a boot must not stall
-   waiting for a reply that will never arrive. */
-
 /* The scratch disk the boot path attaches for storage administration. */
 #define XAIOS_INSTALL_TARGET "/dev/vblk5"
-
-static void boot_sync_wall_clock(void) {
-  if (ntp_sync(0U) != XAIOS_ERR_BUSY) {
-    klog("kernel: boot ntp not started state=%u\n",
-         (unsigned)ntp_status().state);
-    return;
-  }
-  uint64_t deadline = timer_now_ns() + BOOT_NTP_DEADLINE_NS;
-  while (ntp_status().state == XAIOS_NTP_PENDING &&
-         timer_now_ns() < deadline) {
-    network_poll_tick();
-    xaios_cpu_relax();
-  }
-  klog("kernel: boot ntp state=%u epoch_seconds=%lu source=%u\n",
-       (unsigned)ntp_status().state,
-       wall_time_now_ns() / UINT64_C(1000000000),
-       (unsigned)wall_time_source());
-}
-
-static void map_mmio_range(uint64_t start, uint64_t size) {
-  const uint64_t page_size = 4096;
-  uint64_t page = start & ~(page_size - 1U);
-  uint64_t end = (start + size + page_size - 1U) & ~(page_size - 1U);
-  while (page < end) {
-    kassert(vmm_map_page(page, page,
-                         XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE |
-                             XAIOS_VMM_DEVICE) == XAIOS_OK);
-    page += page_size;
-  }
-}
 
 extern char __kernel_start[];
 
 void kmain(const xaios_boot_info_t *boot) {
-  uint32_t persistent_network_ready = 0U;
   klog_init(boot);
   /* Start capturing before any subsystem can fail. A normal boot redraws the
      progress display over the serial console, so a failure explanation is
@@ -236,52 +175,9 @@ void kmain(const xaios_boot_info_t *boot) {
   klog("boot: kernel=[0x%lx, 0x%lx)\n",
        boot->kernel_phys_base, boot->kernel_phys_end);
 
-  exception_init();
-  exception_self_test();
-#if defined(__aarch64__)
-  aarch64_sve2_self_test();
-#endif
-  early_spinlock_self_test();
-  timer_init();
-  timer_self_test();
-  stack_canary_init();
-  stack_canary_self_test();
-  smp_init_platform(boot);
-  smp_self_test();
-  boot_ui_update(35U, "CPU and interrupts", "memory management", 4U);
-
-  numa_init(boot);
-  numa_self_test();
-
-  pmm_init(boot);
-  vmm_init(boot);
-  /* The firmware framebuffer, before anything draws on it again.
-   *
-   * Until translation was enabled, writing to it worked because firmware's
-   * tables covered it. The kernel's own tables identity-map physical memory
-   * and the handful of device windows it knows the addresses of; a
-   * framebuffer firmware placed outside RAM is neither. On a VMware Fusion
-   * guest with four gibibytes it sits at 0xff0000000, well past the end of
-   * memory, and the next line boot_ui drew took a translation fault -- while
-   * the same guest with one or two gibibytes had the framebuffer low enough
-   * to fall inside the identity map and worked. Nothing about the framebuffer
-   * changed; only how much RAM was underneath it.
-   *
-   * Mapped here rather than in boot_ui because boot_ui runs before there are
-   * page tables to map anything into, and the very next statement draws. */
-  if (boot->framebuffer_base != 0U && boot->framebuffer_size != 0U) {
-    map_mmio_range(boot->framebuffer_base, boot->framebuffer_size);
-    /* Where it is, and whether that is above the memory the machine has.
-       B-12 is entirely about that comparison, and nothing recorded it: a
-       Fusion guest at 4 GiB and the same guest at 2 both printed a working
-       framebuffer, and only one of them had exercised the mapping this line
-       exists for. Reported so a boot log says which case it was rather than
-       leaving it to be inferred from the memory size. */
-    klog("boot-ui: framebuffer mapped base=0x%lx bytes=0x%lx ram_pages=%lu\n",
-         boot->framebuffer_base, boot->framebuffer_size, pmm_total_pages());
-  }
-  vmm_self_test();
-  boot_ui_update(45U, "memory management", "devices and storage", 3U);
+  /* Interrupts, timer, canary, SMP, NUMA, physical and virtual memory, and
+     the firmware framebuffer mapping; see boot_platform.c. */
+  boot_cpu_memory_bring_up(boot);
 
 #if defined(XAIOS_PANIC_SELFTEST)
   /* A deliberate assertion, so the panic path can be proven on the machine
@@ -300,143 +196,7 @@ void kmain(const xaios_boot_info_t *boot) {
 #endif
 
   /* Map architecture interrupt/IOMMU resources and initialize. */
-#if defined(__aarch64__)
-  map_mmio_range(XAIOS_SMMU_MMIO_BASE, 0x10000);
-  map_mmio_range(XAIOS_SMMU_MMIO_PAGE1, 0x10000);
-#endif
-  smmu_init(boot);
-
-#if defined(__aarch64__)
-  map_mmio_range(boot->uart_base, 4096);
-  aarch64_acpi_info_t acpi_info;
-  uint64_t gic_distributor = UINT64_C(0x08000000);
-  uint64_t gic_redistributor = UINT64_C(0x080A0000);
-  uint64_t gic_redistributor_bytes = UINT64_C(0x00f60000);
-  if (aarch64_acpi_parse(boot->acpi_rsdp, &acpi_info) != 0) {
-    uint64_t required_redistributor_bytes =
-        (uint64_t)smp_capacity() * UINT64_C(0x20000);
-    if (smp_capacity() != 0U &&
-        acpi_info.gic_redistributor_length >= required_redistributor_bytes) {
-      gic_distributor = acpi_info.gic_distributor_base;
-      gic_redistributor = acpi_info.gic_redistributor_base;
-      /* Message-signalled interrupts need the translation service, and where
-         it sits is a property of the machine rather than of one emulator. */
-      if (acpi_info.gic_its_base != 0U) {
-        gic_its_set_base(acpi_info.gic_its_base);
-        klog("platform: ACPI GIC ITS at 0x%lx\n", acpi_info.gic_its_base);
-      } else {
-        klog("platform: firmware reports no GIC ITS; PCI interrupts are "
-             "polled\n");
-      }
-      gic_redistributor_bytes = acpi_info.gic_redistributor_length;
-      gic_configure_platform(gic_distributor, gic_redistributor,
-                             gic_redistributor_bytes);
-    } else {
-      klog("platform: ACPI GIC redistributor range too small cpus=%u bytes=%lu\n",
-           smp_capacity(), acpi_info.gic_redistributor_length);
-      gic_distributor = 0U;
-      gic_redistributor = 0U;
-      gic_redistributor_bytes = 0U;
-      gic_disable_platform();
-    }
-    pci_configure_ecam(acpi_info.pci_ecam_base, acpi_info.pci_start_bus,
-                       acpi_info.pci_end_bus);
-    klog("platform: ACPI GICv%u CPUs=%u ECAM=0x%lx bus=%u-%u\n",
-         acpi_info.gic_version, acpi_info.enabled_cpus,
-         acpi_info.pci_ecam_base, acpi_info.pci_start_bus,
-         acpi_info.pci_end_bus);
-  } else {
-    uint32_t low_redistributors =
-        smp_capacity() < 123U ? smp_capacity() : 123U;
-    gic_redistributor_bytes =
-        (uint64_t)low_redistributors * UINT64_C(0x20000);
-    if (smp_capacity() > low_redistributors) {
-      map_mmio_range(UINT64_C(0x4000000000),
-                     (uint64_t)(smp_capacity() - low_redistributors) *
-                         UINT64_C(0x20000));
-    }
-    pci_configure_ecam(boot->pci_ecam_base, boot->pci_ecam_start_bus,
-                       boot->pci_ecam_end_bus);
-  }
-  if (gic_distributor != 0U && gic_redistributor != 0U &&
-      gic_redistributor_bytes != 0U) {
-    map_mmio_range(gic_distributor, UINT64_C(0x20000));
-    map_mmio_range(gic_redistributor, gic_redistributor_bytes);
-  }
-  map_mmio_range(UINT64_C(0x0a000000), UINT64_C(0x4000));
-#else
-  /* The x86 UART is port I/O. Keep a software VMM descriptor for capability
-   * and translation validation without treating the port as MMIO. */
-  map_mmio_range(boot->uart_base, 4096);
-#endif
-
-  /* PCI drivers allocate DMA rings, so establish the heap before probing. */
-  kheap_self_test();
-  /* Before anything becomes resident, so the first reservation is counted. */
-  ram_residency_init();
-
-  /* Map ECAM and enumerate PCIe. */
-  pci_init();
-  pci_self_test();
-
-  /* A platform with no UART has had nothing to say until now. Attach the
-     virtio console if one exists, then replay what was logged before it did,
-     so the early boot is not lost. Absent on QEMU, which logs to a PL011. */
-  if (virtio_console_init() == XAIOS_OK) {
-    klog_set_console_sink(virtio_console_write);
-    klog_set_console_source(virtio_console_read);
-    klog_set_console_poll(virtio_console_pending);
-#if defined(__aarch64__)
-    char *replay = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
-    if (replay != 0) {
-      uint64_t replay_start = 0U;
-      uint64_t replay_next = 0U;
-      uint64_t replay_latest = 0U;
-      uint32_t replayed =
-          klog_ring_snapshot(replay, XAIOS_KLOG_FLUSH_MAX, 0U, &replay_start,
-                             &replay_next, &replay_latest);
-      if (replayed != 0U) {
-        virtio_console_write(replay, replayed);
-      }
-      kheap_free(replay);
-    }
-#endif
-    klog("virtio-console: kernel log attached\n");
-  }
-  input_init();
-  input_self_test();
-  smmu_self_test();
-
-  /* Initialize the architecture real-time clock. */
-#if defined(__aarch64__)
-  map_mmio_range(XAIOS_PL031_RTC_BASE, 4096);
-#endif
-  rtc_init();
-  wall_time_calibrate();
-  rtc_self_test();
-
-  /* Initialize watchdog timer */
-  watchdog_init();
-  watchdog_self_test();
-
-  klog("VMM architecture device mappings installed\n");
-  exception_runtime_init();
-  topology_init();
-  topology_self_test();
-  arena_manager_init();
-  arena_self_test();
-  rate_limit_init();
-  rate_limit_self_test();
-  security_self_test();
-  child_channel_init();
-  child_channel_self_test();
-  remote_login_self_test();
-  source_index_runtime_init();
-  source_index_self_test();
-  git_workspace_runtime_init();
-  git_workspace_self_test();
-  sandbox_self_test();
-  core_lease_self_test();
+  boot_platform_bring_up(boot);
   uint64_t translated = 0;
   uint32_t flags = 0;
   kassert(vmm_translate((uint64_t)(uintptr_t)&kmain, &translated, &flags) == XAIOS_OK);
@@ -687,146 +447,5 @@ void kmain(const xaios_boot_info_t *boot) {
   bad_exec();
 #endif
 
-  void *pages[1024];
-  for (unsigned i = 0; i < 1024; ++i) {
-    pages[i] = pmm_alloc_page();
-    kassert(pages[i] != 0);
-  }
-  for (unsigned i = 0; i < 1024; ++i) {
-    pmm_free_page(pages[i]);
-  }
-
-  klog("PMM 1024 page allocate/free test passed\n");
-
-  const xaios_initramfs_file_t *init_file = 0;
-  const xaios_initramfs_file_t *manager_file = 0;
-#if XAIOS_BOOT_TEST_APPS
-  const xaios_initramfs_file_t *worker_file = 0;
-#endif
-  const xaios_initramfs_config_t *init_config = initramfs_config();
-  kassert(init_config != 0);
-  kassert(initramfs_lookup(init_config->service_path, &init_file) == XAIOS_OK);
-  kassert(initramfs_lookup(init_config->service_manager_path, &manager_file) ==
-          XAIOS_OK);
-#if XAIOS_BOOT_TEST_APPS
-  kassert(initramfs_lookup("/bin/xaios-worker", &worker_file) == XAIOS_OK);
-#endif
-  boot_apps_launch_init(init_file, manager_file, init_config, persistent_status,
-                        &persistent_network_ready);
-
-  /* Initialize preemptive scheduler infrastructure */
-  scheduler_lock();
-#if defined(__x86_64__)
-  uint64_t initial_block_interrupts = virtio_block_interrupt_count();
-#endif
-  gic_enable_full();
-  if (nvme_status == XAIOS_OK) {
-    /* UNSUPPORTED is the answer from a machine whose interrupt controller has
-       no messages to signal with -- the queues are polled and there is
-       nothing to canary. Anything else that is not OK means interrupts were
-       configured and did not arrive, which is a defect. */
-    xaios_status_t nvme_interrupts = nvme_interrupt_self_test();
-    kassert(nvme_interrupts == XAIOS_OK ||
-            nvme_interrupts == XAIOS_ERR_UNSUPPORTED);
-  }
-#if defined(__x86_64__)
-  /* The canary asks the block device to complete a request and raise an
-     interrupt. When the loader supplied the initial filesystem in memory there
-     is no device to ask, and every step below fails on that rather than on
-     anything being wrong -- which is what happened the first time this kernel
-     booted from the unified image, where the initial filesystem rides on the
-     boot medium instead of arriving as a separate drive. Report that the test
-     did not apply; do not assert that memory can raise interrupts. */
-  if (virtio_block_is_memory_backed() != 0U) {
-    klog("virtio-blk: x86 completion canary skipped; the block device is "
-         "loader memory, which raises no interrupts\n");
-  } else {
-    uint64_t interrupt_drain_deadline = timer_now_ns() + UINT64_C(100000000);
-    while (virtio_block_interrupt_count() == initial_block_interrupts &&
-           timer_now_ns() < interrupt_drain_deadline)
-      xaios_cpu_relax();
-    uint8_t interrupt_sector[512];
-    kassert(virtio_block_interrupt_canary_arm(
-        0U, interrupt_sector, sizeof(interrupt_sector)) == XAIOS_OK);
-    xaios_status_t interrupt_status =
-        virtio_block_interrupt_canary_wait(UINT64_C(1000000000));
-    if (interrupt_status == XAIOS_OK) {
-      klog("virtio-blk: x86 completion canary passed mode=msix count=%lu\n",
-           virtio_block_interrupt_count());
-    } else {
-      kassert(virtio_block_read_sector(0U, interrupt_sector,
-                                       sizeof(interrupt_sector)) == XAIOS_OK);
-      klog("virtio-blk: x86 completion canary passed mode=bounded-poll "
-           "status=%d\n",
-           (int)interrupt_status);
-    }
-  }
-#endif
-  timer_enable_periodic(XAIOS_SCHEDULER_DEFAULT_TICK_HZ);
-  kassert(smp_set_scheduling_enabled(smp_cpu_id(), 1U) == XAIOS_OK);
-  uint64_t simd_irq_status = aarch64_simd_irq_self_test();
-  klog("scheduler: SIMD/FP interrupt canary status=%lu\n",
-       simd_irq_status);
-  kassert(simd_irq_status == 1U);
-#if defined(__aarch64__)
-  if (aarch64_sve_enabled() != 0U) {
-    uint64_t sve_irq_status = aarch64_sve_irq_self_test();
-    klog("scheduler: SVE interrupt canary status=%lu\n", sve_irq_status);
-    kassert(sve_irq_status == 1U);
-    klog("scheduler: SVE Z/P/FFR interrupt preservation passed EL0-task-state=1\n");
-  }
-#endif
-  scheduler_unlock();
-  klog("scheduler: SIMD/FP interrupt preservation passed\n");
-  kassert(smp_release_secondary_schedulers() == XAIOS_OK);
-  xaios_thread_self_test();
-  /* A CPU that cannot take an interrupt must still answer a TLB shootdown:
-     with the scheduler up, one CPU can be made to spin on a guard while
-     another shoots down inside it (B-123). */
-  smp_shootdown_ack_self_test();
-  /* And a wakeup must not be lost between an idle CPU's check and its wait. */
-  smp_idle_wakeup_self_test();
-  klog("kernel: preemptive scheduler infrastructure enabled\n");
-  boot_ui_update(85U, "scheduler", "runtime services", 2U);
-
-  /* A boot slot is healthy once mandatory platform services are live. Optional
-   * diagnostic applications exercise the same runtime but must not hold an
-   * otherwise bootable system slot in its pending state. */
-  if (system_slot_available() != 0U) {
-    kassert(system_slot_mark_boot_success(boot) == XAIOS_OK);
-  }
-  operations_mark_boot_ready();
-
-#if XAIOS_BOOT_TEST_APPS
-  boot_apps_run_test_dispatch(worker_file);
-#endif
-
-  /* Stop preemption after the concurrent worker gate. Keep interrupt delivery
-   * available for bounded userspace idle waits and VirtIO completions. */
-  kassert(smp_set_scheduling_enabled(smp_cpu_id(), 0U) == XAIOS_OK);
-  timer_disable();
-  klog("kernel: preemption disabled; interrupt-backed idle waits retained\n");
-
-  boot_apps_run_profile();
-
-  boot_ui_update(90U, "runtime services", "IPv4 network readiness", 2U);
-
-  telemetry_emit_boot_summary();
-
-  if (persistent_network_ready == 0U) {
-    klog("kernel: SSH service withheld; IPv4 network is not ready\n");
-    boot_ui_error("network readiness", XAIOS_ERR_IO);
-    for (;;) {
-      xaios_cpu_wait();
-    }
-  }
-
-  boot_sync_wall_clock();
-
-  /* Boot drawing is finished here: what follows is a service that runs until
-     the machine stops. Report what the display cost while the figure still
-     covers a bounded, comparable amount of work. */
-  virtio_gpu_report_transfer_cost();
-
-  boot_apps_run_tail();
+  boot_runtime_run(boot, persistent_status, nvme_status);
 }

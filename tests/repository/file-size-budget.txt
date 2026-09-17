@@ -4,21 +4,17 @@
 
 engine/src/packed.c 601
 kernel/arch/aarch64/smp.c 797
-kernel/arch/riscv64/aia.c 833
 kernel/arch/riscv64/entry.S 610
 kernel/arch/riscv64/fdt.c 613
-kernel/arch/riscv64/iommu.c 819
 kernel/arch/riscv64/smp.c 661
 kernel/arch/x86_64/early.c 812
 kernel/arch/x86_64/mmu.c 732
 kernel/arch/x86_64/smp.c 568
 kernel/core/klog.c 635
-kernel/core/kmain.c 832
 kernel/core/panic.c 685
 kernel/dev/input.c 745
 kernel/dev/pci_ecam.c 691
 kernel/dev/virtio/virtio_transport.c 504
-kernel/dev/virtio/virtio_transport_pci.c 835
 kernel/fs/initramfs.c 552
 kernel/fs/vfs.c 757
 kernel/fs/xai_fs_admin.c 676
@@ -30,7 +26,6 @@ kernel/runtime/git_workspace.c 697
 kernel/runtime/security.c 753
 kernel/runtime/source_index.c 664
 kernel/runtime/update.c 774
-kernel/sched/thread.c 824
 kernel/storage/gpt.c 625
 platform/qemu/run-qemu-aarch64.sh 558
 platform/qemu/run-qemu-riscv64.sh 535
@@ -45,10 +40,8 @@ tests/scripts/cluster_fault_relay.py 502
 tests/scripts/qemu-cluster-partition-gate.py 692
 tests/scripts/qemu-cluster-three-node-gate.py 608
 tests/scripts/qemu-cpu-matrix.py 559
-tests/scripts/qemu-freebsd-bidirectional-suite.py 831
 tests/scripts/qemu-freebsd-network-suite.py 598
 tests/scripts/qemu-installed-disk-gate.py 558
-tests/scripts/qemu-model-sftp-gate.py 814
 tests/scripts/qemu-operations-closure.py 570
 tests/scripts/qemu-outbound-batch-mode-gate.py 680
 tests/scripts/qemu-parallel-network-load.py 684
@@ -66,4 +59,4 @@ tests/security/test_wt_tls.c 749
 tools/xaios_model_v2.py 640
 userspace/apps/xaios-setup.c 633
 userspace/lib/xaios_screen.c 564
-userspace/sshd/sshd.c 1034
+userspace/sshd/sshd.c 583

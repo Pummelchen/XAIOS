@@ -3,11 +3,8 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import os
-import platform
 import re
 from pathlib import Path
 import secrets
@@ -15,441 +12,49 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
-import urllib.request
 
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tests" / "scripts"))
-from qemu_gate_lib import smoke_timeout
+# The helper modules live beside this gate. The directory is added explicitly
+# rather than assumed from how the script was started, because repository
+# checks import this file as a module.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-BUILD = ROOT / "build"
-FREEBSD_RELEASE = "15.1-RELEASE"
-DOCKER_IMAGE = "xaios-freebsd-qemu-endpoint:15.1"
-SERVER_READY = "XAIOS_FREEBSD_SERVER: READY"
-CLIENT_PASS = "XAIOS_FREEBSD_CLIENT: PASS"
-CLIENT_FAIL = "XAIOS_FREEBSD_CLIENT: FAIL"
-XAIOS_READY = "SSH server: up and running (tcp/22)"
-
-IMAGES = {
-    "aarch64": {
-        "directory": "aarch64",
-        "name": "FreeBSD-15.1-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2",
-        "archive_sha256": "9722aea499610802de9a14bb645707fc4f6df49ff765cd9ce372b783c4693963",
-    },
-    "x86_64": {
-        "directory": "amd64",
-        "name": "FreeBSD-15.1-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2",
-        "archive_sha256": "e4ca4db889f8559c9b9dfcacc70405c038476f4b6d41649b152d3809a2ed9e1f",
-    },
-}
-
-# Outbound SSH budget when QEMU emulates the host's own architecture. The
-# aarch64 value is measured on an Apple Silicon host; x86_64 keeps the larger
-# value because it has only ever been run cross-emulated, so there is no
-# native measurement to justify shrinking it.
-NATIVE_OUTBOUND_TIMEOUT = {"aarch64": "60", "x86_64": "600"}
-# Budget when QEMU must translate a foreign ISA, which is roughly an order of
-# magnitude slower than emulating the host architecture.
-CROSS_OUTBOUND_TIMEOUT = "600"
-
-HOST_ARCHITECTURES = {"arm64": "aarch64", "aarch64": "aarch64",
-                      "amd64": "x86_64", "x86_64": "x86_64"}
-
-# Which XAIOS machines this suite can pair a FreeBSD one with, and how to
-# build and start each.
-#
-# The FreeBSD end is not one of these, and that is on purpose. What this suite
-# measures is XAIOS answering and dialling a real third-party stack in both
-# directions; OpenSSH on FreeBSD does not behave differently per instruction
-# set, and there is no FreeBSD cloud-init image for RISC-V at all -- so a
-# RISC-V FreeBSD would have to be driven over its console and emulated without
-# acceleration, adding an hour to every run to measure FreeBSD's port rather
-# than this one. The FreeBSD end therefore stays on whichever architecture
-# runs natively here, and the report says so rather than implying a pair.
-XAIOS_MACHINES = {
-    "aarch64": {
-        "build": [["make", "image"]],
-        "runner": "platform/qemu/run-qemu-aarch64.sh",
-        "env": {"XAIOS_QEMU_ACCEL": "tcg", "XAIOS_QEMU_SMP": "4"},
-        "persistent": "XAIOS_PERSISTENT_IMAGE",
-        "ssh_port": "XAIOS_QEMU_HOSTFWD_PORT",
-        "udp_port": "XAIOS_QEMU_HOSTFWD_UDP_PORT",
-        "log": None,
-    },
-    "x86_64": {
-        "build": [["make", "image-x86_64"]],
-        "runner": "platform/qemu/run-qemu-x86_64.sh",
-        "env": {"XAIOS_QEMU_X86_ACCEL": "tcg", "XAIOS_QEMU_X86_SMP": "4"},
-        "persistent": "XAIOS_X86_PERSISTENT_IMAGE",
-        "ssh_port": "XAIOS_QEMU_HOSTFWD_PORT",
-        "udp_port": "XAIOS_QEMU_HOSTFWD_UDP_PORT",
-        "log": None,
-    },
-    "riscv64": {
-        # The release configuration, which is what `make image` means on the
-        # other two. The boot-test build answers shell commands as kernel
-        # built-ins and never launches an application, so a suite that ran
-        # against it would be testing a different program.
-        "build": [["./scripts/build-riscv64.sh"],
-                  ["./scripts/build-riscv64-image.sh"]],
-        "runner": "platform/qemu/run-qemu-riscv64.sh",
-        "env": {"XAIOS_BOOT_TEST_APPS": "0", "XAIOS_RISCV64_CPUS": "4"},
-        "persistent": "XAIOS_PERSISTENT_IMAGE",
-        "ssh_port": "XAIOS_RISCV64_SSH_PORT",
-        "udp_port": "XAIOS_RISCV64_HOSTFWD_UDP_PORT",
-        "log": "XAIOS_RISCV64_LOG",
-    },
-}
-
-
-def freebsd_architecture() -> str:
-    """The architecture the FreeBSD end runs as: the host's, where possible.
-
-    It runs natively there. Anything else is emulated instruction by
-    instruction, and the FreeBSD end is not what is under test.
-    """
-    host = HOST_ARCHITECTURES.get(platform.machine().lower())
-    return host if host in IMAGES else "aarch64"
-
-
-def default_outbound_timeout(architecture: str) -> str:
-    # The budget depends on the host/guest pairing, not on the guest
-    # architecture alone. Keying it off the guest only held on an AArch64
-    # development host, where aarch64 happened to be native and x86_64
-    # happened to be emulated; on an x86_64 CI runner that mapping inverts
-    # and leaves the cross-emulated aarch64 guest with the 60 second budget.
-    host = HOST_ARCHITECTURES.get(platform.machine().lower())
-    if host is None or host != architecture:
-        return CROSS_OUTBOUND_TIMEOUT
-    return NATIVE_OUTBOUND_TIMEOUT[architecture]
+from qemu_gate_lib import smoke_timeout  # noqa: E402
+from qemu_freebsd_bidirectional_env import (  # noqa: E402,F401
+    BUILD,
+    CLIENT_FAIL,
+    CLIENT_PASS,
+    CROSS_OUTBOUND_TIMEOUT,
+    DOCKER_IMAGE,
+    FREEBSD_RELEASE,
+    HOST_ARCHITECTURES,
+    IMAGES,
+    NATIVE_OUTBOUND_TIMEOUT,
+    ROOT,
+    SERVER_READY,
+    XAIOS_MACHINES,
+    XAIOS_READY,
+    create_seed_iso,
+    default_outbound_timeout,
+    download,
+    freebsd_architecture,
+    prepare_freebsd_image,
+    run_checked,
+    sha256,
+    stop_process,
+    wait_for_marker,
+    xaios_process,
+)
+from qemu_freebsd_bidirectional_payload import (  # noqa: E402,F401
+    freebsd_script,
+    user_data,
+)
 
 
 def reserve_port(socket_type: int) -> int:
     with socket.socket(socket.AF_INET, socket_type) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
-
-
-def run_checked(
-    command: list[str], timeout: float, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
-    print("+", " ".join(command), flush=True)
-    return subprocess.run(
-        command,
-        cwd=ROOT,
-        env=env,
-        check=True,
-        text=True,
-        timeout=timeout,
-    )
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def download(source: str, destination: Path) -> None:
-    partial = destination.with_suffix(destination.suffix + ".partial")
-    request = urllib.request.Request(
-        source, headers={"User-Agent": "XAIOS-QEMU-gate/2"}
-    )
-    print(f"Downloading {source}", flush=True)
-    with urllib.request.urlopen(request, timeout=60) as response, partial.open(
-        "wb"
-    ) as output:
-        for block in iter(lambda: response.read(1024 * 1024), b""):
-            output.write(block)
-    partial.replace(destination)
-
-
-def prepare_freebsd_image(architecture: str) -> tuple[Path, str, str]:
-    configured = os.environ.get("XAIOS_FREEBSD_IMAGE")
-    if configured:
-        image = Path(configured).expanduser().resolve()
-        if not image.is_file():
-            raise RuntimeError(f"XAIOS_FREEBSD_IMAGE does not exist: {image}")
-        run_checked(["qemu-img", "check", "-q", str(image)], 180)
-        return image, sha256(image), "configured"
-
-    metadata = IMAGES[architecture]
-    name = str(metadata["name"])
-    cache = Path(
-        os.environ.get(
-            "XAIOS_FREEBSD_CACHE_DIR",
-            str(Path.home() / ".cache" / "xaios" / "freebsd"),
-        )
-    ).expanduser()
-    cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / f"{name}.xz"
-    image = cache / name
-    url = (
-        f"https://download.freebsd.org/releases/VM-IMAGES/{FREEBSD_RELEASE}/"
-        f"{metadata['directory']}/Latest/{name}.xz"
-    )
-    if not archive.exists():
-        download(url, archive)
-    archive_identity = sha256(archive)
-    if archive_identity != metadata["archive_sha256"]:
-        archive.unlink(missing_ok=True)
-        raise RuntimeError(
-            "FreeBSD archive SHA-256 mismatch: "
-            f"expected {metadata['archive_sha256']}, got {archive_identity}"
-        )
-    if not image.exists():
-        run_checked(["xz", "-dk", str(archive)], 900)
-    run_checked(["qemu-img", "check", "-q", str(image)], 180)
-    return image, sha256(image), archive_identity
-
-
-def create_seed_iso(seed_dir: Path, output: Path) -> str:
-    output.unlink(missing_ok=True)
-    if shutil.which("hdiutil"):
-        run_checked(
-            [
-                "hdiutil",
-                "makehybrid",
-                "-iso",
-                "-joliet",
-                "-default-volume-name",
-                "cidata",
-                "-o",
-                str(output),
-                str(seed_dir),
-            ],
-            60,
-        )
-        return "hdiutil"
-    for tool in ("xorrisofs", "genisoimage", "mkisofs"):
-        if shutil.which(tool):
-            run_checked(
-                [
-                    tool,
-                    "-quiet",
-                    "-output",
-                    str(output),
-                    "-volid",
-                    "cidata",
-                    "-joliet",
-                    "-rock",
-                    str(seed_dir),
-                ],
-                60,
-            )
-            return tool
-    raise RuntimeError("no cidata ISO creation tool was found")
-
-
-def wait_for_marker(
-    log_path: Path, markers: tuple[str, ...], timeout: float
-) -> str:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if log_path.exists():
-            contents = log_path.read_text(errors="replace")
-            for marker in markers:
-                if marker in contents:
-                    return marker
-        time.sleep(0.5)
-    tail = ""
-    if log_path.exists():
-        tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-100:])
-    raise TimeoutError(f"timed out waiting for {markers!r}\n{tail}")
-
-
-def stop_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=10)
-
-
-def freebsd_script(
-    private_key: str,
-    unauthorized_key: str,
-    outbound_public_key: str,
-    server_password: str,
-    expected_architecture: str,
-) -> str:
-    return f"""#!/bin/sh
-# amd64 cloud images keep the framebuffer as /dev/console even with QEMU's
-# headless mode.  ttyu0 is the serial console consumed by the gate on both
-# supported architectures.
-if [ -c /dev/ttyu0 ]; then
-    exec >/dev/ttyu0 2>&1
-else
-    exec >/dev/console 2>&1
-fi
-set -eu
-
-fail() {{
-    echo "{CLIENT_FAIL}: $*"
-    exit 1
-}}
-
-printf '%s\n' '{server_password}' | pw useradd xaios -m -s /bin/sh -h 0 \
-    || fail "could not create server user"
-mkdir -p /home/xaios/fixture/nested
-printf 'freebsd-to-xaios-scp\n' >/home/xaios/fixture/nested/source.txt
-mkdir -p /home/xaios/.ssh
-cat >/home/xaios/.ssh/authorized_keys <<'XAIOS_OUTBOUND_AUTHORIZED_KEY'
-{outbound_public_key.rstrip()}
-XAIOS_OUTBOUND_AUTHORIZED_KEY
-chmod 700 /home/xaios/.ssh
-chmod 600 /home/xaios/.ssh/authorized_keys
-chown -R xaios:xaios /home/xaios
-cat >>/etc/ssh/sshd_config <<'XAIOS_SSHD_CONFIG'
-PasswordAuthentication yes
-KbdInteractiveAuthentication no
-PermitRootLogin no
-LogLevel DEBUG3
-XAIOS_SSHD_CONFIG
-sysrc sshd_enable=YES >/dev/null
-/usr/bin/ssh-keygen -A || fail "could not generate FreeBSD SSH host keys"
-service sshd restart || fail "could not start FreeBSD sshd"
-tail -F /var/log/auth.log >/dev/ttyu0 2>&1 &
-sockstat -4 -l | grep -q ':22' || fail "FreeBSD sshd is not listening"
-echo "{SERVER_READY}"
-sleep 10
-
-key=/tmp/xaios-authorized
-bad_key=/tmp/xaios-unauthorized
-cat >"$key" <<'XAIOS_AUTHORIZED_KEY'
-{private_key.rstrip()}
-XAIOS_AUTHORIZED_KEY
-cat >"$bad_key" <<'XAIOS_UNAUTHORIZED_KEY'
-{unauthorized_key.rstrip()}
-XAIOS_UNAUTHORIZED_KEY
-chmod 600 "$key" "$bad_key"
-
-host=10.0.2.2
-port=2223
-ssh_base="-i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o ConnectTimeout=5 -p $port"
-ready=0
-attempt=0
-while [ "$attempt" -lt 120 ]; do
-    if ssh -vv $ssh_base admin@$host 'echo freebsd-client-ssh-ok' >/tmp/ssh-ready.out 2>/tmp/ssh-ready.err; then
-        ready=1
-        break
-    fi
-    attempt=$((attempt + 1))
-    sleep 2
-done
-[ "$ready" -eq 1 ] || fail "XAIOS SSH did not become reachable"
-[ "$(cat /tmp/ssh-ready.out)" = "freebsd-client-ssh-ok" ] || fail "SSH output mismatch"
-grep -q 'kex: algorithm: mlkem768x25519-sha256' /tmp/ssh-ready.err \
-    || {{ cat /tmp/ssh-ready.err; fail "hybrid ML-KEM KEX was not negotiated"; }}
-
-printf 'echo freebsd-pty-ok\nexit\n' | ssh -tt $ssh_base admin@$host \
-    >/tmp/pty.out 2>/tmp/pty.err || {{ cat /tmp/pty.err; fail "PTY shell failed"; }}
-[ "$(grep -c 'freebsd-pty-ok' /tmp/pty.out)" -ge 2 ] \
-    || fail "PTY shell output mismatch"
-
-if ssh -i "$bad_key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o BatchMode=yes -o ConnectTimeout=5 -p "$port" admin@$host true >/tmp/bad.out 2>/tmp/bad.err; then
-    fail "unauthorized key was accepted"
-fi
-
-ssh $ssh_base admin@$host 'xaiosctl version --json' >/tmp/version.json \
-    || fail "xaiosctl failed"
-grep -q '"status":"ok"' /tmp/version.json || fail "xaiosctl status mismatch"
-grep -q '"architecture":"{expected_architecture}"' /tmp/version.json \
-    || fail "xaiosctl architecture mismatch"
-
-printf 'freebsd-sftp-roundtrip\nsecond-line\n' >/tmp/sftp-source
-cat >/tmp/sftp.batch <<'XAIOS_SFTP_BATCH'
-put /tmp/sftp-source /tmp/freebsd-sftp
-ls -l /tmp/freebsd-sftp
-get /tmp/freebsd-sftp /tmp/sftp-result
-rename /tmp/freebsd-sftp /tmp/freebsd-sftp-renamed
-get /tmp/freebsd-sftp-renamed /tmp/sftp-renamed-result
-rm /tmp/freebsd-sftp-renamed
-quit
-XAIOS_SFTP_BATCH
-sftp -b /tmp/sftp.batch -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -o ConnectTimeout=5 -P "$port" admin@$host >/tmp/sftp.log 2>&1 \
-    || {{ cat /tmp/sftp.log; fail "SFTP batch failed"; }}
-cmp /tmp/sftp-source /tmp/sftp-result || fail "SFTP content differed"
-cmp /tmp/sftp-source /tmp/sftp-renamed-result || fail "SFTP renamed content differed"
-
-scp -vvv -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -P "$port" /tmp/sftp-source admin@$host:/tmp/freebsd-scp >/tmp/scp-upload.log 2>&1 \
-    || {{ cat /tmp/scp-upload.log; fail "FreeBSD scp upload failed"; }}
-scp -vvv -i "$key" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PasswordAuthentication=no -P "$port" admin@$host:/tmp/freebsd-scp /tmp/scp-result >/tmp/scp-download.log 2>&1 \
-    || {{ cat /tmp/scp-download.log; fail "FreeBSD scp download failed"; }}
-cmp /tmp/sftp-source /tmp/scp-result || fail "SCP content differed"
-
-payload='freebsd-udp-echo'
-reply=''
-attempt=0
-while [ "$attempt" -lt 5 ]; do
-    reply="$(printf '%s' "$payload" | nc -u -w 5 "$host" 2224)" || true
-    [ "$reply" = "$payload" ] && break
-    attempt=$((attempt + 1))
-    sleep 1
-done
-[ "$reply" = "$payload" ] || fail "UDP payload mismatch after 5 attempts"
-
-echo "{CLIENT_PASS}"
-"""
-
-
-def user_data(
-    private_key: str,
-    unauthorized_key: str,
-    outbound_public_key: str,
-    server_password: str,
-    architecture: str,
-) -> str:
-    script = freebsd_script(
-        private_key, unauthorized_key, outbound_public_key, server_password,
-        architecture
-    )
-    encoded = base64.b64encode(script.encode("ascii")).decode("ascii")
-    return (
-        "#cloud-config\n"
-        "package_update: false\n"
-        "package_upgrade: false\n"
-        "write_files:\n"
-        "  - path: /etc/rc.conf.d/firstboot_freebsd_update\n"
-        "    permissions: '0644'\n"
-        "    owner: root:wheel\n"
-        "    content: 'firstboot_freebsd_update_enable=\"NO\"'\n"
-        "  - path: /etc/rc.conf.d/firstboot_pkg_upgrade\n"
-        "    permissions: '0644'\n"
-        "    owner: root:wheel\n"
-        "    content: 'firstboot_pkg_upgrade_enable=\"NO\"'\n"
-        "  - path: /root/xaios-freebsd-suite.sh\n"
-        "    permissions: '0700'\n"
-        "    owner: root:wheel\n"
-        "    encoding: b64\n"
-        f"    content: {encoded}\n"
-        "runcmd:\n"
-        "  - /bin/sh /root/xaios-freebsd-suite.sh\n"
-    )
-
-
-def xaios_process(
-    architecture: str, env: dict[str, str], log_file: object
-) -> subprocess.Popen[bytes]:
-    machine = XAIOS_MACHINES[architecture]
-    env.update(machine["env"])
-    persistent = BUILD / f"qemu-freebsd-bidirectional-{architecture}-state.img"
-    persistent.unlink(missing_ok=True)
-    env[machine["persistent"]] = str(persistent)
-    return subprocess.Popen(
-        [str(ROOT / machine["runner"])],
-        cwd=ROOT,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-    )
 
 
 def main() -> int:

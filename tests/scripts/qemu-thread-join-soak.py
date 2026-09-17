@@ -110,6 +110,8 @@ BOOT_MEDIUM = {
 SOURCES = [
     "userspace/apps/joinnest.c",
     "kernel/sched/thread.c",
+    "kernel/sched/thread_user.c",
+    "kernel/sched/thread_selftest.c",
     "kernel/core/kmain.c",
 ]
 

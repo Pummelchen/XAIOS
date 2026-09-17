@@ -1,314 +1,49 @@
-#ifdef XAIOS_VIRTIO_PCI_BACKEND
-/* Built as one of two backends behind virtio_transport_dispatch.c.
-   The public names belong to the dispatcher, so take private ones. */
-#define virtio_mmio_read32 virtio_pci_backend_mmio_read32
-#define virtio_mmio_read8 virtio_pci_backend_mmio_read8
-#define virtio_mmio_write32 virtio_pci_backend_mmio_write32
-#define virtio_mmio_barrier virtio_pci_backend_mmio_barrier
-#define virtio_transport_find virtio_pci_backend_transport_find
-#define virtio_transport_find_from virtio_pci_backend_transport_find_from
-#define virtio_transport_find_at virtio_pci_backend_transport_find_at
-#define virtio_transport_find_nth virtio_pci_backend_transport_find_nth
-#define virtio_transport_setup_queue_vectored virtio_pci_backend_transport_setup_queue_vectored
-#define virtio_transport_queue_has_vector virtio_pci_backend_transport_queue_has_vector
-#define virtio_transport_register_queue_interrupt virtio_pci_backend_transport_register_queue_interrupt
-#define virtio_transport_reset virtio_pci_backend_transport_reset
-#define virtio_transport_reset_checked virtio_pci_backend_transport_reset_checked
-#define virtio_transport_negotiate_no_features virtio_pci_backend_transport_negotiate_no_features
-#define virtio_transport_negotiate_features virtio_pci_backend_transport_negotiate_features
-#define virtio_transport_setup_queue virtio_pci_backend_transport_setup_queue
-#define virtio_transport_set_driver_ok virtio_pci_backend_transport_set_driver_ok
-#define virtio_transport_set_driver_ok_checked virtio_pci_backend_transport_set_driver_ok_checked
-#define virtio_transport_notify virtio_pci_backend_transport_notify
-#define virtio_transport_wait_used virtio_pci_backend_transport_wait_used
-#define virtio_transport_device_status virtio_pci_backend_transport_device_status
-#define virtio_transport_ack_interrupts virtio_pci_backend_transport_ack_interrupts
-#define virtio_transport_interrupt_id virtio_pci_backend_transport_interrupt_id
-#define virtio_transport_register_interrupt virtio_pci_backend_transport_register_interrupt
-#define virtio_transport_unregister_interrupt virtio_pci_backend_transport_unregister_interrupt
-#define virtio_transport_slot virtio_pci_backend_transport_slot
-#endif
+#include "virtio_transport_pci_internal.h"
 
-#include <xaios/arch_cpu.h>
-#include <xaios/gic.h>
-#include <xaios/klog.h>
-#include <xaios/pci.h>
-#include <xaios/smmu.h>
-#include <xaios/smp.h>
-#include <xaios/timer.h>
-#include <xaios/virtio_transport.h>
-#include <xaios/vmm.h>
-
-#define VIRTIO_PCI_CAP_VENDOR UINT8_C(0x09)
-#define VIRTIO_PCI_CAP_COMMON UINT8_C(1)
-#define VIRTIO_PCI_CAP_NOTIFY UINT8_C(2)
-#define VIRTIO_PCI_CAP_ISR UINT8_C(3)
-#define VIRTIO_PCI_CAP_DEVICE UINT8_C(4)
-#define VIRTIO_PCI_DEVICE_BASE UINT16_C(0x1040)
-
-/* A transitional device -- one that can be driven by a legacy driver as well
-   as a modern one -- carries a PCI device ID from the 0x1000 block instead of
-   0x1040 + type, and the two blocks are not in the same order, so the mapping
-   is a table rather than an offset. QEMU's virtio-blk-pci is transitional
-   unless it is asked not to be, which means a disk attached the way a person
-   would attach one identifies itself as 0x1001 and was, until this table
-   existed, simply not found. The gates never showed it: their durable volumes
-   are all MMIO, and the one PCI disk they attach belongs to the firmware.
-
-   Matching the ID says only that the type is right. Whether the device can
-   actually be driven is decided below, by looking for the modern capability
-   structures -- a transitional device has them, a purely legacy one does not
-   and is rejected there with a reason. */
-static uint32_t matches_device_type(uint16_t pci_device_id,
-                                    uint32_t virtio_device_id) {
-  if (pci_device_id == VIRTIO_PCI_DEVICE_BASE + virtio_device_id) return 1U;
-  uint16_t transitional;
-  switch (virtio_device_id) {
-    case 1U: transitional = 0x1000U; break; /* network */
-    case 2U: transitional = 0x1001U; break; /* block */
-    case 3U: transitional = 0x1003U; break; /* console */
-    case 4U: transitional = 0x1005U; break; /* entropy source */
-    case 5U: transitional = 0x1002U; break; /* memory balloon */
-    case 8U: transitional = 0x1004U; break; /* SCSI host */
-    case 9U: transitional = 0x1009U; break; /* 9P transport */
-    default: return 0U;
-  }
-  return pci_device_id == transitional ? 1U : 0U;
-}
-#define VIRTIO_PCI_CAP_MSIX UINT8_C(0x11)
-#define VIRTIO_PCI_MSIX_ENABLE UINT16_C(0x8000)
-#define VIRTIO_PCI_MSIX_FUNCTION_MASK UINT16_C(0x4000)
-#define VIRTIO_PCI_MSIX_ENTRY_MASK UINT32_C(1)
-#define VIRTIO_PCI_MSIX_MESSAGE_BASE UINT32_C(0xfee00000)
-#define VIRTIO_PCI_STATUS_ACKNOWLEDGE UINT8_C(1)
-#define VIRTIO_PCI_STATUS_DRIVER UINT8_C(2)
-#define VIRTIO_PCI_STATUS_DRIVER_OK UINT8_C(4)
-#define VIRTIO_PCI_STATUS_FEATURES_OK UINT8_C(8)
-#define VIRTIO_PCI_STATUS_FAILED UINT8_C(128)
-#define VIRTIO_PCI_VERSION_1_HIGH UINT32_C(1)
-#define VIRTIO_WAIT_TIMEOUT_NS UINT64_C(5000000000)
-#define VIRTIO_RESET_TIMEOUT_NS UINT64_C(1000000000)
-#define VIRTIO_WAIT_FALLBACK_SPINS UINT64_C(100000000)
-
-static uint8_t mmio_read8(uint64_t address) {
+uint8_t virtio_pci_mmio_read8(uint64_t address) {
   return *(volatile uint8_t *)(uintptr_t)address;
 }
 
-static uint16_t mmio_read16(uint64_t address) {
+uint16_t virtio_pci_mmio_read16(uint64_t address) {
   return *(volatile uint16_t *)(uintptr_t)address;
 }
 
-static uint32_t mmio_read32(uint64_t address) {
+uint32_t virtio_pci_mmio_read32(uint64_t address) {
   return *(volatile uint32_t *)(uintptr_t)address;
 }
 
-static void mmio_write8(uint64_t address, uint8_t value) {
+void virtio_pci_mmio_write8(uint64_t address, uint8_t value) {
   *(volatile uint8_t *)(uintptr_t)address = value;
 }
 
-static void mmio_write16(uint64_t address, uint16_t value) {
+void virtio_pci_mmio_write16(uint64_t address, uint16_t value) {
   *(volatile uint16_t *)(uintptr_t)address = value;
 }
 
-static void mmio_write32(uint64_t address, uint32_t value) {
+void virtio_pci_mmio_write32(uint64_t address, uint32_t value) {
   *(volatile uint32_t *)(uintptr_t)address = value;
 }
 
-static void mmio_write64(uint64_t address, uint64_t value) {
+void virtio_pci_mmio_write64(uint64_t address, uint64_t value) {
   *(volatile uint64_t *)(uintptr_t)address = value;
 }
 
 uint32_t virtio_mmio_read32(uint64_t base, uint32_t offset) {
-  return mmio_read32(base + offset);
+  return virtio_pci_mmio_read32(base + offset);
 }
 
 uint8_t virtio_mmio_read8(uint64_t base, uint32_t offset) {
-  return mmio_read8(base + offset);
+  return virtio_pci_mmio_read8(base + offset);
 }
 
 void virtio_mmio_write32(uint64_t base, uint32_t offset, uint32_t value) {
-  mmio_write32(base + offset, value);
+  virtio_pci_mmio_write32(base + offset, value);
 }
 
 void virtio_mmio_barrier(void) { xaios_cpu_io_barrier(); }
 
-static xaios_status_t map_register(uint64_t address, uint64_t length) {
-  if (address == 0U || length == 0U || address > UINT64_MAX - length) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t page = address & ~UINT64_C(0xfff);
-  uint64_t end = (address + length + UINT64_C(0xfff)) & ~UINT64_C(0xfff);
-  while (page < end) {
-    uint64_t physical = 0U;
-    uint32_t flags = 0U;
-    if (vmm_translate(page, &physical, &flags) != XAIOS_OK ||
-        physical != page || (flags & XAIOS_VMM_DEVICE) == 0U) {
-      xaios_status_t status = vmm_map_page(
-          page, page,
-          XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE | XAIOS_VMM_DEVICE);
-      if (status != XAIOS_OK) return status;
-    }
-    page += UINT64_C(4096);
-  }
-  return XAIOS_OK;
-}
-
-static uint32_t matching_ordinal_for_slot(uint32_t slot) {
-  switch (slot) {
-  case 0U:
-    return 1U; /* deterministic test volume; ordinal zero is the EFI disk */
-  case 1U:
-    return 2U; /* persistent xaibootFS */
-  case 4U:
-    return 3U; /* xaiFS volume */
-  case 5U:
-    return 4U; /* storage administration scratch volume */
-  case 6U:
-    return 6U; /* kernel-visible A/B system volume */
-  default:
-    return slot;
-  }
-}
-
-static xaios_status_t probe_device(uint32_t pci_index, uint32_t device_id,
-                                   const char *name, uint32_t logical_slot,
-                                   virtio_mmio_device_t *result) {
-  const xaios_pci_device_t *pci = pci_device(pci_index);
-  if (pci == 0 || pci->vendor_id != XAIOS_PCI_VENDOR_VIRTIO ||
-      matches_device_type(pci->device_id, device_id) == 0U) {
-    return XAIOS_ERR_NOT_FOUND;
-  }
-
-  uint64_t common = 0U;
-  uint64_t notify = 0U;
-  uint64_t isr = 0U;
-  uint64_t config = 0U;
-  uint32_t notify_multiplier = 0U;
-  uint8_t pointer = pci_config_read8(pci_index, XAIOS_PCI_CAP_PTR) & 0xfcU;
-  for (uint32_t count = 0U; count < 48U && pointer >= 0x40U; ++count) {
-    uint8_t capability = pci_config_read8(pci_index, pointer);
-    uint8_t next = pci_config_read8(pci_index, pointer + 1U) & 0xfcU;
-    uint8_t length = pci_config_read8(pci_index, pointer + 2U);
-    if (capability == VIRTIO_PCI_CAP_VENDOR && length >= 16U) {
-      uint8_t type = pci_config_read8(pci_index, pointer + 3U);
-      uint8_t bar = pci_config_read8(pci_index, pointer + 4U);
-      uint64_t bar_address = pci_bar_address(pci_index, bar);
-      uint32_t offset = pci_config_read32(pci_index, pointer + 8U);
-      uint32_t region_length = pci_config_read32(pci_index, pointer + 12U);
-      if (bar_address != 0U && bar_address <= UINT64_MAX - offset &&
-          region_length != 0U) {
-        uint64_t address = bar_address + offset;
-        if (map_register(address, region_length) != XAIOS_OK) {
-          klog("%s: pci index=%u cannot map capability type=%u at 0x%lx\n",
-               name, pci_index, (unsigned)type, address);
-          return XAIOS_ERR_IO;
-        }
-        if (type == VIRTIO_PCI_CAP_COMMON) common = address;
-        if (type == VIRTIO_PCI_CAP_NOTIFY) {
-          notify = address;
-          if (length >= 20U) {
-            notify_multiplier = pci_config_read32(pci_index, pointer + 16U);
-          }
-        }
-        if (type == VIRTIO_PCI_CAP_ISR) isr = address;
-        if (type == VIRTIO_PCI_CAP_DEVICE) config = address;
-      }
-    }
-    if (next == 0U || next == pointer) break;
-    pointer = next;
-  }
-  /* A device-specific config region is optional: virtio-rng has none at all,
-     and a console without MULTIPORT need not publish one either. QEMU exposes
-     one regardless, which is why requiring it went unnoticed. Only the common,
-     notify and ISR structures are actually needed to drive a queue. */
-  if (common == 0U || notify == 0U || notify_multiplier == 0U) {
-    /* A device that publishes no modern capability structures is legacy-only
-       and cannot be driven here. Saying so is the difference between a machine
-       that explains why it found no disk and one that just has none. */
-    klog("%s: pci index=%u id=0x%x not usable: common=0x%lx notify=0x%lx "
-         "multiplier=%u\n",
-         name, pci_index, (unsigned)pci->device_id, common, notify,
-         notify_multiplier);
-    return XAIOS_ERR_UNSUPPORTED;
-  }
-  if (pci_enable_device(pci_index) != XAIOS_OK) {
-    klog("%s: pci index=%u cannot be enabled\n", name, pci_index);
-    return XAIOS_ERR_IO;
-  }
-  *result = (virtio_mmio_device_t){
-      .base = config != 0U ? config - UINT64_C(0x100) : 0U,
-      .common_config = common,
-      .notify_base = notify,
-      .isr_config = isr,
-      .notify_multiplier = notify_multiplier,
-      .transport_slot = logical_slot,
-      .transport_index = pci_index,
-      .interrupt_id = 64U + pci_index,
-      .interrupt_configured = 0U,
-      .device_id = device_id,
-      .name = name,
-  };
-  klog("%s: modern PCI transport index=%u slot=%u common=0x%lx config=0x%lx\n",
-       name, pci_index, logical_slot, common, config);
-  return XAIOS_OK;
-}
-
-static xaios_status_t find_ordinal(uint32_t device_id, const char *name,
-                                   uint32_t ordinal, uint32_t logical_slot,
-                                   virtio_mmio_device_t *device) {
-  if (name == 0 || device == 0) return XAIOS_ERR_INVALID;
-  uint32_t found = 0U;
-  for (uint32_t index = 0U; index < pci_device_count(); ++index) {
-    const xaios_pci_device_t *candidate = pci_device(index);
-    if (candidate == 0 || candidate->vendor_id != XAIOS_PCI_VENDOR_VIRTIO ||
-        matches_device_type(candidate->device_id, device_id) == 0U) {
-      continue;
-    }
-    if (found++ == ordinal) {
-      return probe_device(index, device_id, name, logical_slot, device);
-    }
-  }
-  klog("%s: no pci device of type %u at ordinal %u; %u present\n", name,
-       device_id, ordinal, found);
-  return XAIOS_ERR_NOT_FOUND;
-}
-
-xaios_status_t virtio_transport_find(uint32_t device_id, const char *name,
-                                    virtio_mmio_device_t *device) {
-  /* The EFI boot disk is the first PCI block function. The common block
-   * driver starts at the deterministic data disk, matching ARM MMIO slot 0. */
-  uint32_t ordinal = device_id == VIRTIO_DEVICE_BLOCK ? 1U : 0U;
-  return find_ordinal(device_id, name, ordinal, 0U, device);
-}
-
-xaios_status_t virtio_transport_find_from(uint32_t device_id, const char *name,
-                                         uint32_t start_slot,
-                                         virtio_mmio_device_t *device) {
-  return find_ordinal(device_id, name, start_slot, start_slot, device);
-}
-
-xaios_status_t virtio_transport_find_at(uint32_t device_id, const char *name,
-                                       uint32_t slot,
-                                       virtio_mmio_device_t *device) {
-  return find_ordinal(device_id, name, matching_ordinal_for_slot(slot), slot,
-                      device);
-}
-
-/* The nth virtio function of this type on the bus, with no slot map applied.
-   Every other entry point here goes through matching_ordinal_for_slot, which
-   encodes the test bench's disk order -- and its first rule is that ordinal
-   zero is the firmware's boot disk and belongs to nobody. On a machine XAIOS
-   has been installed onto there is one disk, it is ordinal zero, and it is the
-   one being looked for. */
-xaios_status_t virtio_transport_find_nth(uint32_t device_id, const char *name,
-                                         uint32_t ordinal,
-                                         uint32_t logical_slot,
-                                         virtio_mmio_device_t *device) {
-  return find_ordinal(device_id, name, ordinal, logical_slot, device);
-}
-
 static void set_status(const virtio_mmio_device_t *device, uint8_t status) {
-  mmio_write8(device->common_config + 20U, status);
+  virtio_pci_mmio_write8(device->common_config + 20U, status);
   virtio_mmio_barrier();
 }
 
@@ -318,7 +53,7 @@ xaios_status_t virtio_transport_reset_checked(
   set_status(device, 0U);
   uint64_t started = timer_now_ns();
   for (uint64_t spins = 0U;; ++spins) {
-    if (mmio_read8(device->common_config + 20U) == 0U) return XAIOS_OK;
+    if (virtio_pci_mmio_read8(device->common_config + 20U) == 0U) return XAIOS_OK;
     if ((spins & UINT64_C(0x3ff)) == 0U &&
         ((started != 0U && timer_now_ns() - started >= VIRTIO_RESET_TIMEOUT_NS) ||
          (started == 0U && spins >= VIRTIO_WAIT_FALLBACK_SPINS))) {
@@ -342,10 +77,10 @@ xaios_status_t virtio_transport_negotiate_features(
   }
   set_status(device, VIRTIO_PCI_STATUS_ACKNOWLEDGE);
   set_status(device, VIRTIO_PCI_STATUS_ACKNOWLEDGE | VIRTIO_PCI_STATUS_DRIVER);
-  mmio_write32(device->common_config + 0U, 0U);
-  uint32_t available_low = mmio_read32(device->common_config + 4U);
-  mmio_write32(device->common_config + 0U, 1U);
-  uint32_t available_high = mmio_read32(device->common_config + 4U);
+  virtio_pci_mmio_write32(device->common_config + 0U, 0U);
+  uint32_t available_low = virtio_pci_mmio_read32(device->common_config + 4U);
+  virtio_pci_mmio_write32(device->common_config + 0U, 1U);
+  uint32_t available_high = virtio_pci_mmio_read32(device->common_config + 4U);
   *accepted_low = available_low & requested_low;
   *accepted_high = available_high &
                    (requested_high | VIRTIO_PCI_VERSION_1_HIGH);
@@ -353,13 +88,13 @@ xaios_status_t virtio_transport_negotiate_features(
     set_status(device, VIRTIO_PCI_STATUS_FAILED);
     return XAIOS_ERR_UNSUPPORTED;
   }
-  mmio_write32(device->common_config + 8U, 0U);
-  mmio_write32(device->common_config + 12U, *accepted_low);
-  mmio_write32(device->common_config + 8U, 1U);
-  mmio_write32(device->common_config + 12U, *accepted_high);
+  virtio_pci_mmio_write32(device->common_config + 8U, 0U);
+  virtio_pci_mmio_write32(device->common_config + 12U, *accepted_low);
+  virtio_pci_mmio_write32(device->common_config + 8U, 1U);
+  virtio_pci_mmio_write32(device->common_config + 12U, *accepted_high);
   set_status(device, VIRTIO_PCI_STATUS_ACKNOWLEDGE | VIRTIO_PCI_STATUS_DRIVER |
                          VIRTIO_PCI_STATUS_FEATURES_OK);
-  if ((mmio_read8(device->common_config + 20U) &
+  if ((virtio_pci_mmio_read8(device->common_config + 20U) &
        VIRTIO_PCI_STATUS_FEATURES_OK) == 0U) {
     /* The device cleared FEATURES_OK, meaning it will not run with the set
        the driver chose. Report both sides: what it offered is the only way
@@ -383,247 +118,13 @@ xaios_status_t virtio_transport_negotiate_no_features(
                                              &low, &high);
 }
 
-static uint64_t dma_address(const void *pointer) {
-  uint64_t physical = 0U;
-  uint32_t flags = 0U;
-  if (vmm_translate((uint64_t)(uintptr_t)pointer, &physical, &flags) !=
-          XAIOS_OK ||
-      (flags & XAIOS_VMM_PRESENT) == 0U) {
-    return 0U;
-  }
-  return physical;
-}
-
-static xaios_status_t configure_msix(virtio_mmio_device_t *device,
-                                    uint16_t table_entry) {
-  /* Queue setup asks for the same vector once per queue, so configuring it
-     again would allocate a second identifier for an interrupt that is already
-     wired up. */
-  if (device != 0 && device->interrupt_configured != 0U) return XAIOS_OK;
-#if !defined(__x86_64__)
-  /* MSI-X message addressing is architecture specific: x86 encodes an APIC
-     destination in the message address, while aarch64 targets a GIC ITS
-     translator with an event identifier, and only the ITS can say what that
-     address and data are. Without an ITS there is no way to raise one here,
-     so report no MSI-X and let the caller write NO_VECTOR and run the queue
-     polled, which every driver in this tree supports. */
-  if (device == 0) return XAIOS_ERR_INVALID;
-  /* The ITS initialises lazily inside the first configure call, so asking
-     whether it is available before ever calling one always answers no. */
-  uint32_t its_device_id = pci_stream_id(device->transport_index);
-  uint32_t lpi = 0U;
-  if (gic_allocate_lpi(&lpi) != XAIOS_OK) return XAIOS_ERR_UNSUPPORTED;
-  uint64_t message_address = 0U;
-  uint32_t message_data = 0U;
-  if (gic_its_configure_msi(its_device_id, table_entry, lpi, smp_cpu_id(),
-                            &message_address, &message_data) != XAIOS_OK) {
-    return XAIOS_ERR_UNSUPPORTED;
-  }
-  if (pci_configure_msix(device->transport_index, table_entry,
-                         message_address, message_data) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  device->interrupt_id = lpi;
-  device->interrupt_configured = 1U;
-  return XAIOS_OK;
-#else
-  uint32_t pci_index = device->transport_index;
-  uint8_t pointer = pci_config_read8(pci_index, XAIOS_PCI_CAP_PTR) & 0xfcU;
-  for (uint32_t count = 0U; count < 48U && pointer >= 0x40U; ++count) {
-    uint8_t capability = pci_config_read8(pci_index, pointer);
-    uint8_t next = pci_config_read8(pci_index, pointer + 1U) & 0xfcU;
-    if (capability == VIRTIO_PCI_CAP_MSIX) {
-      uint16_t control = pci_config_read16(pci_index, pointer + 2U);
-      uint16_t table_size = (control & UINT16_C(0x07ff)) + 1U;
-      if (table_entry >= table_size) return XAIOS_ERR_UNSUPPORTED;
-
-      uint32_t table = pci_config_read32(pci_index, pointer + 4U);
-      uint32_t bar = table & UINT32_C(7);
-      uint64_t table_base = pci_bar_address(pci_index, bar);
-      uint64_t table_offset = table & UINT32_C(0xfffffff8);
-      if (table_base == 0U || table_base > UINT64_MAX - table_offset) {
-        return XAIOS_ERR_INVALID;
-      }
-      uint64_t entry = table_base + table_offset;
-      if (entry > UINT64_MAX - (uint64_t)table_entry * 16U) {
-        return XAIOS_ERR_INVALID;
-      }
-      entry += (uint64_t)table_entry * 16U;
-      if (map_register(entry, 16U) != XAIOS_OK) return XAIOS_ERR_IO;
-
-      uint32_t ordinal = x86_64_platform_current_ordinal();
-      uint32_t destination = x86_64_platform_cpu_apic_id(ordinal);
-      if (destination > UINT32_C(0xfffff)) return XAIOS_ERR_UNSUPPORTED;
-      mmio_write32(entry + 12U, VIRTIO_PCI_MSIX_ENTRY_MASK);
-      mmio_write32(entry + 0U,
-                   VIRTIO_PCI_MSIX_MESSAGE_BASE | (destination << 12U));
-      mmio_write32(entry + 4U, 0U);
-      mmio_write32(entry + 8U, device->interrupt_id);
-      mmio_write32(entry + 12U, 0U);
-      control = (control | VIRTIO_PCI_MSIX_ENABLE) &
-                (uint16_t)~VIRTIO_PCI_MSIX_FUNCTION_MASK;
-      if (pci_config_write16(pci_index, pointer + 2U, control) != XAIOS_OK) {
-        return XAIOS_ERR_IO;
-      }
-      device->interrupt_configured = 1U;
-      return XAIOS_OK;
-    }
-    if (next == 0U || next == pointer) break;
-    pointer = next;
-  }
-  return XAIOS_ERR_UNSUPPORTED;
-#endif
-}
-
-/* Configure one MSI-X table entry for a queue of its own.
- *
- * configure_msix above returns early once the device has any interrupt, which
- * is right for a device driven through a single vector and wrong here: every
- * queue needs its own entry, its own LPI, and its own message. Sharing one
- * vector across four queues tells a handler that something happened somewhere,
- * which is the thing multiple queues exist to avoid. */
-static xaios_status_t configure_queue_msix(virtio_mmio_device_t *device,
-                                           uint32_t queue_index) {
-  if (device == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) {
-    return XAIOS_ERR_INVALID;
-  }
-  if ((device->queue_interrupt_configured & (UINT32_C(1) << queue_index)) !=
-      0U) {
-    return XAIOS_OK;
-  }
-#if !defined(__x86_64__)
-  uint32_t its_device_id = pci_stream_id(device->transport_index);
-  uint32_t lpi = 0U;
-  if (gic_allocate_lpi(&lpi) != XAIOS_OK) return XAIOS_ERR_UNSUPPORTED;
-  uint64_t message_address = 0U;
-  uint32_t message_data = 0U;
-  if (gic_its_configure_msi(its_device_id, (uint16_t)queue_index, lpi,
-                            smp_cpu_id(), &message_address,
-                            &message_data) != XAIOS_OK) {
-    return XAIOS_ERR_UNSUPPORTED;
-  }
-  if (pci_configure_msix(device->transport_index, (uint16_t)queue_index,
-                         message_address, message_data) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  device->queue_interrupt_id[queue_index] = lpi;
-  device->queue_interrupt_configured |= UINT32_C(1) << queue_index;
-  return XAIOS_OK;
-#else
-  /* x86 routes MSI-X through the APIC rather than an ITS, and the shared-vector
-     path already programs that. Per-queue vectors there are the same mechanism
-     with a different table entry, and are not wired up here: nothing in this
-     tree steers queues on x86 yet, and an untested second interrupt path is
-     worse than one honest refusal. */
-  (void)queue_index;
-  return XAIOS_ERR_UNSUPPORTED;
-#endif
-}
-
-
-/* Hand one queue's rings to the board's IOMMU (B-130).
- *
- * Every PCI function starts with a pass-through context, so without this the
- * device's DMA reaches these pages without a table being walked. With it, the
- * first descriptor the device fetches is translated. A refusal is logged and
- * does not stop the queue -- a board with no IOMMU has to boot -- but it is
- * never silent, because "unmediated" is exactly the state this call exists to
- * leave. */
-static void mediate_queue_rings(const virtio_mmio_device_t *device,
-                                uint32_t queue_index, uint32_t queue_size,
-                                uint64_t desc_address, uint64_t avail_address,
-                                uint64_t used_address) {
-#if defined(__riscv)
-  /* A board with no IOMMU is not a board whose driver refused: the call
-     answers 0 and there is nothing to say. Only a refusal on a board that HAS
-     one is worth a line, and it is worth one because the queue is about to be
-     handed over unmediated. */
-  if (riscv64_iommu_ready() != 0) {
-    uint32_t stream_id = pci_stream_id(device->transport_index);
-    uint64_t desc_bytes = (uint64_t)sizeof(virtq_desc_t) * (uint64_t)queue_size;
-    if (riscv64_iommu_mediate_dma(stream_id, desc_address, desc_bytes) == 0 ||
-        riscv64_iommu_mediate_dma(stream_id, avail_address,
-                                  (uint64_t)sizeof(virtq_avail_t)) == 0 ||
-        riscv64_iommu_mediate_dma(stream_id, used_address,
-                                  (uint64_t)sizeof(virtq_used_t)) == 0) {
-      klog("virtio-pci: queue %u rings are not mediated for stream_id=%u\n",
-           (unsigned)queue_index, (unsigned)stream_id);
-    }
-  }
-#else
-  (void)device;
-  (void)queue_index;
-  (void)queue_size;
-  (void)desc_address;
-  (void)avail_address;
-  (void)used_address;
-#endif
-}
-
-xaios_status_t virtio_transport_setup_queue(virtio_mmio_device_t *device,
-                                           uint32_t queue_index,
-                                           uint32_t queue_size,
-                                           virtq_desc_t *desc,
-                                           virtq_avail_t *avail,
-                                           virtq_used_t *used) {
-  if (device == 0 || queue_index > UINT16_MAX || queue_size == 0U ||
-      queue_size > VIRTQ_SIZE || (queue_size & (queue_size - 1U)) != 0U ||
-      desc == 0 || avail == 0 || used == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t desc_address = dma_address(desc);
-  uint64_t avail_address = dma_address(avail);
-  uint64_t used_address = dma_address(used);
-  if (desc_address == 0U || avail_address == 0U || used_address == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  mediate_queue_rings(device, queue_index, queue_size, desc_address,
-                      avail_address, used_address);
-  mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
-  uint16_t maximum = mmio_read16(device->common_config + 24U);
-  if (maximum < queue_size ||
-      mmio_read16(device->common_config + 28U) != 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  mmio_write16(device->common_config + 24U, (uint16_t)queue_size);
-  xaios_status_t interrupt_status = configure_msix(device, 0U);
-  mmio_write16(device->common_config + 26U,
-               interrupt_status == XAIOS_OK ? 0U : UINT16_MAX);
-  if (interrupt_status == XAIOS_OK &&
-      mmio_read16(device->common_config + 26U) == UINT16_MAX) {
-    return XAIOS_ERR_IO;
-  }
-  mmio_write64(device->common_config + 32U, desc_address);
-  mmio_write64(device->common_config + 40U, avail_address);
-  mmio_write64(device->common_config + 48U, used_address);
-  mmio_write16(device->common_config + 28U, 1U);
-  virtio_mmio_barrier();
-  if (mmio_read16(device->common_config + 28U) != 1U) return XAIOS_ERR_IO;
-  /* This queue is selected right now, which is the only safe moment to read
-     its notify offset: it is fixed for the life of the queue, so notifying
-     later needs no access to the shared selector at all. */
-  if (queue_index < VIRTIO_NOTIFY_SLOTS) {
-    device->notify_offset[queue_index] =
-        mmio_read16(device->common_config + 30U);
-    device->notify_offset_valid |= UINT32_C(1) << queue_index;
-  }
-  if (interrupt_status == XAIOS_OK) {
-    klog("%s: MSI-X queue=%u vector=%u enabled\n", device->name, queue_index,
-         device->interrupt_id);
-  } else {
-    klog("%s: MSI-X unavailable; queue=%u uses bounded polling\n",
-         device->name, queue_index);
-  }
-  return XAIOS_OK;
-}
-
 xaios_status_t virtio_transport_set_driver_ok_checked(
     const virtio_mmio_device_t *device) {
   if (device == 0) return XAIOS_ERR_INVALID;
   set_status(device, VIRTIO_PCI_STATUS_ACKNOWLEDGE | VIRTIO_PCI_STATUS_DRIVER |
                          VIRTIO_PCI_STATUS_FEATURES_OK |
                          VIRTIO_PCI_STATUS_DRIVER_OK);
-  uint8_t status = mmio_read8(device->common_config + 20U);
+  uint8_t status = virtio_pci_mmio_read8(device->common_config + 20U);
   return (status & (VIRTIO_PCI_STATUS_FEATURES_OK |
                     VIRTIO_PCI_STATUS_DRIVER_OK)) ==
                  (VIRTIO_PCI_STATUS_FEATURES_OK | VIRTIO_PCI_STATUS_DRIVER_OK)
@@ -637,7 +138,7 @@ void virtio_transport_set_driver_ok(const virtio_mmio_device_t *device) {
 
 uint32_t virtio_transport_device_status(const virtio_mmio_device_t *device) {
   if (device == 0 || device->common_config == 0U) return 0U;
-  return mmio_read8(device->common_config + 20U);
+  return virtio_pci_mmio_read8(device->common_config + 20U);
 }
 
 void virtio_transport_notify(const virtio_mmio_device_t *device,
@@ -650,11 +151,11 @@ void virtio_transport_notify(const virtio_mmio_device_t *device,
   } else {
     /* No cached offset, so fall back to asking. This touches the shared queue
        selector and is safe only while nothing else notifies this device. */
-    mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
-    offset = mmio_read16(device->common_config + 30U);
+    virtio_pci_mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
+    offset = virtio_pci_mmio_read16(device->common_config + 30U);
   }
   virtio_mmio_barrier();
-  mmio_write16(device->notify_base +
+  virtio_pci_mmio_write16(device->notify_base +
                    (uint64_t)offset * device->notify_multiplier,
                (uint16_t)queue_index);
 }
@@ -679,7 +180,7 @@ xaios_status_t virtio_transport_wait_used(volatile uint16_t *used_idx,
 
 void virtio_transport_ack_interrupts(const virtio_mmio_device_t *device) {
   if (device != 0 && device->isr_config != 0U) {
-    (void)mmio_read8(device->isr_config);
+    (void)virtio_pci_mmio_read8(device->isr_config);
   }
 }
 
@@ -721,115 +222,4 @@ xaios_status_t virtio_transport_unregister_interrupt(
 
 uint32_t virtio_transport_slot(const virtio_mmio_device_t *device) {
   return device == 0 ? UINT32_MAX : device->transport_slot;
-}
-
-#ifndef XAIOS_VIRTIO_PCI_BACKEND
-/* Where PCI is the only transport, there is no dispatcher and the names in
-   this file are already the public ones. "The nth PCI device" and "the nth
-   device" are then the same question, so the PCI-specific entry point is a
-   thin alias rather than absent.
-
-   Code shared with aarch64 calls it -- the boot disk is addressed on PCI
-   because counting across both transports cannot reach it when an MMIO device
-   is present, and a machine that has only ever seen PCI should not have to
-   know why that distinction exists. Leaving it out failed the x86_64 link
-   with an undefined symbol, which a per-file compile check cannot see. */
-xaios_status_t virtio_transport_find_nth_pci(uint32_t device_id,
-                                             const char *name,
-                                             uint32_t ordinal,
-                                             uint32_t logical_slot,
-                                             virtio_mmio_device_t *device) {
-  return virtio_transport_find_nth(device_id, name, ordinal, logical_slot,
-                                   device);
-}
-#endif
-
-xaios_status_t virtio_transport_setup_queue_vectored(
-    virtio_mmio_device_t *device, uint32_t queue_index, uint32_t queue_size,
-    virtq_desc_t *desc, virtq_avail_t *avail, virtq_used_t *used) {
-  if (device == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) {
-    return XAIOS_ERR_INVALID;
-  }
-  /* Ask for a vector of this queue's own first. If the device cannot give one
-     -- too few table entries, no ITS, an architecture this is not wired for --
-     fall back to the shared vector rather than refusing: a driver that wanted
-     several queues still works with one interrupt between them, more slowly,
-     and can ask which it got. */
-  if (configure_queue_msix(device, queue_index) != XAIOS_OK) {
-    return virtio_transport_setup_queue(device, queue_index, queue_size, desc,
-                                        avail, used);
-  }
-  if (queue_size == 0U || queue_size > VIRTQ_SIZE ||
-      (queue_size & (queue_size - 1U)) != 0U || desc == 0 || avail == 0 ||
-      used == 0) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t desc_address = dma_address(desc);
-  uint64_t avail_address = dma_address(avail);
-  uint64_t used_address = dma_address(used);
-  if (desc_address == 0U || avail_address == 0U || used_address == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  mediate_queue_rings(device, queue_index, queue_size, desc_address,
-                      avail_address, used_address);
-  mmio_write16(device->common_config + 22U, (uint16_t)queue_index);
-  uint16_t maximum = mmio_read16(device->common_config + 24U);
-  if (maximum < queue_size ||
-      mmio_read16(device->common_config + 28U) != 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  mmio_write16(device->common_config + 24U, (uint16_t)queue_size);
-  mmio_write16(device->common_config + 26U, (uint16_t)queue_index);
-  if (mmio_read16(device->common_config + 26U) != (uint16_t)queue_index) {
-    /* The device declined the vector. Undo the claim so the fallback does not
-       believe this queue has one. */
-    device->queue_interrupt_configured &= ~(UINT32_C(1) << queue_index);
-    return virtio_transport_setup_queue(device, queue_index, queue_size, desc,
-                                        avail, used);
-  }
-  mmio_write64(device->common_config + 32U, desc_address);
-  mmio_write64(device->common_config + 40U, avail_address);
-  mmio_write64(device->common_config + 48U, used_address);
-  mmio_write16(device->common_config + 28U, 1U);
-  virtio_mmio_barrier();
-  if (mmio_read16(device->common_config + 28U) != 1U) return XAIOS_ERR_IO;
-  device->notify_offset[queue_index] =
-      mmio_read16(device->common_config + 30U);
-  device->notify_offset_valid |= UINT32_C(1) << queue_index;
-  klog("%s: queue=%u has its own MSI-X vector=%u\n", device->name,
-       queue_index, device->queue_interrupt_id[queue_index]);
-  return XAIOS_OK;
-}
-
-uint32_t virtio_transport_queue_has_vector(const virtio_mmio_device_t *device,
-                                           uint32_t queue_index) {
-  if (device == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) return 0U;
-  return (device->queue_interrupt_configured &
-          (UINT32_C(1) << queue_index)) != 0U ? 1U : 0U;
-}
-
-xaios_status_t virtio_transport_register_queue_interrupt(
-    const virtio_mmio_device_t *device, uint32_t queue_index,
-    virtio_interrupt_handler_t handler, void *context) {
-  if (device == 0 || handler == 0 || queue_index >= VIRTIO_NOTIFY_SLOTS) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (virtio_transport_queue_has_vector(device, queue_index) == 0U) {
-    return XAIOS_ERR_UNSUPPORTED;
-  }
-#if !defined(__x86_64__)
-  uint32_t intid = device->queue_interrupt_id[queue_index];
-  xaios_status_t status = gic_register_lpi(intid, smp_cpu_id(), handler,
-                                           context);
-  if (status != XAIOS_OK) return status;
-  status = pci_unmask_msix(device->transport_index, (uint16_t)queue_index);
-  if (status != XAIOS_OK) {
-    (void)gic_unregister_interrupt(intid, handler, context);
-    return status;
-  }
-  return XAIOS_OK;
-#else
-  (void)context;
-  return XAIOS_ERR_UNSUPPORTED;
-#endif
 }
