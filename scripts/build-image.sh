@@ -719,7 +719,6 @@ else
   $KERNEL_BUILD_DIR/smp.o
   "
 fi
-
 KERNEL_OBJECTS="
   $ARCH_KERNEL_OBJECTS
   $KERNEL_BUILD_DIR/kmain.o
@@ -750,6 +749,7 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/smp_task_set.o
   $KERNEL_BUILD_DIR/initramfs.o
   $KERNEL_BUILD_DIR/xaiboot_fs.o
+  $KERNEL_BUILD_DIR/xbfs_node_codec.o
   $KERNEL_BUILD_DIR/xbfs_util.o
   $KERNEL_BUILD_DIR/fat.o
   $KERNEL_BUILD_DIR/fat_codec.o
@@ -842,7 +842,6 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/kernel_ssh_crypto.o
   $KERNEL_BUILD_DIR/kernel_tweetnacl_subset.o
 "
-
 if [ "$TARGET_ARCH" = aarch64 ]; then
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/entry.S" "$KERNEL_BUILD_DIR/entry.o"
   compile_kernel "$ROOT_DIR/kernel/arch/aarch64/secondary.S" "$KERNEL_BUILD_DIR/secondary.o"
@@ -922,6 +921,7 @@ compile_kernel "$ROOT_DIR/kernel/runtime/entropy.c" "$KERNEL_BUILD_DIR/entropy.o
 compile_kernel "$ROOT_DIR/kernel/sched/smp_task_set.c" "$KERNEL_BUILD_DIR/smp_task_set.o"
 compile_kernel "$ROOT_DIR/kernel/fs/initramfs.c" "$KERNEL_BUILD_DIR/initramfs.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xaiboot_fs.c" "$KERNEL_BUILD_DIR/xaiboot_fs.o"
+compile_kernel "$ROOT_DIR/kernel/fs/xbfs_node_codec.c" "$KERNEL_BUILD_DIR/xbfs_node_codec.o"
 compile_kernel "$ROOT_DIR/kernel/fs/xbfs_util.c" "$KERNEL_BUILD_DIR/xbfs_util.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat.c" "$KERNEL_BUILD_DIR/fat.o"
 compile_kernel "$ROOT_DIR/kernel/fs/fat_codec.c" "$KERNEL_BUILD_DIR/fat_codec.o"

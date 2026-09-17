@@ -38,8 +38,6 @@
 #define XBFS_JOURNAL_SECTORS UINT64_C(2)
 #define XBFS_DATA_SECTORS 96U
 #define XBFS_MAX_NODES 32U
-#define XBFS_V3_PATH_MAX 96U
-#define XBFS_FILE_MAX_BLOCKS 16U
 #define XBFS_MAX_FILE_BYTES (XBFS_FILE_MAX_BLOCKS * XBFS_SECTOR_SIZE)
 #define XBFS_V3_METADATA_SECTORS 32U
 #define XBFS_V3_DATA_SECTORS 256U
@@ -50,13 +48,11 @@
 #define XBFS_V4_METADATA_SECTORS 384U
 #define XBFS_V4_DATA_SECTORS 4096U
 #define XBFS_V4_MAX_NODES 128U
-#define XBFS_V4_FILE_MAX_BLOCKS 256U
 #define XBFS_V4_MAX_FILE_BYTES (XBFS_V4_FILE_MAX_BLOCKS * XBFS_SECTOR_SIZE)
 #define XBFS_V4_VERSION 4U
 #define XBFS_V5_METADATA_SECTORS 1280U
 #define XBFS_V5_DATA_SECTORS 8192U
 #define XBFS_V5_MAX_NODES 256U
-#define XBFS_V5_FILE_MAX_BLOCKS 512U
 #define XBFS_V5_MAX_FILE_BYTES (XBFS_V5_FILE_MAX_BLOCKS * XBFS_SECTOR_SIZE)
 #define XBFS_V5_VERSION 5U
 
@@ -82,31 +78,6 @@
  * filesystem in place, which is the one operation on this data nobody should
  * have to trust. */
 #define XBFS_V6_VERSION 6U
-/* How many runs of blocks one file may be scattered across.
- *
- * This was 16, and 16 is reachable. A volume written and rewritten for a while
- * breaks its free space into short runs, and a file that needs more of them
- * than this is refused with the volume mostly empty -- which also means it
- * cannot be snapshotted, which used to mean the machine stopped booting
- * (B-52). Taking the longest runs first made that far harder to reach; it did
- * not move the limit.
- *
- * 64 costs 768 bytes per node and about 0.75 MiB across the node table. That
- * was worth weighing when every commit rewrote the whole region; since B-48 a
- * commit writes only the sectors that changed, so a larger node table costs
- * space rather than write amplification.
- *
- * It is a raised ceiling and not a removed one, and the row says so. A 256 KiB
- * file -- the largest the whole-file path stages -- on a volume fragmented to
- * single blocks would need 512 extents, and 512 inline costs 25 MiB of
- * buffers. Removing the ceiling properly means indirect extents: a node that
- * points at an overflow block when it runs out of inline room. That is the
- * real fix and it is not this one.
- *
- * The on-disk node changes shape. Nothing migrates it: XAIOS is early enough
- * that breaking the format is cheaper than carrying a conversion, and a volume
- * written by an older build is reformatted rather than upgraded. */
-#define XBFS_V6_MAX_EXTENTS 64U
 #define XBFS_V6_MAX_NODES 1024U
 #define XBFS_V6_DATA_SECTORS 2097152U
 /* Sized for the node table above plus the block bitmap, with room to spare.
@@ -119,10 +90,6 @@
 /* One bit per block, rounded to whole bytes. */
 #define XBFS_BITMAP_BYTES ((XBFS_V6_DATA_SECTORS + 7U) / 8U)
 
-typedef struct xaios_xbfs_extent {
-  uint32_t start;
-  uint32_t length;
-} xaios_xbfs_extent_t;
 /* The append path, and the switch that turns it off.
  *
  * Off, every write through a file descriptor goes back to reading the whole
@@ -143,86 +110,6 @@ typedef struct xaios_xbfs_extent {
 #define XBFS_JOURNAL_EMPTY 0U
 #define XBFS_JOURNAL_PENDING 1U
 #define XBFS_JOURNAL_OP_WRITE_FILE 1U
-
-typedef struct xaios_xbfs_node_v3 {
-  uint32_t active;
-  uint32_t snapshot_active;
-  uint32_t type;
-  uint32_t snapshot_type;
-  uint64_t size;
-  uint64_t content_hash;
-  uint64_t generation;
-  uint64_t snapshot_size;
-  uint64_t snapshot_hash;
-  uint64_t snapshot_generation;
-  uint16_t block_count;
-  uint16_t snapshot_block_count;
-  uint16_t blocks[XBFS_FILE_MAX_BLOCKS];
-  uint16_t snapshot_blocks[XBFS_FILE_MAX_BLOCKS];
-  char path[XBFS_V3_PATH_MAX];
-} xaios_xbfs_node_v3_t;
-
-typedef struct xaios_xbfs_node_v4 {
-  uint32_t active;
-  uint32_t snapshot_active;
-  uint32_t type;
-  uint32_t snapshot_type;
-  uint64_t size;
-  uint64_t content_hash;
-  uint64_t generation;
-  uint64_t snapshot_size;
-  uint64_t snapshot_hash;
-  uint64_t snapshot_generation;
-  uint16_t block_count;
-  uint16_t snapshot_block_count;
-  uint16_t blocks[XBFS_V4_FILE_MAX_BLOCKS];
-  uint16_t snapshot_blocks[XBFS_V4_FILE_MAX_BLOCKS];
-  char path[XBFS_PATH_MAX];
-} xaios_xbfs_node_v4_t;
-
-/* What a v5 volume records. Identical to what the in-memory node used to be,
-   and kept because a v5 volume on a disk somewhere still has to be read: the
-   live node now records extents, so v5 is a legacy layout like v3 and v4
-   before it, converted on the way in and on the way out. */
-typedef struct xaios_xbfs_node_v5 {
-  uint32_t active;
-  uint32_t snapshot_active;
-  uint32_t type;
-  uint32_t snapshot_type;
-  uint64_t size;
-  uint64_t content_hash;
-  uint64_t generation;
-  uint64_t snapshot_size;
-  uint64_t snapshot_hash;
-  uint64_t snapshot_generation;
-  uint16_t block_count;
-  uint16_t snapshot_block_count;
-  uint16_t blocks[XBFS_V5_FILE_MAX_BLOCKS];
-  uint16_t snapshot_blocks[XBFS_V5_FILE_MAX_BLOCKS];
-  char path[XBFS_PATH_MAX];
-} xaios_xbfs_node_v5_t;
-
-/* What a node looks like on a v6 volume, and in memory for every version.
-   Identity and integrity are unchanged from v5 -- type, size, hash,
-   generation, and a snapshot copy of each. Only the record of where the bytes
-   live is different. */
-typedef struct xaios_xbfs_node {
-  uint32_t active;
-  uint32_t snapshot_active;
-  uint32_t type;
-  uint32_t snapshot_type;
-  uint64_t size;
-  uint64_t content_hash;
-  uint64_t generation;
-  uint64_t snapshot_size;
-  uint64_t snapshot_hash;
-  uint64_t snapshot_generation;
-  uint32_t extent_count;
-  uint32_t snapshot_extent_count;
-  xaios_xbfs_extent_t extents[XBFS_V6_MAX_EXTENTS];
-  xaios_xbfs_extent_t snapshot_extents[XBFS_V6_MAX_EXTENTS];
-  char path[XBFS_PATH_MAX];
-} xaios_xbfs_node_t;
 
 typedef struct xaios_xbfs_disk {
   char magic[XBFS_MAGIC_LEN];
@@ -698,8 +585,8 @@ static uint64_t extent_block_at(const xaios_xbfs_extent_t *extents,
    fragmented to describe in XBFS_V6_MAX_EXTENTS runs is refused rather than
    truncated -- losing the tail of a file quietly is worse than declining to
    open it. */
-static uint32_t extents_from_blocks(const uint16_t *blocks, uint32_t count,
-                                    xaios_xbfs_extent_t *extents) {
+uint32_t extents_from_blocks(const uint16_t *blocks, uint32_t count,
+                             xaios_xbfs_extent_t *extents) {
   uint32_t used = 0U;
   for (uint32_t index = 0U; index < count; ++index) {
     if (used != 0U &&
@@ -719,9 +606,9 @@ static uint32_t extents_from_blocks(const uint16_t *blocks, uint32_t count,
 /* And back again, for writing metadata to a volume that records blocks. A run
    that will not fit in the older format's array is refused here rather than
    written short. */
-static uint32_t extents_to_blocks(const xaios_xbfs_extent_t *extents,
-                                  uint32_t count, uint16_t *blocks,
-                                  uint32_t capacity) {
+uint32_t extents_to_blocks(const xaios_xbfs_extent_t *extents,
+                           uint32_t count, uint16_t *blocks,
+                           uint32_t capacity) {
   uint32_t written = 0U;
   for (uint32_t e = 0U; e < count && e < XBFS_V6_MAX_EXTENTS; ++e) {
     for (uint32_t offset = 0U; offset < extents[e].length; ++offset) {
@@ -753,157 +640,6 @@ static xaios_xbfs_node_t *find_free_node(void) {
     }
   }
   return 0;
-}
-
-static void import_legacy_node(xaios_xbfs_node_t *node,
-                               const xaios_xbfs_node_v3_t *legacy) {
-  xbfs_bytes_zero(node, sizeof(*node));
-  node->active = legacy->active;
-  node->snapshot_active = legacy->snapshot_active;
-  node->type = legacy->type;
-  node->snapshot_type = legacy->snapshot_type;
-  node->size = legacy->size;
-  node->content_hash = legacy->content_hash;
-  node->generation = legacy->generation;
-  node->snapshot_size = legacy->snapshot_size;
-  node->snapshot_hash = legacy->snapshot_hash;
-  node->snapshot_generation = legacy->snapshot_generation;
-  node->extent_count =
-      extents_from_blocks(legacy->blocks, legacy->block_count, node->extents);
-  node->snapshot_extent_count = extents_from_blocks(
-      legacy->snapshot_blocks, legacy->snapshot_block_count,
-      node->snapshot_extents);
-  for (uint32_t i = 0; i < XBFS_V3_PATH_MAX; ++i) {
-    node->path[i] = legacy->path[i];
-    if (legacy->path[i] == '\0') {
-      return;
-    }
-  }
-  node->path[XBFS_V3_PATH_MAX] = '\0';
-}
-
-static void import_v4_node(xaios_xbfs_node_t *node,
-                           const xaios_xbfs_node_v4_t *legacy) {
-  xbfs_bytes_zero(node, sizeof(*node));
-  node->active = legacy->active;
-  node->snapshot_active = legacy->snapshot_active;
-  node->type = legacy->type;
-  node->snapshot_type = legacy->snapshot_type;
-  node->size = legacy->size;
-  node->content_hash = legacy->content_hash;
-  node->generation = legacy->generation;
-  node->snapshot_size = legacy->snapshot_size;
-  node->snapshot_hash = legacy->snapshot_hash;
-  node->snapshot_generation = legacy->snapshot_generation;
-  node->extent_count =
-      extents_from_blocks(legacy->blocks, legacy->block_count, node->extents);
-  node->snapshot_extent_count = extents_from_blocks(
-      legacy->snapshot_blocks, legacy->snapshot_block_count,
-      node->snapshot_extents);
-  xbfs_bytes_copy(node->path, legacy->path, sizeof(legacy->path));
-}
-
-static void import_v5_node(xaios_xbfs_node_t *node,
-                           const xaios_xbfs_node_v5_t *legacy) {
-  xbfs_bytes_zero(node, sizeof(*node));
-  node->active = legacy->active;
-  node->snapshot_active = legacy->snapshot_active;
-  node->type = legacy->type;
-  node->snapshot_type = legacy->snapshot_type;
-  node->size = legacy->size;
-  node->content_hash = legacy->content_hash;
-  node->generation = legacy->generation;
-  node->snapshot_size = legacy->snapshot_size;
-  node->snapshot_hash = legacy->snapshot_hash;
-  node->snapshot_generation = legacy->snapshot_generation;
-  node->extent_count =
-      extents_from_blocks(legacy->blocks, legacy->block_count, node->extents);
-  node->snapshot_extent_count = extents_from_blocks(
-      legacy->snapshot_blocks, legacy->snapshot_block_count,
-      node->snapshot_extents);
-  xbfs_bytes_copy(node->path, legacy->path, sizeof(legacy->path));
-}
-
-static void export_v5_node(xaios_xbfs_node_v5_t *legacy,
-                           const xaios_xbfs_node_t *node) {
-  xbfs_bytes_zero(legacy, sizeof(*legacy));
-  legacy->active = node->active;
-  legacy->snapshot_active = node->snapshot_active;
-  legacy->type = node->type;
-  legacy->snapshot_type = node->snapshot_type;
-  legacy->size = node->size;
-  legacy->content_hash = node->content_hash;
-  legacy->generation = node->generation;
-  legacy->snapshot_size = node->snapshot_size;
-  legacy->snapshot_hash = node->snapshot_hash;
-  legacy->snapshot_generation = node->snapshot_generation;
-  uint32_t written = extents_to_blocks(node->extents, node->extent_count,
-                                       legacy->blocks,
-                                       XBFS_V5_FILE_MAX_BLOCKS);
-  legacy->block_count = written == UINT32_MAX ? 0U : (uint16_t)written;
-  written = extents_to_blocks(node->snapshot_extents,
-                              node->snapshot_extent_count,
-                              legacy->snapshot_blocks,
-                              XBFS_V5_FILE_MAX_BLOCKS);
-  legacy->snapshot_block_count = written == UINT32_MAX ? 0U : (uint16_t)written;
-  xbfs_bytes_copy(legacy->path, node->path, sizeof(legacy->path));
-}
-
-static void export_v4_node(xaios_xbfs_node_v4_t *legacy,
-                           const xaios_xbfs_node_t *node) {
-  xbfs_bytes_zero(legacy, sizeof(*legacy));
-  legacy->active = node->active;
-  legacy->snapshot_active = node->snapshot_active;
-  legacy->type = node->type;
-  legacy->snapshot_type = node->snapshot_type;
-  legacy->size = node->size;
-  legacy->content_hash = node->content_hash;
-  legacy->generation = node->generation;
-  legacy->snapshot_size = node->snapshot_size;
-  legacy->snapshot_hash = node->snapshot_hash;
-  legacy->snapshot_generation = node->snapshot_generation;
-  uint32_t written = extents_to_blocks(node->extents, node->extent_count,
-                                       legacy->blocks,
-                                       (uint32_t)(sizeof(legacy->blocks) /
-                                                  sizeof(legacy->blocks[0])));
-  legacy->block_count = written == UINT32_MAX ? 0U : (uint16_t)written;
-  written = extents_to_blocks(
-      node->snapshot_extents, node->snapshot_extent_count,
-      legacy->snapshot_blocks,
-      (uint32_t)(sizeof(legacy->snapshot_blocks) /
-                 sizeof(legacy->snapshot_blocks[0])));
-  legacy->snapshot_block_count = written == UINT32_MAX ? 0U : (uint16_t)written;
-  xbfs_bytes_copy(legacy->path, node->path, sizeof(legacy->path));
-}
-
-static void export_legacy_node(xaios_xbfs_node_v3_t *legacy,
-                               const xaios_xbfs_node_t *node) {
-  xbfs_bytes_zero(legacy, sizeof(*legacy));
-  legacy->active = node->active;
-  legacy->snapshot_active = node->snapshot_active;
-  legacy->type = node->type;
-  legacy->snapshot_type = node->snapshot_type;
-  legacy->size = node->size;
-  legacy->content_hash = node->content_hash;
-  legacy->generation = node->generation;
-  legacy->snapshot_size = node->snapshot_size;
-  legacy->snapshot_hash = node->snapshot_hash;
-  legacy->snapshot_generation = node->snapshot_generation;
-  uint32_t written = extents_to_blocks(node->extents, node->extent_count,
-                                       legacy->blocks,
-                                       (uint32_t)(sizeof(legacy->blocks) /
-                                                  sizeof(legacy->blocks[0])));
-  legacy->block_count = written == UINT32_MAX ? 0U : (uint16_t)written;
-  written = extents_to_blocks(
-      node->snapshot_extents, node->snapshot_extent_count,
-      legacy->snapshot_blocks,
-      (uint32_t)(sizeof(legacy->snapshot_blocks) /
-                 sizeof(legacy->snapshot_blocks[0])));
-  legacy->snapshot_block_count = written == UINT32_MAX ? 0U : (uint16_t)written;
-  for (uint32_t i = 0; i + 1U < XBFS_V3_PATH_MAX && node->path[i] != '\0';
-       ++i) {
-    legacy->path[i] = node->path[i];
-  }
 }
 
 static xaios_status_t read_metadata_slot(uint32_t slot) {

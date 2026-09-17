@@ -36,7 +36,7 @@ kernel/fs/initramfs.c 552
 kernel/fs/vfs.c 757
 kernel/fs/vfs_xaifs.c 1798
 kernel/fs/xai_fs_admin.c 676
-kernel/fs/xaiboot_fs.c 3698
+kernel/fs/xaiboot_fs.c 3434
 kernel/include/xaios/control_protocol.h 678
 kernel/mm/numa.c 990
 kernel/net/dhcpv6.c 609
