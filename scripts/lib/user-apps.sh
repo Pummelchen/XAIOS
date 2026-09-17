@@ -206,9 +206,23 @@ for app in $USER_APPS; do
       -I"$ROOT_DIR/third_party/bearssl/inc" \
       -c "$ROOT_DIR/userspace/apps/xapt_trust_anchors.c" \
       -o "$XAPT_TRUST_OBJ"
+
+    # xapt is split into translation units beside it for the file-size budget.
+    XAPT_INTERNAL_OBJS=""
+    for xapt_internal_src in xapt_catalog xapt_http; do
+      "$CLANG" --target="$TARGET_TRIPLE" $USER_ARCH_CFLAGS -std=c99 \
+        -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+        -Os -Wall -Wextra -Werror \
+        -isystem "$BUILD_DIR/libc/$TARGET_ARCH/sysroot/include" \
+        -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/apps" \
+        -I"$ROOT_DIR/third_party/bearssl/inc" \
+        -c "$ROOT_DIR/userspace/apps/$xapt_internal_src.c" \
+        -o "$INIT_BUILD_DIR/xapt-$xapt_internal_src.o"
+      XAPT_INTERNAL_OBJS="$XAPT_INTERNAL_OBJS $INIT_BUILD_DIR/xapt-$xapt_internal_src.o"
+    done
     "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" \
-      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" "$USER_CONTROL_PARSE_FLAGS_OBJ" "$USER_CONTROL_PARSE_VALIDATE_OBJ" "$USER_CONTROL_DISPATCH_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" \
+      "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" "$USER_CONTROL_PARSE_FLAGS_OBJ" "$USER_CONTROL_PARSE_VALIDATE_OBJ" "$USER_CONTROL_DISPATCH_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" $XAPT_INTERNAL_OBJS \
       "$XAPT_BEARSSL"
   elif [ "$app" = "xaios-setup" ]; then
     # Setup writes the credential records sshd reads, so it hashes them with

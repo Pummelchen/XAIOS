@@ -17,17 +17,12 @@
 #include "early_module.h"
 #include "early_serial.h"
 #include "early_exception.h"
+#include "early_contract.h"
 #include "early_fpu.h"
 #include "platform.h"
 
 #ifndef XAIOS_X86_COMMON_RUNTIME
 #define XAIOS_X86_COMMON_RUNTIME 0
-#endif
-
-#if XAIOS_X86_COMMON_RUNTIME
-#define X86_BRINGUP_ONLY __attribute__((unused))
-#else
-#define X86_BRINGUP_ONLY
 #endif
 
 /* The COM1 UART, the port-I/O primitives beneath it and the panic halt now
@@ -62,6 +57,13 @@
  * this alias keeps the one call site in x86_64_kmain spelling it the way it
  * did. The entry itself keeps its name because entry.S calls it by that name. */
 #define validate_exception_round_trip xaios_x86_early_exception_round_trip
+
+/* The OS-contract and hardware-gate reports moved to early_contract.c; these
+ * aliases keep their two call sites at the end of x86_64_kmain spelling them
+ * the way they did. Their report state moved with them, and neither report
+ * starts an AP, sends an IPI or programs a timer. */
+#define validate_x86_os_contract xaios_x86_early_validate_os_contract
+#define validate_hardware_gate xaios_x86_early_validate_hardware_gate
 
 #define COM1_PORT UINT16_C(0x3f8)
 #define PAGE_SIZE UINT64_C(4096)
@@ -114,23 +116,8 @@ typedef struct x86_64_idt_entry {
  * and the interrupt dispatch in early_irq.c both name it, and its layout is
  * entry.S's. */
 
-typedef struct x86_64_contract_state {
-  uint32_t userspace_contract_ready;
-  uint32_t filesystem_contract_ready;
-  uint32_t networking_contract_ready;
-  uint32_t ai_cell_contract_ready;
-  uint32_t security_contract_ready;
-  uint32_t telemetry_contract_ready;
-  uint32_t full_os_contract_ready;
-} x86_64_contract_state_t;
-
-typedef struct x86_64_hardware_gate_state {
-  uint32_t qemu_correctness_ready;
-  uint32_t physical_hardware_required;
-  uint32_t tuned_linux_bsd_baseline_required;
-  uint32_t performance_claims_allowed;
-  uint32_t release_candidate_ready;
-} x86_64_hardware_gate_state_t;
+/* x86_64_contract_state_t and x86_64_hardware_gate_state_t moved to
+ * early_contract.c with the two report functions that were their only users. */
 
 extern void x86_64_isr_0(void);
 extern void x86_64_isr_1(void);
@@ -189,8 +176,8 @@ extern void (*const x86_64_device_irq_stubs[64])(void);
 /* g_gdt, g_tss and g_syscall_stack moved to early_gdt.c with the builder that
  * fills them; this file reaches the BSP's rsp0 through the scalar accessors
  * xaios_x86_gdt_bsp_rsp0/_set_bsp_rsp0. A CPU record's own TSS is still here. */
-static x86_64_contract_state_t g_contract;
-static x86_64_hardware_gate_state_t g_hardware_gate;
+/* g_contract and g_hardware_gate moved to early_contract.c with the two
+ * report functions that were their only readers and writers. */
 static uint32_t g_exception_vectors_installed;
 static uint16_t g_code_selector;
 static uint32_t g_lapic_ready;
@@ -852,64 +839,12 @@ static void start_application_processors(uint16_t serial_base,
 #endif
 }
 
-static void X86_BRINGUP_ONLY validate_x86_os_contract(uint16_t serial_base) {
-  uint32_t portable = xaios_common_runtime_probe();
-  uint32_t storage_ready =
-      (portable & (XAIOS_COMMON_RUNTIME_BLOCK | XAIOS_COMMON_RUNTIME_VFS)) ==
-      (XAIOS_COMMON_RUNTIME_BLOCK | XAIOS_COMMON_RUNTIME_VFS);
-  g_contract = (x86_64_contract_state_t){
-      .userspace_contract_ready = 0U,
-      .filesystem_contract_ready = storage_ready,
-      .networking_contract_ready = 0U,
-      .ai_cell_contract_ready = 0U,
-      .security_contract_ready = 0U,
-      .telemetry_contract_ready = 0U,
-      .full_os_contract_ready = 0U,
-  };
-
-  serial_puts(serial_base, "x86_64: common kernel/runtime linked=1 probe=");
-  serial_hex64(serial_base, portable);
-  serial_puts(serial_base, " expected=0x000000000000000f\n");
-  serial_puts(serial_base, "x86_64: OS contract userspace=");
-  serial_dec(serial_base, g_contract.userspace_contract_ready);
-  serial_puts(serial_base, " filesystem=");
-  serial_dec(serial_base, g_contract.filesystem_contract_ready);
-  serial_puts(serial_base, " networking=");
-  serial_dec(serial_base, g_contract.networking_contract_ready);
-  serial_puts(serial_base, " ai_cell=");
-  serial_dec(serial_base, g_contract.ai_cell_contract_ready);
-  serial_puts(serial_base, " security=");
-  serial_dec(serial_base, g_contract.security_contract_ready);
-  serial_puts(serial_base, " telemetry=");
-  serial_dec(serial_base, g_contract.telemetry_contract_ready);
-  serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: full OS contract parity marker ready=");
-  serial_dec(serial_base, g_contract.full_os_contract_ready);
-  serial_puts(serial_base, "\n");
-}
-
-static void X86_BRINGUP_ONLY validate_hardware_gate(uint16_t serial_base) {
-  g_hardware_gate = (x86_64_hardware_gate_state_t){
-      .qemu_correctness_ready = 1U,
-      .physical_hardware_required = 1U,
-      .tuned_linux_bsd_baseline_required = 1U,
-      .performance_claims_allowed = 0U,
-      .release_candidate_ready = 0U,
-  };
-
-  serial_puts(serial_base, "x86_64: hardware gate qemu_correctness=");
-  serial_dec(serial_base, g_hardware_gate.qemu_correctness_ready);
-  serial_puts(serial_base, " physical_required=");
-  serial_dec(serial_base, g_hardware_gate.physical_hardware_required);
-  serial_puts(serial_base, " baseline_required=");
-  serial_dec(serial_base, g_hardware_gate.tuned_linux_bsd_baseline_required);
-  serial_puts(serial_base, " performance_claims_allowed=");
-  serial_dec(serial_base, g_hardware_gate.performance_claims_allowed);
-  serial_puts(serial_base, " release_candidate_ready=");
-  serial_dec(serial_base, g_hardware_gate.release_candidate_ready);
-  serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: Intel Desktop hardware gate blocked platform-parity-and-physical-evidence-required\n");
-}
+/* validate_x86_os_contract and validate_hardware_gate moved to
+ * early_contract.c as xaios_x86_early_validate_os_contract and
+ * xaios_x86_early_validate_hardware_gate, together with the report structs and
+ * the g_contract/g_hardware_gate state they wrote. The aliases at the top of
+ * this file keep their two call sites at the end of x86_64_kmain spelling them
+ * as before, at the same point in the sequence. */
 
 void x86_64_kmain(const xaios_boot_info_t *boot) {
   uint16_t serial_base = COM1_PORT;

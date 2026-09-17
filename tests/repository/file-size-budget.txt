@@ -9,9 +9,8 @@ kernel/arch/riscv64/aia.c 833
 kernel/arch/riscv64/entry.S 610
 kernel/arch/riscv64/fdt.c 613
 kernel/arch/riscv64/iommu.c 819
-kernel/arch/riscv64/mmu.c 1018
 kernel/arch/riscv64/smp.c 661
-kernel/arch/x86_64/early.c 1010
+kernel/arch/x86_64/early.c 945
 kernel/arch/x86_64/mmu.c 732
 kernel/arch/x86_64/smp.c 568
 kernel/core/klog.c 635
@@ -25,12 +24,9 @@ kernel/fs/initramfs.c 552
 kernel/fs/vfs.c 757
 kernel/fs/xai_fs_admin.c 676
 kernel/include/xaios/control_protocol.h 678
-kernel/mm/numa.c 990
 kernel/net/dhcpv6.c 609
 kernel/net/ipv6.c 675
-kernel/net/ndp.c 966
 kernel/runtime/ai_cell.c 770
-kernel/runtime/app_store.c 932
 kernel/runtime/git_workspace.c 697
 kernel/runtime/operations.c 857
 kernel/runtime/security.c 753
@@ -71,13 +67,10 @@ tests/scripts/vmware-fusion-load-soak.py 613
 tests/security/test_wt_crypto.c 688
 tests/security/test_wt_quic_pkt.c 604
 tests/security/test_wt_tls.c 749
-tests/security/test_wt_tls_cert.c 979
 tests/xai_fs/test_xai_fs_reader.c 888
 tools/xaios_model_v2.py 640
 userspace/apps/xaios-setup.c 633
-userspace/apps/xapt.c 931
 userspace/include/xaios_control.h 835
 userspace/lib/xaios_screen.c 564
 userspace/lib/xaios_user.c 839
 userspace/sshd/sshd.c 1034
-userspace/wt/src/wt_tls_handshake.c 993

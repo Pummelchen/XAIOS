@@ -74,6 +74,7 @@ else
   $KERNEL_BUILD_DIR/early_platform.o
   $KERNEL_BUILD_DIR/early_timer_discover.o
   $KERNEL_BUILD_DIR/early_exception.o
+  $KERNEL_BUILD_DIR/early_contract.o
   $KERNEL_BUILD_DIR/engine_packed.o
   $KERNEL_BUILD_DIR/timer.o
   $KERNEL_BUILD_DIR/platform.o
@@ -200,6 +201,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/control_observability_ops.o
   $KERNEL_BUILD_DIR/control_storage_layout_ops.o
   $KERNEL_BUILD_DIR/app_store.o
+  $KERNEL_BUILD_DIR/app_store_codec.o
+  $KERNEL_BUILD_DIR/app_store_trust.o
   $KERNEL_BUILD_DIR/cpu_ai_runtime.o
   $KERNEL_BUILD_DIR/cpu_ai_manifest.o
   $KERNEL_BUILD_DIR/cpu_ai_fixture.o
@@ -263,6 +266,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/agent_protocol.o
   $KERNEL_BUILD_DIR/pmm.o
   $KERNEL_BUILD_DIR/numa.o
+  $KERNEL_BUILD_DIR/numa_topology.o
+  $KERNEL_BUILD_DIR/numa_selftest.o
   $KERNEL_BUILD_DIR/arena.o
   $KERNEL_BUILD_DIR/kheap.o
   $KERNEL_BUILD_DIR/device_window.o
@@ -278,6 +283,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/ipv6.o
   $KERNEL_BUILD_DIR/icmpv6.o
   $KERNEL_BUILD_DIR/ndp.o
+  $KERNEL_BUILD_DIR/ndp_cache.o
+  $KERNEL_BUILD_DIR/ndp_proto.o
   $KERNEL_BUILD_DIR/dhcpv6.o
   $KERNEL_BUILD_DIR/socket_buffer.o
   $KERNEL_BUILD_DIR/routing.o

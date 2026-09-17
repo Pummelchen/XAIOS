@@ -1,31 +1,22 @@
-/* Sv48 and Sv39 paging for RISC-V.
+/* Runtime RISC-V mappings: the walk's reader, the kernel mapping entry points,
+ * range and user-buffer validation, the structural probes the self-tests ask
+ * for, cache maintenance and the two architecture hooks the scheduler reads.
  *
- * Sv48 where the hart has it, Sv39 where it does not, chosen at run time and
- * not visible above this file.
- *
- * This used to be Sv48 only, and panicked on a hart that refused it. The
- * reason was `XAIOS_USER_BASE`: at 511 GiB it was not a representable Sv39
- * address, so falling back would have booted a kernel that failed later and
- * further away. Six of the thirteen CPU models QEMU implements offer Sv39 and
- * nothing more -- rva22s64 and rva23s64 among them, the profiles real silicon
- * is certified against -- so a constant was excluding most of the family.
- *
- * The window moved to 255 GiB, which both modes can address, and the two
- * modes then differ by exactly one level. `index_at` is the same arithmetic
- * either way, so Sv48's level-2 table under root slot 0 *is* Sv39's root
- * table: same entries, same meaning, same user slot 255. Selecting Sv39 is
- * therefore not a different set of tables but the same tables entered one
- * level down, which is why almost nothing below here is conditional.
- *
- * The bring-up used Sv39 with four gibibyte leaves, which was right for
- * proving translation could be turned on and wrong for everything after it.
- * That is not what this is.
+ * The tables themselves and the walk over them live in mmu_map.c, with
+ * vmm_init, which is the only writer of either root. Nothing here keeps a
+ * second copy of that state: the shared root is reached through
+ * riscv64_mmu_kernel_root_address() and the root the current hart runs on
+ * through riscv64_mmu_current_root_address(), both of which read
+ * mmu_map.c's own variables. That is deliberate -- the extraction this file
+ * is a redo of split the root across two translation units and left a walk
+ * starting from a null root -- so there is no setter and no shadow copy to
+ * get out of step. The per-process user address spaces are in mmu_user.c.
  *
  * Page table entry, low to high: V R W X U G A D, then the physical page
  * number from bit 10. An entry with none of R, W or X is a pointer to the
  * next level; an entry with any of them is a leaf. That single rule is what
  * makes large and gigantic pages fall out of the same walk rather than
- * needing a separate path.
+ * needing a separate path. The encoding itself is in mmu_map.h, one copy.
  */
 #include <xaios/boot_info.h>
 #include <xaios/elf_loader.h>
@@ -37,271 +28,33 @@
 #include <xaios/vmm.h>
 
 /* What this file used to declare for itself and now shares with the modules
-   beside it -- mmu_tlb.c, mmu_selftest.c and the remote-shootdown test in
-   mmu_shootdown.c. The page size, the hart ceiling, the firmware-hart and
-   page-fault-probe declarations, and the named entry points each side calls
-   are declared once, in mmu_shootdown.h and mmu_internal.h, and included from
-   every side so that nothing is defined twice. */
+   beside it -- mmu_map.c, mmu_user.c, mmu_tlb.c and mmu_selftest.c. The page
+   size, the hart ceiling, the firmware-hart and page-fault-probe declarations,
+   and the named entry points each side calls are declared once, in
+   mmu_shootdown.h and mmu_internal.h, and included from every side so that
+   nothing is defined twice. */
 #include "mmu_internal.h"
+#include "mmu_map.h"
 
-extern char __kernel_start[];
-extern char __kernel_end[];
-extern char __text_start[];
-extern char __text_end[];
-extern char __rodata_start[];
-extern char __rodata_end[];
-
-#define PTE_V (UINT64_C(1) << 0)
-#define PTE_R (UINT64_C(1) << 1)
-#define PTE_W (UINT64_C(1) << 2)
-#define PTE_X (UINT64_C(1) << 3)
-#define PTE_U (UINT64_C(1) << 4)
-#define PTE_G (UINT64_C(1) << 5)
-#define PTE_A (UINT64_C(1) << 6)
-#define PTE_D (UINT64_C(1) << 7)
-/* Bits 8 and 9 are reserved for software, which is what makes the device
-   attribute expressible after all. RISC-V has no hardware memory-type field
-   -- device versus normal follows the physical address -- so the earlier
-   version simply could not report XAIOS_VMM_DEVICE back, and the shared
-   vmm self-test is right to insist that a mapping made as device reads back
-   as device. Recording it in RSW keeps the kernel's own bookkeeping honest
-   without claiming the hardware enforces anything it does not. */
-#define PTE_RSW_DEVICE (UINT64_C(1) << 8)
-#define PTE_LEAF (PTE_R | PTE_W | PTE_X)
-#define PTE_PPN_SHIFT 10U
-
-#define SATP_MODE_SV48 (UINT64_C(9) << 60)
-#define SATP_MODE_SV39 (UINT64_C(8) << 60)
-#define ENTRIES 512U
-#define LEVELS 4U
-
-/* Enough early tables to identity-map the kernel image, the device window and
-   the memory the map describes, before the physical allocator can be asked
-   for more. Sized rather than grown: this runs before there is anything to
-   grow with. */
-/* Page-granular kernel sections need a table per 2 MiB of image, plus the
-   levels above them. Sized from a ten-megabyte kernel with room to grow. */
-/* Sized for the largest memory map this kernel is handed, not the smallest.
-   A UEFI boot arrives with about two dozen memory descriptors where an SBI
-   boot has two, and each one costs tables. Running out used to be silent --
-   the mapping simply did not happen and the fault appeared much later
-   somewhere else -- which is why the exhaustion check below is loud. */
-#define EARLY_TABLES 192U
-
-static uint64_t g_root[ENTRIES] __attribute__((aligned(4096)));
-static uint64_t g_early[EARLY_TABLES][ENTRIES] __attribute__((aligned(4096)));
-static uint32_t g_early_used;
-static uint64_t g_satp;
-/* Which mode this machine ended up in, and the two things that follow from
-   it: the level a walk starts at, and the table it starts from. Both are set
-   once, in vmm_init, and describe Sv48 until then -- which is what the tables
-   are built as, and what Sv39 then enters one level below. */
-static uint64_t g_satp_mode = SATP_MODE_SV48;
-static uint32_t g_root_level = LEVELS - 1U;
-static uint64_t *g_kernel_root;
+/* The shared kernel root, as the pointer the walk takes. It is a number in
+   mmu_map.c and a page-table pointer here; no state crosses. */
+static uint64_t *kernel_root(void) {
+  return (uint64_t *)(uintptr_t)riscv64_mmu_kernel_root_address();
+}
 
 /* The value a secondary hart writes into satp to join the kernel's address
-   space. Read before that hart has an address space, so it is handed over as
-   a number rather than reached through a pointer. */
-uint64_t riscv64_kernel_satp(void) { return g_satp; }
-static uint32_t g_initialized;
-
-static uint64_t *early_table(void) {
-  if (g_early_used >= EARLY_TABLES) {
-    /* Said out loud, because the alternative is a page that was asked for and
-       never mapped: every caller here returns void or ignores the status, so
-       exhaustion produced a fault at the unmapped address long afterwards
-       with nothing connecting the two. Under UEFI that was a store to the
-       interrupt controller, twenty log lines after the mapping that failed. */
-    klog("vmm: early page-table pool exhausted after %u tables; some of the "
-         "identity map was not created\n", g_early_used);
-    return 0;
-  }
-  uint64_t *table = g_early[g_early_used++];
-  for (uint32_t i = 0U; i < ENTRIES; ++i) table[i] = 0U;
-  return table;
-}
-
-/* A page for a table, from wherever pages come from at this moment.
- *
- * Before the physical allocator is running this has to come out of the static
- * pool; after it, from the allocator, because the static pool is sized for
- * the boot map and nothing more. Asking which is available rather than
- * assuming is what lets the same walk serve both. */
-static uint64_t *allocate_table(void) {
-  if (g_initialized != 0U) {
-    void *page = pmm_alloc_page();
-    if (page == 0) return 0;
-    uint64_t *table = (uint64_t *)page;
-    for (uint32_t i = 0U; i < ENTRIES; ++i) table[i] = 0U;
-    return table;
-  }
-  return early_table();
-}
-
-static uint64_t pte_for(uint64_t physical, uint64_t flags) {
-  return ((physical >> 12) << PTE_PPN_SHIFT) | flags | PTE_V;
-}
-
-static uint64_t pte_physical(uint64_t entry) {
-  return (entry >> PTE_PPN_SHIFT) << 12;
-}
-
-static uint32_t index_at(uint64_t virtual_address, uint32_t level) {
-  return (uint32_t)((virtual_address >> (12U + 9U * level)) & 0x1ffU);
-}
-
-/* Translate the shared flag vocabulary into this architecture's bits.
- *
- * Accessed and Dirty are set unconditionally. The specification permits an
- * implementation to fault when software leaves them clear rather than
- * updating them in hardware, and a kernel that relies on the friendlier
- * behaviour works until it meets a CPU that does not have it. Setting them up
- * front costs nothing and removes the question. */
-static uint64_t flags_to_pte(uint32_t flags) {
-  uint64_t bits = PTE_A | PTE_D;
-  if ((flags & XAIOS_VMM_WRITABLE) != 0U) bits |= PTE_R | PTE_W;
-  else bits |= PTE_R;
-  if ((flags & XAIOS_VMM_EXECUTABLE) != 0U) bits |= PTE_X;
-  if ((flags & XAIOS_VMM_USER) != 0U) bits |= PTE_U;
-  if ((flags & XAIOS_VMM_DEVICE) != 0U) bits |= PTE_RSW_DEVICE;
-  /* Global for kernel mappings only. A global entry survives an address-space
-     switch, which is what makes it wrong for a user page: the next process
-     would inherit it. */
-  if ((flags & (XAIOS_VMM_USER | XAIOS_VMM_NG)) == 0U) bits |= PTE_G;
-  return bits;
-}
-
-/* XAIOS_VMM_DEVICE has no representation here, and that is the architecture
-   rather than an omission.
-   AArch64 carries the memory type in the entry through MAIR, and x86-64 has
-   the cache-disable bits. RISC-V has neither: whether an access is device or
-   normal memory follows the physical address, decided by the platform's
-   memory map, not by the page table. So a mapping cannot report DEVICE back,
-   and a caller asking for it is asking for something the entry cannot say
-   either way -- which is why the already-satisfied check above compares
-   everything except that bit. */
-static uint32_t pte_to_flags(uint64_t entry) {
-  uint32_t flags = XAIOS_VMM_PRESENT;
-  if ((entry & PTE_W) != 0U) flags |= XAIOS_VMM_WRITABLE;
-  if ((entry & PTE_X) != 0U) flags |= XAIOS_VMM_EXECUTABLE;
-  if ((entry & PTE_U) != 0U) flags |= XAIOS_VMM_USER;
-  if ((entry & PTE_RSW_DEVICE) != 0U) flags |= XAIOS_VMM_DEVICE;
-  if ((entry & PTE_G) == 0U) flags |= XAIOS_VMM_NG;
-  return flags;
-}
-
-
-/* The paging mode this hart ended up in, named for the shootdown self-test
-   rather than handed out as a pointer. The fence and suppression entry points
-   that test also calls moved to mmu_tlb.c with the state they read. */
-uint32_t riscv64_mmu_root_level(void) { return g_root_level; }
-
-/* Walk to the entry that would describe `virtual_address` at `target_level`,
-   creating intermediate tables when asked. Level 0 is a 4 KiB page, 1 is
-   2 MiB, 2 is 1 GiB. */
-static uint64_t *walk(uint64_t *root, uint64_t virtual_address,
-                      uint32_t target_level, int create) {
-  uint64_t *table = root;
-  for (uint32_t level = g_root_level; level > target_level; --level) {
-    uint64_t *entry = &table[index_at(virtual_address, level)];
-    if ((*entry & PTE_V) == 0U) {
-      if (create == 0) return 0;
-      uint64_t *next = allocate_table();
-      if (next == 0) return 0;
-      *entry = pte_for((uint64_t)(uintptr_t)next, 0U);
-    } else if ((*entry & PTE_LEAF) != 0U) {
-      /* A larger page covers this address, and the caller wants a smaller
-         one inside it. Split rather than refuse.
-         Refusing was the first version, on the reasoning that an implicit
-         split changes a range somebody mapped deliberately. It does not: the
-         replacement describes exactly the same memory with exactly the same
-         permissions, just at a finer granularity, and every address that
-         resolved before resolves identically after. What refusing actually
-         produced was a kernel that could not unmap a device page it had
-         mapped, because vmm_init covers the device window with gigantic
-         leaves and the shared code then works in pages.
-         Splitting is only safe because it is total -- every entry of the new
-         table is filled from the leaf before the leaf is replaced, so no
-         address is briefly unmapped. */
-      if (create == 0) return 0;
-      uint64_t *split = allocate_table();
-      if (split == 0) return 0;
-      uint64_t covered = pte_physical(*entry);
-      uint64_t child_span = PAGE_SIZE << (9U * (level - 1U));
-      uint64_t leaf_bits =
-          *entry & (PTE_LEAF | PTE_U | PTE_G | PTE_A | PTE_D | PTE_RSW_DEVICE);
-      for (uint32_t i = 0U; i < ENTRIES; ++i) {
-        split[i] = pte_for(covered + (uint64_t)i * child_span, leaf_bits);
-      }
-      *entry = pte_for((uint64_t)(uintptr_t)split, 0U);
-      riscv64_mmu_flush_all();
-    }
-    table = (uint64_t *)(uintptr_t)pte_physical(*entry);
-  }
-  return &table[index_at(virtual_address, target_level)];
-}
-
-/* Per-process user address spaces, and the per-hart tables that carry them.
- *
- * There were none. Every user page went into the one shared root, the
- * per-process table list the shared interface hands around was allocated and
- * ignored, and switching address spaces was a TLB flush. Two processes are
- * linked at the same addresses -- every one of them is -- so loading a
- * second while a first was alive overwrote the first's mappings, and
- * reclaiming the second removed them. sshd ran an on-demand application at
- * the same address it lives at itself and faulted on the first byte it wrote
- * back to its own stack. The boot-test configuration never showed it: its
- * processes run one after another in one address space that is never torn
- * down between them.
- *
- * The shape is the one x86-64 uses, because the problem is the same one: the
- * kernel and userspace share the first top-level slot, so a hart cannot have
- * its own user mapping without its own copy of the tables above it. Each
- * hart gets a root of its own, a copy of the table under slot zero, and a
- * user directory -- the 2 MiB-granular table for the gibibyte userspace
- * lives in -- that switching points at a process's leaf tables. Kernel
- * mappings stay in the shared tables; a new entry at either of the two
- * copied levels is mirrored into every hart's copies, and everything below
- * those levels is reached through shared pointers and needs no mirroring.
- * Sv48 puts userspace, at 511 GiB, under slot zero alongside the kernel;
- * that is the same arithmetic x86-64 does with its PDPT. */
-#define USER_CODE_WINDOWS XAIOS_ELF_CODE_WINDOWS
-#define USER_ASPACE_L3_TABLES (USER_CODE_WINDOWS + 1U)
-/* Derived from the constants that define the layout, so the three cannot
-   disagree: the gibibyte slot userspace lives in, the first 2 MiB window of
-   code and data, and the 2 MiB window holding the stack. */
-#define USER_L1_INDEX index_at(XAIOS_USER_BASE, 2U)
-#define USER_CODE_L2_INDEX index_at(XAIOS_USER_BASE, 1U)
-#define USER_STACK_L2_INDEX index_at(XAIOS_USER_STACK_TOP - PAGE_SIZE, 1U)
-
-typedef struct hart_tables {
-  uint64_t *root;           /* this hart's copy of the top level */
-  uint64_t *low;            /* this hart's copy of the table under slot 0 */
-  uint64_t *user_directory; /* the 2 MiB-level table for userspace's GiB */
-  uint64_t satp;
-} hart_tables_t;
-
-static hart_tables_t g_hart_tables[VMM_MAX_HARTS];
-static uint32_t g_hart_table_count;
-
-/* The root translation currently walks from: this hart's own, once it has
-   one, and the shared root before that -- which is also what satp says, so
-   satp is what is read. Walking the shared root for a user address would
-   answer about tables no hart is using. */
-static uint64_t *current_root(void) {
-  uint64_t satp = 0U;
-  __asm__ volatile("csrr %0, satp" : "=r"(satp));
-  if ((satp >> 60) == 0U) return g_kernel_root;
-  return (uint64_t *)(uintptr_t)((satp & ((UINT64_C(1) << 44) - 1U)) << 12);
+   space. The per-hart tables are mmu_map.c's; this is the named entry point
+   smp.c calls, kept here with the rest of the runtime interface. */
+uint64_t riscv64_hart_satp(uint32_t cpu_id) {
+  return riscv64_mmu_hart_satp_value(cpu_id);
 }
 
 /* The structural questions the MMU self-test in mmu_selftest.c asks of the
    shared kernel root, answered into the caller's own locals. The test used to
    read these entries through `walk` itself; a named probe is what crosses now,
-   never a pointer into this file's state. */
+   never a pointer into mmu_map.c's state. */
 uint32_t riscv64_mmu_leaf_present(uint64_t virtual_address, uint32_t level) {
-  uint64_t *entry = walk(g_kernel_root, virtual_address, level, 0);
+  uint64_t *entry = riscv64_mmu_walk(kernel_root(), virtual_address, level, 0);
   return (entry != 0 && (*entry & PTE_V) != 0U && (*entry & PTE_LEAF) != 0U)
              ? 1U
              : 0U;
@@ -311,106 +64,20 @@ uint32_t riscv64_mmu_leaf_present(uint64_t virtual_address, uint32_t level) {
    table below it. Only Sv39 enters at the level a 1 GiB leaf lives on, so this
    is the one check that distinguishes the two paging modes structurally. */
 uint32_t riscv64_mmu_leaf_in_root(uint64_t virtual_address, uint32_t level) {
-  uint64_t *entry = walk(g_kernel_root, virtual_address, level, 0);
+  uint64_t *root = kernel_root();
+  uint64_t *entry = riscv64_mmu_walk(root, virtual_address, level, 0);
   if (entry == 0) return 0U;
-  return entry == &g_kernel_root[index_at(virtual_address, level)] ? 1U : 0U;
+  return entry == &root[index_at(virtual_address, level)] ? 1U : 0U;
 }
 
 /* Whether this hart translates through the shared kernel root rather than the
    per-hart copy build_per_hart_roots made. */
 uint32_t riscv64_mmu_on_shared_root(void) {
-  return current_root() == g_kernel_root ? 1U : 0U;
+  return riscv64_mmu_current_root_address() ==
+                 riscv64_mmu_kernel_root_address()
+             ? 1U
+             : 0U;
 }
-
-/* A kernel mapping that added or replaced an entry at one of the two copied
-   levels has to reach every hart's copies, or the hart that did the mapping
-   sees it and the others fault on it. Called after every change to the
-   shared root; for anything at a lower level it finds nothing to do, because
-   those tables are shared by pointer. */
-static void sync_kernel_hierarchy(uint64_t virtual_address) {
-  if (virtual_address >= XAIOS_USER_BASE && virtual_address < XAIOS_USER_LIMIT) {
-    return;
-  }
-  uint32_t l1 = index_at(virtual_address, 2U);
-  /* Sv39 has only the one copied level: its root is the table Sv48 reaches
-     through slot zero, so there is no level above the user slot to mirror
-     and `low` is the root itself. */
-  if (g_root_level == 2U) {
-    for (uint32_t cpu = 0U; cpu < g_hart_table_count; ++cpu) {
-      hart_tables_t *tables = &g_hart_tables[cpu];
-      if (tables->root == 0) continue;
-      if (l1 != USER_L1_INDEX) tables->root[l1] = g_kernel_root[l1];
-    }
-    return;
-  }
-  uint32_t l0 = index_at(virtual_address, 3U);
-  for (uint32_t cpu = 0U; cpu < g_hart_table_count; ++cpu) {
-    hart_tables_t *tables = &g_hart_tables[cpu];
-    if (tables->root == 0) continue;
-    if (l0 != 0U) {
-      tables->root[l0] = g_root[l0];
-      continue;
-    }
-    if (l1 != USER_L1_INDEX && (g_root[0] & PTE_V) != 0U) {
-      uint64_t *shared_low = (uint64_t *)(uintptr_t)pte_physical(g_root[0]);
-      tables->low[l1] = shared_low[l1];
-    }
-  }
-}
-
-static void build_per_hart_roots(void) {
-  uint32_t capacity = smp_capacity();
-  if (capacity > VMM_MAX_HARTS) capacity = VMM_MAX_HARTS;
-  uint64_t *shared_low = (g_root[0] & PTE_V) != 0U
-                             ? (uint64_t *)(uintptr_t)pte_physical(g_root[0])
-                             : 0;
-  for (uint32_t cpu = 0U; cpu < capacity; ++cpu) {
-    hart_tables_t *tables = &g_hart_tables[cpu];
-    tables->root = allocate_table();
-    tables->low = allocate_table();
-    tables->user_directory = allocate_table();
-    if (tables->root == 0 || tables->low == 0 || tables->user_directory == 0) {
-      vmm_panic("no memory for hart %u page tables", (uint64_t)cpu);
-    }
-    if (g_root_level == 2U) {
-      /* Sv39: the root is the level Sv48 calls `low`, so the hart needs one
-         copied table rather than two and the slot-zero indirection does not
-         exist. The table allocated for `low` above is left unused rather
-         than special-cased away -- one page per hart, against a boot path
-         that would otherwise need a second shape. */
-      for (uint32_t i = 0U; i < ENTRIES; ++i) {
-        tables->root[i] = g_kernel_root[i];
-      }
-      tables->low = tables->root;
-      tables->root[USER_L1_INDEX] =
-          pte_for((uint64_t)(uintptr_t)tables->user_directory, 0U);
-    } else {
-      for (uint32_t i = 0U; i < ENTRIES; ++i) {
-        tables->root[i] = g_root[i];
-        tables->low[i] = shared_low != 0 ? shared_low[i] : 0U;
-      }
-      tables->root[0] = pte_for((uint64_t)(uintptr_t)tables->low, 0U);
-      tables->low[USER_L1_INDEX] =
-          pte_for((uint64_t)(uintptr_t)tables->user_directory, 0U);
-    }
-    tables->satp =
-        g_satp_mode | ((uint64_t)(uintptr_t)tables->root >> 12);
-  }
-  g_hart_table_count = capacity;
-}
-
-/* What a hart writes into satp: its own root once the per-hart tables exist,
-   the shared one before. Secondaries start after vmm_init, so they always get
-   their own; the boot hart moves onto its own at the end of vmm_init. */
-uint64_t riscv64_hart_satp(uint32_t cpu_id) {
-  if (cpu_id < g_hart_table_count && g_hart_tables[cpu_id].root != 0) {
-    return g_hart_tables[cpu_id].satp;
-  }
-  return g_satp;
-}
-
-xaios_status_t vmm_translate(uint64_t virtual_address,
-                             uint64_t *physical_address, uint32_t *flags);
 
 static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
                                    uint64_t physical_address, uint32_t flags,
@@ -420,7 +87,7 @@ static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
       (physical_address & (span - 1U)) != 0U) {
     return XAIOS_ERR_INVALID;
   }
-  uint64_t *entry = walk(root, virtual_address, level, 1);
+  uint64_t *entry = riscv64_mmu_walk(root, virtual_address, level, 1);
   if (entry == 0) {
     /* The walk refuses to descend into a larger page, which is right --
        splitting one silently would change the memory type of a range
@@ -443,7 +110,9 @@ static xaios_status_t map_at_level(uint64_t *root, uint64_t virtual_address,
     return XAIOS_ERR_NO_MEMORY;
   }
   *entry = pte_for(physical_address, flags_to_pte(flags));
-  if (root == g_kernel_root) sync_kernel_hierarchy(virtual_address);
+  if (root == kernel_root()) {
+    riscv64_mmu_sync_kernel_hierarchy(virtual_address);
+  }
   riscv64_mmu_flush_leaf(virtual_address, level);
   return XAIOS_OK;
 }
@@ -455,12 +124,14 @@ static xaios_status_t unmap_at_level(uint64_t *root, uint64_t virtual_address,
      has to become a table first. Without it, unmapping a device page the
      boot map covered with a gigantic leaf reports not-found on a page that
      is very much mapped. */
-  uint64_t *entry = walk(root, virtual_address, level, 1);
+  uint64_t *entry = riscv64_mmu_walk(root, virtual_address, level, 1);
   if (entry == 0 || (*entry & PTE_V) == 0U) {
     /* Nothing to remove -- but the walk may have split a larger leaf on the
        way down, and that replaced an entry which may itself sit at a copied
        level, so the harts still have to be told. */
-    if (root == g_kernel_root) sync_kernel_hierarchy(virtual_address);
+    if (root == kernel_root()) {
+      riscv64_mmu_sync_kernel_hierarchy(virtual_address);
+    }
     return XAIOS_ERR_NOT_FOUND;
   }
   *entry = 0U;
@@ -480,21 +151,27 @@ static xaios_status_t unmap_at_level(uint64_t *root, uint64_t virtual_address,
    *
    * The split case still needs mirroring too, and the clear cannot be undone
    * by doing both, so this one call now covers both paths. */
-  if (root == g_kernel_root) sync_kernel_hierarchy(virtual_address);
+  if (root == kernel_root()) {
+    riscv64_mmu_sync_kernel_hierarchy(virtual_address);
+  }
   riscv64_mmu_flush_leaf(virtual_address, level);
   return XAIOS_OK;
 }
 
 /* Page-granular, for ranges whose permissions have to be exact. */
-static void identity_map_pages(uint64_t start, uint64_t end, uint32_t flags) {
+void riscv64_mmu_identity_map_pages(uint64_t start, uint64_t end,
+                                    uint32_t flags) {
   start &= ~(PAGE_SIZE - 1U);
   end = (end + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
   for (uint64_t address = start; address < end; address += PAGE_SIZE) {
-    if (map_at_level(g_kernel_root, address, address, flags, 0U) != XAIOS_OK) return;
+    if (map_at_level(kernel_root(), address, address, flags, 0U) != XAIOS_OK) {
+      return;
+    }
   }
 }
 
-static void identity_map_range(uint64_t start, uint64_t end, uint32_t flags) {
+void riscv64_mmu_identity_map_range(uint64_t start, uint64_t end,
+                                    uint32_t flags) {
   start &= ~(PAGE_SIZE - 1U);
   end = (end + PAGE_SIZE - 1U) & ~(PAGE_SIZE - 1U);
   /* Never into userspace, whatever the machine has. AArch64 caps its identity
@@ -512,195 +189,25 @@ static void identity_map_range(uint64_t start, uint64_t end, uint32_t flags) {
        more tables than a kernel has before it can allocate any. */
     uint64_t gigantic = XAIOS_VMM_GIGANTIC_PAGE_SIZE;
     if ((address & (gigantic - 1U)) == 0U && end - address >= gigantic) {
-      if (map_at_level(g_kernel_root, address, address, flags, 2U) != XAIOS_OK) return;
+      if (map_at_level(kernel_root(), address, address, flags, 2U) != XAIOS_OK) {
+        return;
+      }
       address += gigantic;
       continue;
     }
     uint64_t large = XAIOS_VMM_LARGE_PAGE_SIZE;
     if ((address & (large - 1U)) == 0U && end - address >= large) {
-      if (map_at_level(g_kernel_root, address, address, flags, 1U) != XAIOS_OK) return;
+      if (map_at_level(kernel_root(), address, address, flags, 1U) != XAIOS_OK) {
+        return;
+      }
       address += large;
       continue;
     }
-    if (map_at_level(g_kernel_root, address, address, flags, 0U) != XAIOS_OK) return;
+    if (map_at_level(kernel_root(), address, address, flags, 0U) != XAIOS_OK) {
+      return;
+    }
     address += PAGE_SIZE;
   }
-}
-
-void vmm_init(const xaios_boot_info_t *boot) {
-  for (uint32_t i = 0U; i < ENTRIES; ++i) g_root[i] = 0U;
-  g_early_used = 0U;
-  g_initialized = 0U;
-  /* Built as Sv48 whatever the hart turns out to support. The tables are the
-     same either way; only which of them the hardware is pointed at differs,
-     and that is decided below once there is something to point it at. */
-  g_kernel_root = g_root;
-  g_root_level = LEVELS - 1U;
-  g_satp_mode = SATP_MODE_SV48;
-
-  uint32_t kernel_flags =
-      XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE | XAIOS_VMM_EXECUTABLE;
-
-  /* The device window below RAM: the UART, the interrupt controller and the
-     virtio transports all live there, and a kernel that cannot reach them
-     after enabling translation has nothing to report the failure with. */
-  identity_map_range(0U, UINT64_C(0x80000000), kernel_flags | XAIOS_VMM_DEVICE);
-
-  /* The kernel image, one section at a time.
-   *
-   * Not one RWX range, which is what this did first and what the shared
-   * kernel refuses: it checks that .rodata comes back read-only and
-   * non-executable and that .text comes back executable, and a uniform
-   * mapping fails both. Those checks are right -- a kernel whose constants
-   * are writable and whose data is executable has given away most of what
-   * page permissions are for -- so the sections are mapped as what they are.
-   *
-   * In 4 KiB pages, deliberately, because a 2 MiB leaf spanning the boundary
-   * between .text and .rodata would have to be granted the union of their
-   * permissions and the finer mapping is the whole point here. */
-  identity_map_range(UINT64_C(0x80000000), (uint64_t)(uintptr_t)__text_start,
-                     kernel_flags);
-  identity_map_pages((uint64_t)(uintptr_t)__text_start,
-                     (uint64_t)(uintptr_t)__text_end,
-                     XAIOS_VMM_PRESENT | XAIOS_VMM_EXECUTABLE);
-  identity_map_pages((uint64_t)(uintptr_t)__rodata_start,
-                     (uint64_t)(uintptr_t)__rodata_end, XAIOS_VMM_PRESENT);
-  identity_map_pages((uint64_t)(uintptr_t)__rodata_end,
-                     (uint64_t)(uintptr_t)__kernel_end,
-                     XAIOS_VMM_PRESENT | XAIOS_VMM_WRITABLE);
-
-  const uint64_t kernel_image_start = (uint64_t)(uintptr_t)__text_start;
-  const uint64_t kernel_image_end = (uint64_t)(uintptr_t)__kernel_end;
-  if (boot != 0 && boot->memory_map != 0U && boot->memory_descriptor_size != 0U) {
-    const uint8_t *entries = (const uint8_t *)(uintptr_t)boot->memory_map;
-    uint64_t count = boot->memory_map_size / boot->memory_descriptor_size;
-    for (uint64_t i = 0U; i < count; ++i) {
-      const xaios_memory_descriptor_t *descriptor =
-          (const xaios_memory_descriptor_t *)(const void *)
-              (entries + i * boot->memory_descriptor_size);
-      /* Every descriptor, not only conventional memory, which is the
-         opposite of what AArch64 does and is deliberate here. A UEFI boot
-         hands the kernel its boot_info, its memory map, its device tree and
-         the initial filesystem image, and all four sit in loader and boot-
-         services memory rather than in conventional RAM. Filtering to
-         conventional alone unmaps them and the boot stops earlier, at 35%,
-         with the kernel unable to read what it was given. The allocator is
-         where conventional-only matters, and the shared NUMA code already
-         enforces it there. */
-      uint64_t region_start = descriptor->physical_start;
-      uint64_t region_end =
-          region_start + descriptor->number_of_pages * PAGE_SIZE;
-      /* Around the kernel image, not over it.
-       *
-       * The sections above were mapped with the permissions they are
-       * supposed to have -- .rodata read-only, .text non-writable -- and a
-       * UEFI memory map describes the kernel's own pages as loader memory
-       * like any other, so mapping every descriptor read-write-execute put
-       * the blanket mapping back on top and made .rodata writable again. The
-       * shared kernel checks for exactly that and refuses. An SBI boot never
-       * showed it because the map it builds excludes the kernel to begin
-       * with. */
-      if (region_start < kernel_image_end && region_end > kernel_image_start) {
-        if (region_start < kernel_image_start) {
-          identity_map_range(region_start, kernel_image_start, kernel_flags);
-        }
-        if (region_end > kernel_image_end) {
-          identity_map_range(kernel_image_end, region_end, kernel_flags);
-        }
-        continue;
-      }
-      identity_map_range(region_start, region_end, kernel_flags);
-    }
-    /* The device tree itself, which sits between those regions and is read
-       after translation is on. */
-    if (boot->device_tree != 0U) {
-      identity_map_range(boot->device_tree, boot->device_tree + 0x100000U,
-                         kernel_flags);
-    }
-  }
-
-  /* The page below the kernel stack goes away, so an overflow faults instead
-     of writing over whatever the linker put last in .bss. See linker.ld. */
-  {
-    extern uint8_t __stack_guard[];
-    uint64_t guard = (uint64_t)(uintptr_t)__stack_guard;
-    if (walk(g_kernel_root, guard, 0U, 1) != 0) {
-      uint64_t *entry = walk(g_kernel_root, guard, 0U, 1);
-      *entry = 0U;
-      klog("vmm: stack guard page at 0x%lx left unmapped\n", guard);
-    }
-  }
-
-  /* And the same page under every secondary hart's stack.
-   *
-   * Those stacks had no guard at all, and were a quarter of the size this
-   * kernel had already found too small for its deepest chain (see the note in
-   * kernel/arch/riscv64/smp.c). A hart that is not the boot hart takes its
-   * whole syscall chain on its own stack, so an overflow there did not fault
-   * either -- it wrote into whatever the linker had placed next, which is how
-   * this kernel has lost a per-CPU table before. Unmapping these makes that a
-   * page fault at an address that names itself. */
-  {
-    extern uint8_t *riscv64_secondary_stack_guard(uint32_t cpu);
-    extern uint32_t riscv64_secondary_stack_count(void);
-    uint32_t unmapped = 0U;
-    for (uint32_t cpu = 0U; cpu < riscv64_secondary_stack_count(); ++cpu) {
-      uint64_t guard = (uint64_t)(uintptr_t)riscv64_secondary_stack_guard(cpu);
-      if (guard == 0U) continue;
-      uint64_t *entry = walk(g_kernel_root, guard, 0U, 1);
-      if (entry != 0) {
-        *entry = 0U;
-        ++unmapped;
-      }
-    }
-    klog("vmm: %u secondary stack guard pages left unmapped\n", unmapped);
-  }
-
-  /* Ask for Sv48, take Sv39 if that is what the hart has.
-   *
-   * satp is WARL: a write naming a mode the implementation does not have is
-   * ignored entirely, so the write either turns translation on or does
-   * nothing, and reading satp back is what says which happened. Everything
-   * executing here is identity-mapped, so both outcomes leave this code
-   * running at the same address and the second attempt is safe to make.
-   *
-   * The Sv39 root is not a second set of tables. It is the level-2 table
-   * Sv48 reaches through slot zero, entered directly -- the same entries
-   * describing the same memory, one level down. */
-  g_satp = SATP_MODE_SV48 | ((uint64_t)(uintptr_t)g_root >> 12);
-  vmm_activate_kernel();
-
-  uint64_t observed = 0U;
-  __asm__ volatile("csrr %0, satp" : "=r"(observed));
-  if (observed != g_satp) {
-    if ((g_root[0] & PTE_V) == 0U) {
-      vmm_panic("Sv48 refused and no level-2 table to fall back to: satp "
-                "reads %lx, wanted %lx", observed, g_satp);
-    }
-    /* Translation is still off -- the write was ignored -- but say so
-       explicitly rather than relying on it, then point the hardware one
-       level down. */
-    __asm__ volatile("csrw satp, zero" : : : "memory");
-    riscv64_mmu_flush_all();
-    g_kernel_root = (uint64_t *)(uintptr_t)pte_physical(g_root[0]);
-    g_root_level = 2U;
-    g_satp_mode = SATP_MODE_SV39;
-    g_satp = SATP_MODE_SV39 | ((uint64_t)(uintptr_t)g_kernel_root >> 12);
-    vmm_activate_kernel();
-    __asm__ volatile("csrr %0, satp" : "=r"(observed));
-    if (observed != g_satp) {
-      vmm_panic("this hart offers neither Sv48 nor Sv39: satp reads %lx, "
-                "wanted %lx", observed, g_satp);
-    }
-  }
-  g_initialized = 1U;
-  build_per_hart_roots();
-  vmm_activate_kernel();
-  klog("vmm: %s enabled root=%lx early_tables=%u/%u harts=%u "
-       "mode=per-hart-user-aspace\n",
-       g_root_level == 2U ? "sv39" : "sv48",
-       (uint64_t)(uintptr_t)g_kernel_root, g_early_used, EARLY_TABLES,
-       g_hart_table_count);
 }
 
 void vmm_activate_kernel(void) {
@@ -741,9 +248,9 @@ void vmm_invalidate_from_memory(const void *buffer, uint64_t bytes) {
 
 xaios_status_t vmm_translate(uint64_t virtual_address,
                              uint64_t *physical_address, uint32_t *flags) {
-  uint64_t *root = current_root();
+  uint64_t *root = (uint64_t *)(uintptr_t)riscv64_mmu_current_root_address();
   for (uint32_t level = 0U; level < 3U; ++level) {
-    uint64_t *entry = walk(root, virtual_address, level, 0);
+    uint64_t *entry = riscv64_mmu_walk(root, virtual_address, level, 0);
     if (entry == 0) continue;
     if ((*entry & PTE_V) == 0U) continue;
     if ((*entry & PTE_LEAF) == 0U) continue;
@@ -775,7 +282,8 @@ xaios_status_t vmm_validate_range_flags(uint64_t virtual_address, uint64_t size,
 
 xaios_status_t vmm_map_page(uint64_t virtual_address, uint64_t physical_address,
                             uint32_t flags) {
-  return map_at_level(g_kernel_root, virtual_address, physical_address, flags, 0U);
+  return map_at_level(kernel_root(), virtual_address, physical_address, flags,
+                      0U);
 }
 
 xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
@@ -788,7 +296,7 @@ xaios_status_t vmm_unmap_page(uint64_t virtual_address) {
      asserted. Reporting not-found for a page that is absent describes the
      state accurately and answers a question nobody asked -- the caller wants
      the address to be unmapped afterwards, and it is. */
-  xaios_status_t status = unmap_at_level(g_kernel_root, virtual_address, 0U);
+  xaios_status_t status = unmap_at_level(kernel_root(), virtual_address, 0U);
   return status == XAIOS_ERR_NOT_FOUND ? XAIOS_OK : status;
 }
 
@@ -841,9 +349,9 @@ static xaios_status_t map_leaf_checked(uint64_t virtual_address,
      and translate is the only thing here that sees all three shapes a
      collision can take. */
   if (vmm_translate(virtual_address, 0, 0) == XAIOS_OK) return XAIOS_ERR_BUSY;
-  uint64_t *entry = walk(g_kernel_root, virtual_address, level, 0);
+  uint64_t *entry = riscv64_mmu_walk(kernel_root(), virtual_address, level, 0);
   if (entry != 0 && (*entry & PTE_V) != 0U) return XAIOS_ERR_BUSY;
-  return map_at_level(g_kernel_root, virtual_address, physical_address, flags,
+  return map_at_level(kernel_root(), virtual_address, physical_address, flags,
                       level);
 }
 
@@ -853,7 +361,7 @@ xaios_status_t vmm_map_large_page(uint64_t virtual_address,
 }
 
 xaios_status_t vmm_unmap_large_page(uint64_t virtual_address) {
-  return unmap_at_level(g_kernel_root, virtual_address, 1U);
+  return unmap_at_level(kernel_root(), virtual_address, 1U);
 }
 
 xaios_status_t vmm_map_gigantic_page(uint64_t virtual_address,
@@ -863,7 +371,7 @@ xaios_status_t vmm_map_gigantic_page(uint64_t virtual_address,
 }
 
 xaios_status_t vmm_unmap_gigantic_page(uint64_t virtual_address) {
-  return unmap_at_level(g_kernel_root, virtual_address, 2U);
+  return unmap_at_level(kernel_root(), virtual_address, 2U);
 }
 
 xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
@@ -875,133 +383,6 @@ xaios_status_t vmm_validate_user_buffer(uint64_t virtual_address, uint64_t size,
   }
   return vmm_validate_range_flags(virtual_address, size,
                                   required_flags | XAIOS_VMM_USER, 0U);
-}
-
-static xaios_status_t user_l3_slot(uint64_t virtual_address,
-                                   uint32_t *out_slot) {
-  uint32_t l2_index = index_at(virtual_address, 1U);
-  if (l2_index >= USER_CODE_L2_INDEX &&
-      l2_index < USER_CODE_L2_INDEX + USER_CODE_WINDOWS) {
-    *out_slot = l2_index - USER_CODE_L2_INDEX;
-    return XAIOS_OK;
-  }
-  if (l2_index == USER_STACK_L2_INDEX) {
-    *out_slot = USER_CODE_WINDOWS;
-    return XAIOS_OK;
-  }
-  return XAIOS_ERR_INVALID;
-}
-
-/* One leaf table per 2 MiB window a process may use: the code and data
-   windows from XAIOS_USER_BASE, and the one holding the stack. */
-void vmm_create_user_aspace(uint64_t l3_tables[], uint32_t max_tables,
-                            uint32_t *out_count) {
-  uint32_t count = 0U;
-  if (l3_tables == 0 || out_count == 0) return;
-  for (uint32_t i = 0U; i < max_tables; ++i) l3_tables[i] = 0U;
-  if (max_tables >= USER_ASPACE_L3_TABLES) {
-    for (uint32_t i = 0U; i < USER_ASPACE_L3_TABLES; ++i) {
-      uint64_t *table = allocate_table();
-      if (table == 0) {
-        vmm_destroy_user_aspace(l3_tables, i);
-        for (uint32_t j = 0U; j < i; ++j) l3_tables[j] = 0U;
-        *out_count = 0U;
-        return;
-      }
-      l3_tables[i] = (uint64_t)(uintptr_t)table;
-    }
-    count = USER_ASPACE_L3_TABLES;
-  }
-  *out_count = count;
-}
-
-xaios_status_t vmm_map_user_page(uint64_t virtual_address,
-                                 uint64_t physical_address, uint32_t flags,
-                                 uint64_t l3_tables[], uint32_t l3_count) {
-  uint32_t slot = 0U;
-  if ((virtual_address & (PAGE_SIZE - 1U)) != 0U ||
-      (physical_address & (PAGE_SIZE - 1U)) != 0U ||
-      (flags & XAIOS_VMM_PRESENT) == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (virtual_address < XAIOS_USER_BASE || virtual_address >= XAIOS_USER_LIMIT) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (l3_tables == 0 || user_l3_slot(virtual_address, &slot) != XAIOS_OK ||
-      slot >= l3_count || l3_tables[slot] == 0U) {
-    return XAIOS_ERR_INVALID;
-  }
-  uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[slot];
-  l3[index_at(virtual_address, 0U)] =
-      pte_for(physical_address, flags_to_pte(flags | XAIOS_VMM_USER));
-  riscv64_mmu_flush_one(virtual_address);
-  return XAIOS_OK;
-}
-
-xaios_status_t vmm_unmap_user_page(uint64_t virtual_address,
-                                   uint64_t l3_tables[], uint32_t l3_count) {
-  uint32_t slot = 0U;
-  if ((virtual_address & (PAGE_SIZE - 1U)) != 0U) return XAIOS_ERR_INVALID;
-  if (user_l3_slot(virtual_address, &slot) != XAIOS_OK) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (l3_tables != 0 && slot < l3_count && l3_tables[slot] != 0U) {
-    uint64_t *l3 = (uint64_t *)(uintptr_t)l3_tables[slot];
-    l3[index_at(virtual_address, 0U)] = 0U;
-  }
-  riscv64_mmu_flush_one(virtual_address);
-  return XAIOS_OK;
-}
-
-/* Point this hart's user directory at a process's leaf tables, or at nothing.
-   Pointer entries carry no permission bits: on RISC-V a non-leaf entry with U
-   set is reserved, which is the one place this differs from x86-64. */
-/* Local, and deliberately so -- this is the one fence in the file that is not
-   made global. The directory being rewritten is this hart's own: every hart
-   has its own copy, reached through its own root, and pointing this one at a
-   different process changes nothing another hart can translate. Broadcasting
-   it would cost an ecall on every context switch to fence harts whose tables
-   were not touched. The leaf tables underneath *are* shared, which is why
-   vmm_map_user_page and vmm_unmap_user_page do fence globally. */
-void vmm_switch_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
-  uint32_t cpu = smp_cpu_id();
-  if (cpu >= g_hart_table_count || g_hart_tables[cpu].user_directory == 0) {
-    riscv64_mmu_flush_all();
-    return;
-  }
-  uint64_t *directory = g_hart_tables[cpu].user_directory;
-  for (uint32_t index = 0U; index < USER_CODE_WINDOWS; ++index) {
-    directory[USER_CODE_L2_INDEX + index] = 0U;
-  }
-  directory[USER_STACK_L2_INDEX] = 0U;
-  if (l3_tables != 0 && l3_count >= USER_ASPACE_L3_TABLES) {
-    for (uint32_t index = 0U; index < USER_CODE_WINDOWS; ++index) {
-      if (l3_tables[index] != 0U) {
-        directory[USER_CODE_L2_INDEX + index] = pte_for(l3_tables[index], 0U);
-      }
-    }
-    if (l3_tables[USER_CODE_WINDOWS] != 0U) {
-      directory[USER_STACK_L2_INDEX] =
-          pte_for(l3_tables[USER_CODE_WINDOWS], 0U);
-    }
-  }
-  riscv64_mmu_flush_all();
-}
-
-void vmm_destroy_user_aspace(uint64_t l3_tables[], uint32_t l3_count) {
-  /* Flushed before the pages go back, so no stale translation can point at
-     memory the allocator has handed to someone else -- and on every hart,
-     not just this one. These pages held a process's leaf tables, and any hart
-     that ran that process reached them through its own directory; a fence of
-     one TLB here leaves the others translating into freed memory, which is
-     precisely the corruption this whole mechanism exists to stop. */
-  riscv64_mmu_flush_all_everywhere();
-  for (uint32_t i = 0U; i < l3_count; ++i) {
-    if (l3_tables[i] != 0U) {
-      pmm_free_page((void *)(uintptr_t)l3_tables[i]);
-      l3_tables[i] = 0U;
-    }
-  }
 }
 
 /* Whether translation is on, which the spinlock implementation asks before

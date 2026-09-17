@@ -183,6 +183,8 @@ for source in userspace/wt/src/wt_crypto_bearssl.c userspace/wt/src/wt_x25519.c 
               userspace/wt/src/wt_aes128.c \
               userspace/wt/src/wt_tls.c \
               userspace/wt/src/wt_quic_pkt.c \
+              userspace/wt/src/wt_tls_handshake_ee.c \
+              userspace/wt/src/wt_tls_handshake_clienthello.c \
               userspace/wt/src/wt_tls_handshake.c \
               userspace/wt/src/wt_tls_cert.c \
               userspace/wt/src/wt_tls_pin.c \
@@ -210,10 +212,25 @@ for name in "$@"; do
      [ "$HEADER_STAMP" -nt "$binary" ]; then
     rm -f "$binary"
   fi
+  # Three suites are split across translation units for the file-size budget,
+  # so whichever one is being built gets its own extra sources.
+  extra_sources=""
+  case "$name" in
+    tls_handshake)
+      extra_sources="$ROOT/tests/security/test_wt_tls_handshake_clienthello.c $ROOT/tests/security/test_wt_tls_handshake_servermsgs.c"
+      ;;
+    tls_client)
+      extra_sources="$ROOT/tests/security/test_wt_tls_client_support.c $ROOT/tests/security/test_wt_tls_client_flight.c"
+      ;;
+    tls_cert)
+      extra_sources="$ROOT/tests/security/test_wt_tls_cert_parse.c $ROOT/tests/security/test_wt_tls_cert_signature.c"
+      ;;
+  esac
+  # shellcheck disable=SC2086 -- extra_sources is a list of paths or empty.
   "$CC" -std=c99 -O1 -g -Wall -Wextra -Werror $SAN_FLAGS \
     -I"$BEARSSL/inc" -I"$BEARSSL/src" \
     -I"$ROOT/userspace/wt/include" \
-    "$ROOT/$test_source" $MODULE_OBJECTS "$BUILD"/bearssl/*.o \
+    "$ROOT/$test_source" $extra_sources $MODULE_OBJECTS "$BUILD"/bearssl/*.o \
     -o "$binary"
   if ! "$binary"; then
     failed=$((failed + 1))

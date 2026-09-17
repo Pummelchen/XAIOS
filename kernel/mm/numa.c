@@ -3,38 +3,28 @@
 #include <xaios/numa.h>
 #include <xaios/smp.h>
 
-#ifdef XAIOS_X86_COMMON_RUNTIME
-#include "../arch/x86_64/acpi.h"
-#endif
+#include "numa_internal.h"
 
-#define PAGE_SIZE UINT64_C(4096)
-#define EARLY_IDENTITY_LIMIT UINT64_C(0x100000000)
-
-static xaios_numa_node_t *g_numa_nodes;
-static uint32_t g_numa_node_count;
-static uint64_t g_metadata_start;
-static uint64_t g_metadata_end;
+xaios_numa_node_t *g_numa_nodes;
+uint32_t g_numa_node_count;
+uint64_t g_metadata_start;
+uint64_t g_metadata_end;
 static volatile uint64_t g_local_bytes;
 static volatile uint64_t g_remote_bytes;
 static volatile uint64_t g_local_placement_bytes;
 static volatile uint64_t g_remote_placement_bytes;
 
-static int page_is_reserved(const xaios_boot_info_t *boot, uint64_t page);
-static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
-                                    uint64_t required_bytes);
-static void bitmap_set(uint64_t *bitmap, uint64_t page_index);
-
-static uint64_t align_up(uint64_t value, uint64_t align) {
+uint64_t numa_align_up(uint64_t value, uint64_t align) {
   if (value > UINT64_MAX - (align - 1U)) return UINT64_MAX;
   return (value + align - 1U) & ~(align - 1U);
 }
 
-static uint64_t align_down(uint64_t value, uint64_t align) {
+uint64_t numa_align_down(uint64_t value, uint64_t align) {
   return value & ~(align - 1U);
 }
 
-static int overlaps(uint64_t start, uint64_t end, uint64_t used_start,
-                    uint64_t used_end) {
+int numa_overlaps(uint64_t start, uint64_t end, uint64_t used_start,
+                  uint64_t used_end) {
   return start < used_end && used_start < end;
 }
 
@@ -46,26 +36,27 @@ static void boot_image_range(const xaios_boot_info_t *boot, uint64_t *start,
       boot->boot_image_base > UINT64_MAX - boot->boot_image_size) {
     return;
   }
-  *start = align_down(boot->boot_image_base, PAGE_SIZE);
-  *end = align_up(boot->boot_image_base + boot->boot_image_size, PAGE_SIZE);
+  *start = numa_align_down(boot->boot_image_base, PAGE_SIZE);
+  *end = numa_align_up(boot->boot_image_base + boot->boot_image_size,
+                       PAGE_SIZE);
 }
 
-static void bytes_zero(void *buffer, uint64_t length) {
+void numa_bytes_zero(void *buffer, uint64_t length) {
   uint8_t *bytes = (uint8_t *)buffer;
   for (uint64_t index = 0U; index < length; ++index) bytes[index] = 0U;
 }
 
-static int descriptor_bounds(const xaios_memory_descriptor_t *descriptor,
-                             uint64_t *start, uint64_t *end) {
+int numa_descriptor_bounds(const xaios_memory_descriptor_t *descriptor,
+                           uint64_t *start, uint64_t *end) {
   if (descriptor->number_of_pages > UINT64_MAX / PAGE_SIZE) return 0;
   uint64_t bytes = descriptor->number_of_pages * PAGE_SIZE;
   if (descriptor->physical_start > UINT64_MAX - bytes) return 0;
-  *start = align_up(descriptor->physical_start, PAGE_SIZE);
-  *end = align_down(descriptor->physical_start + bytes, PAGE_SIZE);
+  *start = numa_align_up(descriptor->physical_start, PAGE_SIZE);
+  *end = numa_align_down(descriptor->physical_start + bytes, PAGE_SIZE);
   return *start < *end;
 }
 
-static uint32_t cpu_bitmap_words(void) {
+uint32_t numa_cpu_bitmap_words(void) {
   uint32_t maximum = 0U;
   for (uint32_t ordinal = 0U; ordinal < smp_online_count(); ++ordinal) {
     uint32_t cpu_id = 0U;
@@ -76,326 +67,7 @@ static uint32_t cpu_bitmap_words(void) {
   return (maximum / 64U) + 1U;
 }
 
-#ifdef XAIOS_X86_COMMON_RUNTIME
-static int domain_seen_before(const x86_64_acpi_info_t *info,
-                              uint32_t ordinal, uint32_t domain) {
-  for (uint32_t i = 0U; i < ordinal; ++i) {
-    x86_64_acpi_memory_affinity_t affinity;
-    if (x86_64_acpi_memory_affinity_at(info, i, &affinity) &&
-        affinity.proximity_domain == domain) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static uint32_t domain_count(const x86_64_acpi_info_t *info) {
-  uint32_t count = 0U;
-  for (uint32_t i = 0U; i < info->memory_affinities; ++i) {
-    x86_64_acpi_memory_affinity_t affinity;
-    if (!x86_64_acpi_memory_affinity_at(info, i, &affinity)) return 0U;
-    if (!domain_seen_before(info, i, affinity.proximity_domain)) ++count;
-  }
-  return count;
-}
-
-static int domain_at(const x86_64_acpi_info_t *info, uint32_t node_index,
-                     uint32_t *domain) {
-  uint32_t current = 0U;
-  for (uint32_t i = 0U; i < info->memory_affinities; ++i) {
-    x86_64_acpi_memory_affinity_t affinity;
-    if (!x86_64_acpi_memory_affinity_at(info, i, &affinity)) return 0;
-    if (domain_seen_before(info, i, affinity.proximity_domain)) continue;
-    if (current++ == node_index) {
-      *domain = affinity.proximity_domain;
-      return 1;
-    }
-  }
-  return 0;
-}
-
-static uint32_t node_for_domain(const x86_64_acpi_info_t *info,
-                                uint32_t domain) {
-  uint32_t count = domain_count(info);
-  for (uint32_t node = 0U; node < count; ++node) {
-    uint32_t candidate = 0U;
-    if (domain_at(info, node, &candidate) && candidate == domain) return node;
-  }
-  return UINT32_MAX;
-}
-
-static int affinity_ranges_valid(const x86_64_acpi_info_t *info) {
-  for (uint32_t i = 0U; i < info->memory_affinities; ++i) {
-    x86_64_acpi_memory_affinity_t left;
-    if (!x86_64_acpi_memory_affinity_at(info, i, &left)) return 0;
-    uint64_t left_end = left.base + left.length;
-    for (uint32_t j = 0U; j < i; ++j) {
-      x86_64_acpi_memory_affinity_t right;
-      if (!x86_64_acpi_memory_affinity_at(info, j, &right)) return 0;
-      if (overlaps(left.base, left_end, right.base,
-                   right.base + right.length)) {
-        return 0;
-      }
-    }
-  }
-  return 1;
-}
-
-static int affinity_intersection(
-    const xaios_memory_descriptor_t *descriptor,
-    const x86_64_acpi_memory_affinity_t *affinity, uint64_t *start,
-    uint64_t *end) {
-  uint64_t descriptor_start = 0U;
-  uint64_t descriptor_end = 0U;
-  if (!descriptor_bounds(descriptor, &descriptor_start, &descriptor_end)) {
-    return 0;
-  }
-  uint64_t affinity_end = affinity->base + affinity->length;
-  uint64_t intersection_start = descriptor_start > affinity->base
-                                    ? descriptor_start
-                                    : affinity->base;
-  uint64_t intersection_end = descriptor_end < affinity_end
-                                  ? descriptor_end
-                                  : affinity_end;
-  *start = align_up(intersection_start, PAGE_SIZE);
-  *end = align_down(intersection_end, PAGE_SIZE);
-  return *start < *end;
-}
-
-static int numa_init_from_acpi(const xaios_boot_info_t *boot) {
-  x86_64_acpi_info_t info;
-  if (boot->acpi_rsdp == 0U ||
-      !x86_64_acpi_parse(boot->acpi_rsdp, &info)) {
-    klog("NUMA: ACPI topology unavailable; using firmware-map fallback\n");
-    return 0;
-  }
-  if (info.memory_affinities == 0U || !affinity_ranges_valid(&info)) {
-    klog("NUMA: ACPI memory affinities invalid count=%u; using firmware-map fallback\n",
-         info.memory_affinities);
-    return 0;
-  }
-  uint32_t node_count = domain_count(&info);
-  if (node_count == 0U) {
-    klog("NUMA: ACPI proximity domains unavailable; using firmware-map fallback\n");
-    return 0;
-  }
-  uint64_t total_pages = 0U;
-  uint64_t total_bitmap_words = 0U;
-  uint32_t total_regions = 0U;
-  for (uint32_t affinity_index = 0U;
-       affinity_index < info.memory_affinities; ++affinity_index) {
-    x86_64_acpi_memory_affinity_t affinity;
-    if (!x86_64_acpi_memory_affinity_at(&info, affinity_index, &affinity)) {
-      return 0;
-    }
-    for (uint64_t offset = 0U;
-         offset + sizeof(xaios_memory_descriptor_t) <= boot->memory_map_size;
-         offset += boot->memory_descriptor_size) {
-      const xaios_memory_descriptor_t *descriptor =
-          (const xaios_memory_descriptor_t *)(uintptr_t)(boot->memory_map +
-                                                         offset);
-      uint64_t start = 0U;
-      uint64_t end = 0U;
-      if (descriptor->type != XAIOS_MEMORY_TYPE_CONVENTIONAL ||
-          !affinity_intersection(descriptor, &affinity, &start, &end)) {
-        continue;
-      }
-      uint64_t pages = (end - start) / PAGE_SIZE;
-      uint64_t words = (pages + 63U) / 64U;
-      if (total_pages > UINT64_MAX - pages ||
-          total_bitmap_words > UINT64_MAX - words ||
-          total_regions == UINT32_MAX) {
-        return 0;
-      }
-      total_pages += pages;
-      total_bitmap_words += words;
-      ++total_regions;
-    }
-  }
-  if (total_regions == 0U || total_pages == 0U ||
-      total_bitmap_words > UINT64_MAX / (2U * sizeof(uint64_t))) {
-    klog("NUMA: ACPI ranges do not intersect usable memory regions=%u pages=%lu\n",
-         total_regions, total_pages);
-    return 0;
-  }
-  uint32_t cpu_words = cpu_bitmap_words();
-  uint64_t metadata_bytes = (uint64_t)node_count * sizeof(xaios_numa_node_t);
-  uint64_t addition = (uint64_t)total_regions * sizeof(xaios_numa_region_t);
-  if (metadata_bytes > UINT64_MAX - addition) return 0;
-  metadata_bytes += addition;
-  addition = total_bitmap_words * 2U * sizeof(uint64_t);
-  if (metadata_bytes > UINT64_MAX - addition) return 0;
-  metadata_bytes += addition;
-  addition = (uint64_t)node_count * cpu_words * sizeof(uint64_t);
-  if (metadata_bytes > UINT64_MAX - addition) return 0;
-  metadata_bytes += addition;
-  addition = (uint64_t)node_count * node_count *
-                 (sizeof(uint8_t) + 2U * sizeof(uint64_t)) +
-             128U;
-  if (metadata_bytes > UINT64_MAX - addition) return 0;
-  metadata_bytes = align_up(metadata_bytes + addition, PAGE_SIZE);
-  if (metadata_bytes == UINT64_MAX) return 0;
-
-  g_metadata_start = find_metadata_space(boot, metadata_bytes);
-  if (g_metadata_start == 0U ||
-      g_metadata_start > UINT64_MAX - metadata_bytes) {
-    klog("NUMA: ACPI topology metadata allocation failed bytes=%lu\n",
-         metadata_bytes);
-    return 0;
-  }
-  g_metadata_end = g_metadata_start + metadata_bytes;
-  bytes_zero((void *)(uintptr_t)g_metadata_start, metadata_bytes);
-  uint64_t cursor = g_metadata_start;
-  g_numa_nodes = (xaios_numa_node_t *)(uintptr_t)cursor;
-  cursor = align_up(cursor +
-                        (uint64_t)node_count * sizeof(xaios_numa_node_t),
-                    8U);
-  xaios_numa_region_t *regions =
-      (xaios_numa_region_t *)(uintptr_t)cursor;
-  cursor = align_up(cursor +
-                        (uint64_t)total_regions * sizeof(xaios_numa_region_t),
-                    8U);
-
-  uint32_t region_cursor = 0U;
-  for (uint32_t node_index = 0U; node_index < node_count; ++node_index) {
-    xaios_numa_node_t *node = &g_numa_nodes[node_index];
-    uint32_t domain = 0U;
-    if (!domain_at(&info, node_index, &domain)) return 0;
-    node->node_id = node_index;
-    node->online = 1U;
-    node->proximity_domain = domain;
-    node->distance_count = node_count;
-    node->phys_start = UINT64_MAX;
-    node->cpu_word_count = cpu_words;
-    node->regions = &regions[region_cursor];
-    xaios_spin_init(&node->lock);
-    for (uint32_t affinity_index = 0U;
-         affinity_index < info.memory_affinities; ++affinity_index) {
-      x86_64_acpi_memory_affinity_t affinity;
-      if (!x86_64_acpi_memory_affinity_at(&info, affinity_index, &affinity) ||
-          affinity.proximity_domain != domain) {
-        continue;
-      }
-      for (uint64_t offset = 0U;
-           offset + sizeof(xaios_memory_descriptor_t) <= boot->memory_map_size;
-           offset += boot->memory_descriptor_size) {
-        const xaios_memory_descriptor_t *descriptor =
-            (const xaios_memory_descriptor_t *)(uintptr_t)(boot->memory_map +
-                                                           offset);
-        uint64_t start = 0U;
-        uint64_t end = 0U;
-        if (descriptor->type != XAIOS_MEMORY_TYPE_CONVENTIONAL ||
-            !affinity_intersection(descriptor, &affinity, &start, &end)) {
-          continue;
-        }
-        xaios_numa_region_t *region = &regions[region_cursor++];
-        region->phys_start = start;
-        region->page_count = (end - start) / PAGE_SIZE;
-        region->bitmap_words = (region->page_count + 63U) / 64U;
-        region->free_bitmap = (uint64_t *)(uintptr_t)cursor;
-        cursor += region->bitmap_words * sizeof(uint64_t);
-        region->allocated_bitmap = (uint64_t *)(uintptr_t)cursor;
-        cursor += region->bitmap_words * sizeof(uint64_t);
-        ++node->region_count;
-        node->total_pages += region->page_count;
-        node->managed_pages += region->page_count;
-        if (start < node->phys_start) node->phys_start = start;
-        if (end > node->phys_end) node->phys_end = end;
-        for (uint64_t page_index = 0U; page_index < region->page_count;
-             ++page_index) {
-          uint64_t page = start + page_index * PAGE_SIZE;
-          if (!page_is_reserved(boot, page)) {
-            bitmap_set(region->free_bitmap, page_index);
-            ++node->free_count;
-          }
-        }
-      }
-    }
-  }
-  cursor = align_up(cursor, 8U);
-  for (uint32_t node_index = 0U; node_index < node_count; ++node_index) {
-    g_numa_nodes[node_index].cpu_bitmap = (uint64_t *)(uintptr_t)cursor;
-    cursor += (uint64_t)cpu_words * sizeof(uint64_t);
-  }
-  for (uint32_t node_index = 0U; node_index < node_count; ++node_index) {
-    xaios_numa_node_t *node = &g_numa_nodes[node_index];
-    node->distances = (uint8_t *)(uintptr_t)cursor;
-    cursor += node_count;
-    for (uint32_t target = 0U; target < node_count; ++target) {
-      uint32_t target_domain = g_numa_nodes[target].proximity_domain;
-      uint8_t distance = node_index == target ? 10U : 20U;
-      (void)x86_64_acpi_slit_distance(&info, node->proximity_domain,
-                                      target_domain, &distance);
-      node->distances[target] = distance;
-    }
-  }
-  cursor = align_up(cursor, 8U);
-  for (uint32_t node_index = 0U; node_index < node_count; ++node_index) {
-    xaios_numa_node_t *node = &g_numa_nodes[node_index];
-    node->hmat_latency_ps = (uint64_t *)(uintptr_t)cursor;
-    cursor += (uint64_t)node_count * sizeof(uint64_t);
-    node->hmat_bandwidth_bytes_per_second = (uint64_t *)(uintptr_t)cursor;
-    cursor += (uint64_t)node_count * sizeof(uint64_t);
-    node->preferred_memory_node = node_index;
-    uint64_t best_latency = UINT64_MAX;
-    uint64_t best_bandwidth = 0U;
-    for (uint32_t target = 0U; target < node_count; ++target) {
-      uint32_t target_domain = g_numa_nodes[target].proximity_domain;
-      uint64_t latency = 0U;
-      uint64_t bandwidth = 0U;
-      int have_latency = x86_64_acpi_hmat_metric(
-          &info, node->proximity_domain, target_domain, 0U, &latency);
-      int have_bandwidth = x86_64_acpi_hmat_metric(
-          &info, node->proximity_domain, target_domain, 3U, &bandwidth);
-      node->hmat_latency_ps[target] = have_latency ? latency : 0U;
-      node->hmat_bandwidth_bytes_per_second[target] =
-          have_bandwidth ? bandwidth : 0U;
-      if (have_latency && have_bandwidth &&
-          (latency < best_latency ||
-           (latency == best_latency && bandwidth > best_bandwidth))) {
-        best_latency = latency;
-        best_bandwidth = bandwidth;
-        node->preferred_memory_node = target;
-      }
-    }
-    node->hmat_metrics_valid = best_latency != UINT64_MAX ? 1U : 0U;
-  }
-  if (cursor > g_metadata_end) return 0;
-  for (uint32_t ordinal = 0U; ordinal < smp_online_count(); ++ordinal) {
-    uint32_t cpu_id = 0U;
-    if (smp_cpu_id_at(ordinal, &cpu_id) != XAIOS_OK) continue;
-    uint32_t node_index = 0U;
-    for (uint32_t affinity_index = 0U;
-         affinity_index < info.processor_affinities; ++affinity_index) {
-      x86_64_acpi_processor_affinity_t affinity;
-      if (x86_64_acpi_processor_affinity_at(&info, affinity_index,
-                                            &affinity) &&
-          affinity.apic_id == cpu_id) {
-        uint32_t candidate = node_for_domain(&info, affinity.proximity_domain);
-        if (candidate != UINT32_MAX) node_index = candidate;
-        break;
-      }
-    }
-    g_numa_nodes[node_index].cpu_bitmap[cpu_id / 64U] |=
-        UINT64_C(1) << (cpu_id % 64U);
-  }
-  g_numa_node_count = node_count;
-  klog("NUMA: ACPI topology nodes=%u regions=%u managed=%lu cpu_words=%u metadata_bytes=%lu hmat_structures=%u\n",
-       node_count, total_regions, total_pages, cpu_words, metadata_bytes,
-       info.hmat_locality_structures);
-  for (uint32_t node_index = 0U; node_index < node_count; ++node_index) {
-    const xaios_numa_node_t *node = &g_numa_nodes[node_index];
-    klog("NUMA: HMAT initiator=%u preferred=%u valid=%u latency_ps=%lu bandwidth_Bps=%lu\n",
-         node->proximity_domain, node->preferred_memory_node,
-         node->hmat_metrics_valid,
-         node->hmat_latency_ps[node->preferred_memory_node],
-         node->hmat_bandwidth_bytes_per_second[node->preferred_memory_node]);
-  }
-  return 1;
-}
-#endif
-
-static int page_is_reserved(const xaios_boot_info_t *boot, uint64_t page) {
+int numa_page_is_reserved(const xaios_boot_info_t *boot, uint64_t page) {
   /* A physical allocation is returned as a pointer, so page zero cannot be
    * represented without colliding with the allocation-failure sentinel. */
   if (page == 0U) return 1;
@@ -408,16 +80,16 @@ static int page_is_reserved(const xaios_boot_info_t *boot, uint64_t page) {
   uint64_t smp_end = 0U;
   boot_image_range(boot, &boot_image_start, &boot_image_end);
   (void)smp_bootstrap_reserved_range(&smp_start, &smp_end);
-  return overlaps(page, page_end, boot->kernel_phys_base,
-                  boot->kernel_phys_end) ||
-         overlaps(page, page_end, map_start, map_end) ||
-         overlaps(page, page_end, boot_image_start, boot_image_end) ||
-         overlaps(page, page_end, smp_start, smp_end) ||
-         overlaps(page, page_end, g_metadata_start, g_metadata_end);
+  return numa_overlaps(page, page_end, boot->kernel_phys_base,
+                       boot->kernel_phys_end) ||
+         numa_overlaps(page, page_end, map_start, map_end) ||
+         numa_overlaps(page, page_end, boot_image_start, boot_image_end) ||
+         numa_overlaps(page, page_end, smp_start, smp_end) ||
+         numa_overlaps(page, page_end, g_metadata_start, g_metadata_end);
 }
 
-static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
-                                    uint64_t required_bytes) {
+uint64_t numa_find_metadata_space(const xaios_boot_info_t *boot,
+                                  uint64_t required_bytes) {
   uint64_t offset = 0U;
   while (offset + sizeof(xaios_memory_descriptor_t) <=
          boot->memory_map_size) {
@@ -427,7 +99,7 @@ static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
     uint64_t start = 0U;
     uint64_t end = 0U;
     if (descriptor->type == XAIOS_MEMORY_TYPE_CONVENTIONAL &&
-        descriptor_bounds(descriptor, &start, &end)) {
+        numa_descriptor_bounds(descriptor, &start, &end)) {
       if (end > EARLY_IDENTITY_LIMIT) end = EARLY_IDENTITY_LIMIT;
       uint64_t candidate = start;
       if (candidate == 0U) candidate = PAGE_SIZE;
@@ -435,28 +107,29 @@ static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
         uint64_t candidate_end = candidate + required_bytes;
         if (candidate_end < candidate || candidate_end > end) break;
         uint64_t next = candidate;
-        if (overlaps(candidate, candidate_end, boot->kernel_phys_base,
-                     boot->kernel_phys_end)) {
-          next = align_up(boot->kernel_phys_end, PAGE_SIZE);
+        if (numa_overlaps(candidate, candidate_end, boot->kernel_phys_base,
+                          boot->kernel_phys_end)) {
+          next = numa_align_up(boot->kernel_phys_end, PAGE_SIZE);
         }
         uint64_t map_end = boot->memory_map + boot->memory_map_size;
-        if (overlaps(candidate, candidate_end, boot->memory_map, map_end)) {
-          uint64_t after_map = align_up(map_end, PAGE_SIZE);
+        if (numa_overlaps(candidate, candidate_end, boot->memory_map,
+                          map_end)) {
+          uint64_t after_map = numa_align_up(map_end, PAGE_SIZE);
           if (after_map > next) next = after_map;
         }
         uint64_t boot_image_start = 0U;
         uint64_t boot_image_end = 0U;
         boot_image_range(boot, &boot_image_start, &boot_image_end);
-        if (overlaps(candidate, candidate_end, boot_image_start,
-                     boot_image_end)) {
-          uint64_t after_image = align_up(boot_image_end, PAGE_SIZE);
+        if (numa_overlaps(candidate, candidate_end, boot_image_start,
+                          boot_image_end)) {
+          uint64_t after_image = numa_align_up(boot_image_end, PAGE_SIZE);
           if (after_image > next) next = after_image;
         }
         uint64_t smp_start = 0U;
         uint64_t smp_end = 0U;
         if (smp_bootstrap_reserved_range(&smp_start, &smp_end) == XAIOS_OK &&
-            overlaps(candidate, candidate_end, smp_start, smp_end)) {
-          uint64_t after_smp = align_up(smp_end, PAGE_SIZE);
+            numa_overlaps(candidate, candidate_end, smp_start, smp_end)) {
+          uint64_t after_smp = numa_align_up(smp_end, PAGE_SIZE);
           if (after_smp > next) next = after_smp;
         }
         if (next == candidate) return candidate;
@@ -469,7 +142,7 @@ static uint64_t find_metadata_space(const xaios_boot_info_t *boot,
   return 0U;
 }
 
-static void bitmap_set(uint64_t *bitmap, uint64_t page_index) {
+void numa_bitmap_set(uint64_t *bitmap, uint64_t page_index) {
   bitmap[page_index / 64U] |= UINT64_C(1) << (page_index % 64U);
 }
 
@@ -512,7 +185,7 @@ void numa_init(const xaios_boot_info_t *boot) {
     uint64_t start = 0U;
     uint64_t end = 0U;
     if (descriptor->type == XAIOS_MEMORY_TYPE_CONVENTIONAL &&
-        descriptor_bounds(descriptor, &start, &end)) {
+        numa_descriptor_bounds(descriptor, &start, &end)) {
       uint64_t pages = (end - start) / PAGE_SIZE;
       if (total_pages > UINT64_MAX - pages || region_count == UINT32_MAX) {
         klog("NUMA: memory map capacity overflow\n");
@@ -529,27 +202,27 @@ void numa_init(const xaios_boot_info_t *boot) {
   }
 
   uint64_t bitmap_words = (total_pages + 63U) / 64U;
-  uint32_t cpu_words = cpu_bitmap_words();
+  uint32_t cpu_words = numa_cpu_bitmap_words();
   uint64_t metadata_bytes = sizeof(xaios_numa_node_t) +
       (uint64_t)region_count * sizeof(xaios_numa_region_t) +
       bitmap_words * sizeof(uint64_t) * 2U +
       (uint64_t)cpu_words * sizeof(uint64_t) + 64U;
-  metadata_bytes = align_up(metadata_bytes, PAGE_SIZE);
-  g_metadata_start = find_metadata_space(boot, metadata_bytes);
+  metadata_bytes = numa_align_up(metadata_bytes, PAGE_SIZE);
+  g_metadata_start = numa_find_metadata_space(boot, metadata_bytes);
   if (g_metadata_start == 0U) {
     klog("NUMA: no bootstrap space for %lu metadata bytes\n",
          metadata_bytes);
     return;
   }
   g_metadata_end = g_metadata_start + metadata_bytes;
-  bytes_zero((void *)(uintptr_t)g_metadata_start, metadata_bytes);
+  numa_bytes_zero((void *)(uintptr_t)g_metadata_start, metadata_bytes);
 
   uint64_t cursor = g_metadata_start;
   g_numa_nodes = (xaios_numa_node_t *)(uintptr_t)cursor;
-  cursor = align_up(cursor + sizeof(xaios_numa_node_t), 8U);
+  cursor = numa_align_up(cursor + sizeof(xaios_numa_node_t), 8U);
   xaios_numa_node_t *node = &g_numa_nodes[0];
   node->regions = (xaios_numa_region_t *)(uintptr_t)cursor;
-  cursor = align_up(cursor +
+  cursor = numa_align_up(cursor +
                         (uint64_t)region_count *
                             sizeof(xaios_numa_region_t),
                     8U);
@@ -580,7 +253,7 @@ void numa_init(const xaios_boot_info_t *boot) {
     uint64_t start = 0U;
     uint64_t end = 0U;
     if (descriptor->type == XAIOS_MEMORY_TYPE_CONVENTIONAL &&
-        descriptor_bounds(descriptor, &start, &end)) {
+        numa_descriptor_bounds(descriptor, &start, &end)) {
       xaios_numa_region_t *region = &node->regions[region_index++];
       region->phys_start = start;
       region->page_count = (end - start) / PAGE_SIZE;
@@ -594,15 +267,15 @@ void numa_init(const xaios_boot_info_t *boot) {
       for (uint64_t page_index = 0U; page_index < region->page_count;
            ++page_index) {
         uint64_t page = start + page_index * PAGE_SIZE;
-        if (!page_is_reserved(boot, page)) {
-          bitmap_set(region->free_bitmap, page_index);
+        if (!numa_page_is_reserved(boot, page)) {
+          numa_bitmap_set(region->free_bitmap, page_index);
           ++node->free_count;
         }
       }
     }
     offset += boot->memory_descriptor_size;
   }
-  cursor = align_up(cursor, 8U);
+  cursor = numa_align_up(cursor, 8U);
   node->cpu_bitmap = (uint64_t *)(uintptr_t)cursor;
   cursor += (uint64_t)node->cpu_word_count * sizeof(uint64_t);
   node->distances = (uint8_t *)(uintptr_t)cursor;
@@ -661,57 +334,6 @@ uint32_t numa_node_of_cpu(uint32_t cpu_id) {
     if (numa_node_has_cpu(node_id, cpu_id)) return node_id;
   }
   return UINT32_MAX;
-}
-
-uint8_t numa_distance(uint32_t from_node, uint32_t to_node) {
-  if (from_node >= g_numa_node_count || to_node >= g_numa_node_count ||
-      g_numa_nodes[from_node].distances == 0 ||
-      to_node >= g_numa_nodes[from_node].distance_count) {
-    return UINT8_MAX;
-  }
-  return g_numa_nodes[from_node].distances[to_node];
-}
-
-uint32_t numa_preferred_node_for_cpu(uint32_t cpu_id) {
-  uint32_t local = numa_node_of_cpu(cpu_id);
-  if (local == UINT32_MAX || local >= g_numa_node_count) return 0U;
-  uint32_t preferred = g_numa_nodes[local].preferred_memory_node;
-  return preferred < g_numa_node_count ? preferred : local;
-}
-
-uint32_t numa_nodes_by_distance(uint32_t from_node, uint32_t *out_nodes,
-                                uint32_t capacity) {
-  if (out_nodes == 0 || capacity == 0U || g_numa_node_count == 0U) return 0U;
-  uint32_t written = 0U;
-  /* The starting node goes first without consulting the table. A SLIT is
-     firmware-supplied and a placement policy that trusted it blindly would
-     send every allocation off-node the moment a machine shipped a table
-     claiming a remote node is nearer than the local one. Distance decides the
-     order of the alternatives, not whether local memory is tried first. */
-  if (from_node < g_numa_node_count) out_nodes[written++] = from_node;
-  while (written < capacity) {
-    uint32_t best = UINT32_MAX;
-    uint8_t best_distance = UINT8_MAX;
-    for (uint32_t candidate = 0U; candidate < g_numa_node_count; ++candidate) {
-      uint32_t already = 0U;
-      for (uint32_t index = 0U; index < written; ++index) {
-        if (out_nodes[index] == candidate) already = 1U;
-      }
-      if (already != 0U) continue;
-      uint8_t distance = numa_distance(from_node, candidate);
-      /* Strictly-less keeps the tie on the lower node id, because candidates
-         are walked in ascending order. Two boots of one machine must lease
-         and allocate from the same node, or a failure that depends on
-         placement stops being reproducible. */
-      if (best == UINT32_MAX || distance < best_distance) {
-        best = candidate;
-        best_distance = distance;
-      }
-    }
-    if (best == UINT32_MAX) break;
-    out_nodes[written++] = best;
-  }
-  return written;
 }
 
 void numa_record_access(uint32_t cpu_id, uint64_t physical_address,
@@ -791,7 +413,7 @@ void *numa_alloc_page_on_node(uint32_t node_id) {
       uint64_t page_index = word_index * 64U + bit;
       if (page_index >= region->page_count) continue;
       bitmap_clear(region->free_bitmap, page_index);
-      bitmap_set(region->allocated_bitmap, page_index);
+      numa_bitmap_set(region->allocated_bitmap, page_index);
       --node->free_count;
       node->alloc_region_hint = region_index;
       node->alloc_page_hint = page_index + 1U;
@@ -825,166 +447,11 @@ int numa_free_page(void *page) {
       return 0;
     }
     bitmap_clear(region->allocated_bitmap, page_index);
-    bitmap_set(region->free_bitmap, page_index);
+    numa_bitmap_set(region->free_bitmap, page_index);
     ++node->free_count;
     xaios_spin_unlock(&node->lock);
     return 1;
   }
   xaios_spin_unlock(&node->lock);
   return 0;
-}
-
-/* klog has no way to print a list, and a fallback order is only evidence if a
-   reader can see the whole of it: "nearest first" is a claim about every
-   position, not about the first one. */
-static void format_node_list(const uint32_t *nodes, uint32_t count,
-                             char *buffer, uint64_t capacity) {
-  uint64_t used = 0U;
-  for (uint32_t index = 0U; index < count && used + 12U < capacity; ++index) {
-    if (index != 0U) buffer[used++] = ',';
-    uint32_t value = nodes[index];
-    char digits[12];
-    uint32_t digit_count = 0U;
-    do {
-      digits[digit_count++] = (char)('0' + (value % 10U));
-      value /= 10U;
-    } while (value != 0U);
-    while (digit_count != 0U) buffer[used++] = digits[--digit_count];
-  }
-  buffer[used] = '\0';
-}
-
-void numa_self_test(void) {
-  kassert(g_numa_node_count >= 1U);
-  const xaios_numa_node_t *node0 = numa_node(0U);
-  kassert(node0 != 0 && node0->online == 1U);
-  kassert(node0->managed_pages == node0->total_pages);
-  kassert(node0->managed_pages >= node0->free_count);
-  kassert(node0->free_count > 0U);
-  kassert(numa_node_has_cpu(0U, 0U));
-  kassert(numa_distance(0U, 0U) == 10U);
-  kassert(numa_preferred_node_for_cpu(0U) < g_numa_node_count);
-  kassert(node0->phys_start < node0->phys_end);
-
-  void *page = numa_alloc_page_on_node(0U);
-  kassert(page != 0);
-  kassert(numa_node_of_phys((uint64_t)(uintptr_t)page) == 0U);
-  uint64_t previous_free = g_numa_nodes[0].free_count;
-  kassert(numa_free_page(page) == 1);
-  kassert(g_numa_nodes[0].free_count == previous_free + 1U);
-  kassert(numa_free_page(page) == 0);
-  numa_record_access(0U, (uint64_t)(uintptr_t)node0->phys_start, 64U);
-  kassert(numa_local_bytes() == 64U);
-  if (g_numa_node_count > 1U) {
-    const xaios_numa_node_t *node1 = numa_node(1U);
-    kassert(node1 != 0 && numa_distance(0U, 1U) >= 10U);
-    void *remote_page = numa_alloc_page_on_node(1U);
-    kassert(remote_page != 0);
-    /* The page must be in the node it was asked for. Node 0 was checked this
-       way and node 1 was not, which left the case that matters untested: an
-       allocator that ignored the node argument and always served node 0 would
-       have passed everything above, and the whole point of asking for a node
-       is that memory comes from it. */
-    kassert(numa_node_of_phys((uint64_t)(uintptr_t)remote_page) == 1U);
-    kassert((uint64_t)(uintptr_t)remote_page >= node1->phys_start &&
-            (uint64_t)(uintptr_t)remote_page < node1->phys_end);
-    /* Every CPU belongs to exactly the node that claims it, on both nodes.
-       numa_node_has_cpu and numa_preferred_node_for_cpu are separate lookups
-       and nothing checked they agree beyond CPU 0. */
-    for (uint32_t cpu = 0U; cpu < smp_capacity(); ++cpu) {
-      uint32_t preferred = numa_preferred_node_for_cpu(cpu);
-      kassert(preferred < g_numa_node_count);
-      kassert(numa_node_has_cpu(preferred, cpu));
-      for (uint32_t node = 0U; node < g_numa_node_count; ++node) {
-        if (node != preferred) kassert(!numa_node_has_cpu(node, cpu));
-      }
-    }
-    numa_record_access(0U, (uint64_t)(uintptr_t)remote_page, 128U);
-    kassert(numa_remote_bytes() == 128U);
-    kassert(numa_free_page(remote_page) == 1);
-
-    /* At least two nodes must own a CPU. Nothing checked this, and the way
-       the x86 SRAT walk fails is silent: a processor affinity whose APIC id
-       matches no online CPU leaves that CPU on node 0, so a parse that found
-       no processor affinities at all puts every CPU on node 0 and every
-       assertion above still holds -- each CPU maps to exactly one node, and
-       that node is node 0. A machine whose firmware says it has two memory
-       nodes and one CPU node is either a parse failure here or a table worth
-       refusing to guess about. */
-    uint32_t nodes_with_cpus = 0U;
-    for (uint32_t node = 0U; node < g_numa_node_count; ++node) {
-      uint32_t owned = 0U;
-      for (uint32_t cpu = 0U; cpu < smp_capacity(); ++cpu) {
-        if (numa_node_has_cpu(node, cpu)) ++owned;
-      }
-      if (owned != 0U) ++nodes_with_cpus;
-      uint32_t order[16];
-      uint32_t order_count = numa_nodes_by_distance(node, order, 16U);
-      char order_text[128];
-      format_node_list(order, order_count, order_text, sizeof(order_text));
-      klog("NUMA: node=%u domain=%u cpus=%u pages=%lu fallback_order=%s\n",
-           node, g_numa_nodes[node].proximity_domain, owned,
-           g_numa_nodes[node].total_pages, order_text);
-    }
-    kassert(nodes_with_cpus >= 2U);
-
-    /* The fallback order is the placement policy, so it is asserted rather
-       than only printed: the local node first, then every other node exactly
-       once, by non-decreasing SLIT distance. The old allocator walked node
-       ids instead, which agrees with this on node 0 of a two-node machine and
-       disagrees everywhere else -- that is why the assertion runs from every
-       node and not just from the one the boot CPU happens to be on. */
-    for (uint32_t node = 0U; node < g_numa_node_count; ++node) {
-      uint32_t order[16];
-      uint32_t order_count = numa_nodes_by_distance(node, order, 16U);
-      kassert(order_count ==
-              (g_numa_node_count < 16U ? g_numa_node_count : 16U));
-      kassert(order[0] == node);
-      for (uint32_t index = 1U; index < order_count; ++index) {
-        kassert(numa_distance(node, order[index - 1U]) <=
-                numa_distance(node, order[index]));
-        for (uint32_t earlier = 0U; earlier < index; ++earlier) {
-          kassert(order[earlier] != order[index]);
-        }
-      }
-    }
-
-    /* Placement accounting has to move for a real allocation, and it has to
-       move on the correct side. The deltas are asserted as lower bounds, not
-       as equalities: the secondaries are online by this point and an exact
-       figure would be a flake rather than a stronger check. What makes the
-       check bite is the side -- an allocator charging every page as local
-       leaves the remote delta at zero. */
-    uint32_t local_node = numa_node_of_cpu(smp_cpu_id());
-    kassert(local_node != UINT32_MAX);
-    uint32_t far_node = local_node == 0U ? 1U : 0U;
-    uint64_t local_before = numa_local_placement_bytes();
-    uint64_t remote_before = numa_remote_placement_bytes();
-    void *near_page = numa_alloc_page_on_node(local_node);
-    kassert(near_page != 0);
-    uint64_t local_delta = numa_local_placement_bytes() - local_before;
-    kassert(local_delta >= PAGE_SIZE);
-    remote_before = numa_remote_placement_bytes();
-    void *far_page = numa_alloc_page_on_node(far_node);
-    kassert(far_page != 0);
-    uint64_t remote_delta = numa_remote_placement_bytes() - remote_before;
-    kassert(remote_delta >= PAGE_SIZE);
-    kassert(numa_free_page(near_page) == 1);
-    kassert(numa_free_page(far_page) == 1);
-    klog("NUMA: placement accounting cpu=%u local_node=%u far_node=%u local_delta=%lu remote_delta=%lu verified=1\n",
-         smp_cpu_id(), local_node, far_node, local_delta, remote_delta);
-  }
-
-  void *pages[64];
-  for (uint32_t index = 0U; index < 64U; ++index) {
-    pages[index] = numa_alloc_page_on_node(0U);
-    kassert(pages[index] != 0);
-  }
-  for (uint32_t index = 0U; index < 64U; ++index) {
-    kassert(numa_free_page(pages[index]) == 1);
-  }
-  klog("NUMA: self-test passed nodes=%u regions=%u managed=%lu free=%lu dynamic_metadata=1 ownership=verified local_bytes=%lu remote_bytes=%lu placement_local_bytes=%lu placement_remote_bytes=%lu\n",
-       g_numa_node_count, node0->region_count, node0->managed_pages,
-       node0->free_count, numa_local_bytes(), numa_remote_bytes(),
-       numa_local_placement_bytes(), numa_remote_placement_bytes());
 }
