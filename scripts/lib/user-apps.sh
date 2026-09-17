@@ -221,7 +221,7 @@ for app in $USER_APPS; do
       XAPT_INTERNAL_OBJS="$XAPT_INTERNAL_OBJS $INIT_BUILD_DIR/xapt-$xapt_internal_src.o"
     done
     "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
-      -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" \
+      -o "$app_elf" "$USER_START_OBJ" "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
       "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" "$USER_CONTROL_PARSE_FLAGS_OBJ" "$USER_CONTROL_PARSE_VALIDATE_OBJ" "$USER_CONTROL_DISPATCH_OBJ" "$app_obj" "$XAPT_TLS_OBJ" "$XAPT_TRUST_OBJ" $XAPT_INTERNAL_OBJS \
       "$XAPT_BEARSSL"
   elif [ "$app" = "xaios-setup" ]; then
@@ -247,7 +247,7 @@ for app in $USER_APPS; do
       -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" \
       "$USER_START_OBJ" \
-      "$USER_LIB_OBJ" \
+      "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
       "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" "$USER_CONTROL_PARSE_FLAGS_OBJ" "$USER_CONTROL_PARSE_VALIDATE_OBJ" "$USER_CONTROL_DISPATCH_OBJ" \
       "$app_obj" \
       "$SETUP_CRYPTO_OBJ" \
@@ -260,7 +260,7 @@ for app in $USER_APPS; do
       -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" \
       "$USER_START_OBJ" \
-      "$USER_LIB_OBJ" \
+      "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
       "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" "$USER_CONTROL_PARSE_FLAGS_OBJ" "$USER_CONTROL_PARSE_VALIDATE_OBJ" "$USER_CONTROL_DISPATCH_OBJ" \
       "$USER_SCREEN_OBJ" \
       $xtop_serve_obj \
@@ -276,7 +276,7 @@ for app in $USER_APPS; do
       -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" \
       "$USER_START_OBJ" \
-      "$USER_LIB_OBJ" \
+      "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
       "$app_obj" \
       "$CLUSTER_OBJ" \
       $CLUSTER_PLANE_OBJS \
@@ -287,7 +287,7 @@ for app in $USER_APPS; do
       -T "$ROOT_DIR/userspace/init/linker.ld" \
       -o "$app_elf" \
       "$USER_START_OBJ" \
-      "$USER_LIB_OBJ" \
+      "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
       "$app_obj"
   fi
   set -- "$@" "/bin/$app=$app_elf"

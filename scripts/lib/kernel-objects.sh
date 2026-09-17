@@ -62,6 +62,7 @@ else
   $KERNEL_BUILD_DIR/acpi.o
   $KERNEL_BUILD_DIR/cpu_features.o
   $KERNEL_BUILD_DIR/early.o
+  $KERNEL_BUILD_DIR/early_lapic.o
   $KERNEL_BUILD_DIR/early_tlb.o
   $KERNEL_BUILD_DIR/early_cpu.o
   $KERNEL_BUILD_DIR/early_mem.o
@@ -190,6 +191,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/remote_login_meta.o
   $KERNEL_BUILD_DIR/remote_login_parse.o
   $KERNEL_BUILD_DIR/operations.o
+  $KERNEL_BUILD_DIR/operations_format.o
+  $KERNEL_BUILD_DIR/operations_commands.o
   $KERNEL_BUILD_DIR/admin_control.o
   $KERNEL_BUILD_DIR/admin_control_config.o
   $KERNEL_BUILD_DIR/admin_control_auth.o
@@ -297,6 +300,8 @@ KERNEL_OBJECTS="
   $KERNEL_BUILD_DIR/string.o
   $KERNEL_BUILD_DIR/bpe_tokenizer.o
   $KERNEL_BUILD_DIR/engine_xai_fs.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_codec.o
+  $KERNEL_BUILD_DIR/engine_xai_fs_read.o
   $KERNEL_BUILD_DIR/engine_xai_fs_writer.o
   $KERNEL_BUILD_DIR/engine_xai_fs_writer_staging.o
   $KERNEL_BUILD_DIR/engine_xai_fs_writer_rewrite.o

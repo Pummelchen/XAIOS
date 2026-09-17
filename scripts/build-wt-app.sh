@@ -131,6 +131,16 @@ if [ ! -f "$user_object" ] || [ "$ROOT/userspace/lib/xaios_user.c" -nt "$user_ob
     -I"$ROOT/userspace/include" \
     -c "$ROOT/userspace/lib/xaios_user.c" -o "$user_object"
 fi
+# The split halves of the same library, built with the same flags.
+user_net_object="$OUT/objects/xaios_user_net.o"
+user_session_object="$OUT/objects/xaios_user_session.o"
+for extra_user_src in xaios_user_net xaios_user_session; do
+  # shellcheck disable=SC2086
+  $CC --target=$TARGET $ARCH_FLAGS -std=c99 -ffreestanding -fno-stack-protector \
+    -fno-builtin -fno-pic -fno-pie -Wall -Wextra -Werror \
+    -I"$ROOT/userspace/include" \
+    -c "$ROOT/userspace/lib/$extra_user_src.c" -o "$OUT/objects/$extra_user_src.o"
+done
 
 app_object="$OUT/objects/$(basename "$SOURCE" .c).o"
 # shellcheck disable=SC2086
@@ -147,6 +157,7 @@ ld.lld -nostdlib --gc-sections -T "$ROOT/userspace/libc/linker.ld" \
   -o "$OUTPUT" "$RUNTIME/crt0.o" "$RUNTIME/runtime.o" \
   "$RUNTIME/os_adapter.o" "$RUNTIME/thread_context.o" \
   "$RUNTIME/locking.o" \
+  "$user_net_object" "$user_session_object" \
   "$app_object" "$user_object" $objects --start-group \
   "$SYSROOT/lib/libc.a" "$SYSROOT/lib/libm.a" \
   "$SYSROOT/lib/libcompiler_rt_xaios.a" "$BEARSSL_ARCHIVE" --end-group

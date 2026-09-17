@@ -180,6 +180,8 @@ hosted-test: engine-cli
 	  userspace/lib/control_render_ops.c \
 	  userspace/lib/control_render_config.c \
 	  userspace/lib/control_request.c userspace/lib/control_parse_flags.c userspace/lib/control_parse_validate.c userspace/lib/control_dispatch.c \
+	  tests/control/test_control_client_support.c \
+	  tests/control/test_control_client_server.c \
 	  tests/control/test_control_client.c -o build/hosted/test-control-client
 	./build/hosted/test-control-client
 	$(HOST_CC) $(HOST_CFLAGS) \
@@ -227,7 +229,7 @@ hosted-test: engine-cli
 	  kernel/storage/gpt.c kernel/storage/partition_device.c \
 	  kernel/storage/storage_admin.c kernel/storage/storage_admin_table.c kernel/storage/storage_admin_self_test.c kernel/fs/fat.c kernel/fs/fat_dir.c kernel/fs/fat_file_io.c kernel/fs/fat_codec.c \
 	  kernel/fs/xai_fs_admin.c \
-	  engine/src/xai_fs.c engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c \
+	  engine/src/xai_fs.c engine/src/xai_fs_codec.c engine/src/xai_fs_read.c engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c \
 	  engine/src/sha256.c userspace/sshd/ssh_crypto.c userspace/sshd/ssh_crypto_symmetric.c userspace/sshd/ssh_crypto_curve25519.c \
 	  userspace/sshd/tweetnacl_subset.c \
 	  tests/storage/test_xai_fs_admin.c \
@@ -327,11 +329,13 @@ hosted-test: engine-cli
 	$(HOST_CC) $(HOST_CFLAGS) \
 	  -Iengine/include -Iengine/src -Iuserspace/include -Iuserspace/sshd \
 	  -Iuserspace/apps/terminal \
-	  -Ikernel/include engine/src/xai_fs.c \
+	  -Ikernel/include engine/src/xai_fs.c engine/src/xai_fs_codec.c engine/src/xai_fs_read.c \
 	  engine/src/xai_fs_writer.c engine/src/xai_fs_writer_staging.c engine/src/xai_fs_writer_rewrite.c engine/src/xai_fs_writer_util.c engine/src/model_file.c \
 	  engine/src/sha256.c \
 	  userspace/sshd/ssh_crypto.c userspace/sshd/ssh_crypto_symmetric.c userspace/sshd/ssh_crypto_curve25519.c userspace/sshd/tweetnacl_subset.c \
 	  tests/xai_fs/test_xai_fs_reader.c \
+  tests/xai_fs/test_xai_fs_reader_format.c \
+  tests/xai_fs/test_xai_fs_reader_staging.c \
 	  -o build/hosted/test-xaifs-reader
 	./build/hosted/test-xaifs-reader \
 	  build/hosted/xaifs-c-fixture.img \

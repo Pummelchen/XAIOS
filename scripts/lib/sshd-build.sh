@@ -91,7 +91,7 @@ done
   -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$INIT_BUILD_DIR/sshd.elf" \
   "$USER_START_OBJ" \
-  "$USER_LIB_OBJ" \
+  "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
   "$USER_CONTROL_OBJ" "$USER_CONTROL_PRIM_OBJ" "$USER_CONTROL_SYS_OBJ" "$USER_CONTROL_STORAGE_OBJ" "$USER_CONTROL_OPS_OBJ" "$USER_CONTROL_CONFIG_OBJ" "$USER_CONTROL_REQUEST_OBJ" "$USER_CONTROL_PARSE_FLAGS_OBJ" "$USER_CONTROL_PARSE_VALIDATE_OBJ" "$USER_CONTROL_DISPATCH_OBJ" \
   @"$SSHD_RESPONSE_FILE"
 set -- "$@" "/bin/sshd=$INIT_BUILD_DIR/sshd.elf"
@@ -147,14 +147,14 @@ done
   -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$INIT_BUILD_DIR/ssh.elf" \
   "$USER_START_OBJ" \
-  "$USER_LIB_OBJ" \
+  "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
   @"$SSH_CLIENT_RESPONSE_FILE"
 "$LD_LLD" \
   -nostdlib \
   -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$INIT_BUILD_DIR/scp.elf" \
   "$USER_START_OBJ" \
-  "$USER_LIB_OBJ" \
+  "$USER_LIB_OBJ" "$USER_NET_OBJ" "$USER_SESSION_OBJ" \
   @"$SSH_CLIENT_RESPONSE_FILE"
 set -- "$@" "/bin/ssh=$INIT_BUILD_DIR/ssh.elf"
 set -- "$@" "/bin/scp=$INIT_BUILD_DIR/scp.elf"

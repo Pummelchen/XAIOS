@@ -56,8 +56,10 @@ compile() {
 
 compile "$ROOT/userspace/lib/start.S" "$TEMP/start.o"
 compile "$ROOT/userspace/lib/xaios_user.c" "$TEMP/xaios_user.o"
+compile "$ROOT/userspace/lib/xaios_user_net.c" "$TEMP/xaios_user_net.o"
+compile "$ROOT/userspace/lib/xaios_user_session.c" "$TEMP/xaios_user_session.o"
 compile "$SOURCE" "$TEMP/app.o"
-set -- "$TEMP/start.o" "$TEMP/xaios_user.o"
+set -- "$TEMP/start.o" "$TEMP/xaios_user.o" "$TEMP/xaios_user_net.o" "$TEMP/xaios_user_session.o" "$TEMP/xaios_user_net.o" "$TEMP/xaios_user_session.o"
 if [ "$WITH_CONTROL" = 1 ]; then
   compile "$ROOT/userspace/lib/xaios_control_client.c" "$TEMP/control.o"
   compile "$ROOT/userspace/lib/control_render_primitives.c" "$TEMP/control-primitives.o"

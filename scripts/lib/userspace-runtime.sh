@@ -103,6 +103,36 @@ printf '%s\n' "Building userspace C runtime..."
   -I"$ROOT_DIR/userspace/include" \
   -c "$ROOT_DIR/userspace/lib/xaios_user.c" \
   -o "$USER_LIB_OBJ"
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/xaios_user_net.c" \
+  -o "$USER_NET_OBJ"
+"$CLANG" \
+  --target="$TARGET_TRIPLE" \
+  $USER_ARCH_CFLAGS \
+  -std=c99 \
+  -ffreestanding \
+  -fno-stack-protector \
+  -fno-builtin \
+  -fno-pic \
+  -fno-pie \
+  -Wall \
+  -Wextra \
+  -Werror \
+  -I"$ROOT_DIR/userspace/include" \
+  -c "$ROOT_DIR/userspace/lib/xaios_user_session.c" \
+  -o "$USER_SESSION_OBJ"
 
 "$CLANG" \
   --target="$TARGET_TRIPLE" \

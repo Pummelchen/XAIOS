@@ -15,6 +15,7 @@
 #include <xaios_engine/packed.h>
 
 #include "early_module.h"
+#include "early_lapic.h"
 #include "early_serial.h"
 #include "early_exception.h"
 #include "early_contract.h"
@@ -65,31 +66,29 @@
 #define validate_x86_os_contract xaios_x86_early_validate_os_contract
 #define validate_hardware_gate xaios_x86_early_validate_hardware_gate
 
+/* The LAPIC register accessors and the CPU-identity pair moved to
+ * early_lapic.c; these aliases keep every call site in this file -- including
+ * the LAPIC timer self-test and the AP startup sequence -- spelling them the
+ * way it did. The raw MSR/CR/TSC/CPUID primitives are `static inline` in
+ * early_lapic.h, so the call sites that inline them are unchanged. */
+#define lapic_read xaios_x86_early_lapic_read
+#define lapic_write xaios_x86_early_lapic_write
+#define lapic_id xaios_x86_early_lapic_id
+#define lapic_send xaios_x86_early_lapic_send
+#define prepare_tsc_aux xaios_x86_early_prepare_tsc_aux
+
 #define COM1_PORT UINT16_C(0x3f8)
 #define PAGE_SIZE UINT64_C(4096)
 #define X86_EFLAGS_ID UINT64_C(1 << 21)
 /* The CR4/XCR0/XSAVE control bits and the primitives that program them now
  * live in early_fpu.h, which the extended-state block below and the AVX2 canary
  * in x86_64_kmain share with early_fpu.c. MSR_IA32_APIC_BASE moved to
- * early_module.h, because the LAPIC primitives below and the calibration in
- * early_timer_discover.c both read that one register. */
-/* The value RDTSCP returns in ECX: this kernel puts the CPU's ordinal there so
- * a CPU can name itself without reading the APIC (see the fast identity). */
-#define MSR_IA32_TSC_AUX UINT32_C(0xc0000103)
-#define APIC_BASE_ENABLE UINT64_C(1 << 11)
-#define APIC_BASE_X2APIC UINT64_C(1 << 10)
-#define APIC_ID UINT32_C(0x020)
-#define APIC_VERSION UINT32_C(0x030)
-#define APIC_EOI UINT32_C(0x0b0)
-#define APIC_SPURIOUS UINT32_C(0x0f0)
-#define APIC_LVT_TIMER UINT32_C(0x320)
-#define APIC_ICR_LOW UINT32_C(0x300)
-#define APIC_ICR_HIGH UINT32_C(0x310)
-#define APIC_TIMER_INITIAL UINT32_C(0x380)
-#define APIC_TIMER_CURRENT UINT32_C(0x390)
-#define APIC_TIMER_DIVIDE UINT32_C(0x3e0)
-#define X2APIC_MSR_BASE UINT32_C(0x800)
-#define X2APIC_ICR_MSR UINT32_C(0x830)
+ * early_module.h, because early_lapic.c's LAPIC accessors and the calibration
+ * in early_timer_discover.c both read that one register. */
+/* The local-APIC register map and MSR_IA32_TSC_AUX moved to early_lapic.h with
+ * the accessors that spell them and with prepare_tsc_aux(). The LAPIC timer
+ * self-test and the AP entry below still name the same constants, which now
+ * come from that header. */
 /* X86_USER_BASE, _WINDOW_SIZE and _LOG_MAX moved to early_irq.c with the
  * ring-3 syscall dispatch that was their only user. */
 /* X86_KERNEL_STACK_SIZE, _GUARD_BYTES and _GUARD_VALUE moved to
@@ -180,6 +179,11 @@ extern void (*const x86_64_device_irq_stubs[64])(void);
  * report functions that were their only readers and writers. */
 static uint32_t g_exception_vectors_installed;
 static uint16_t g_code_selector;
+/* The APIC-ready flag stays file-scope with the LAPIC timer self-test below,
+ * which is its only writer, and so does the accessor early_irq.c and
+ * early_platform.c call: that accessor reads the flag here instead of the flag
+ * crossing the seam. g_lapic_x2apic likewise has no reader outside that
+ * self-test. */
 static uint32_t g_lapic_ready;
 static uint32_t g_lapic_x2apic;
 volatile uint64_t g_x86_lapic_timer_interrupts;
@@ -191,10 +195,11 @@ static uint32_t g_bsp_ordinal = UINT32_MAX;
 static volatile uint32_t g_common_worker_release;
 static uint64_t g_tsc_frequency;
 static uint64_t g_lapic_frequency;
-/* Whether IA32_TSC_AUX holds this CPU's ordinal, so `current_ordinal_fast`
- * may use RDTSCP. Set by whichever CPU prepares first; it is a property of the
- * CPU model, not of one CPU. */
-static uint32_t g_tsc_aux_ready;
+/* Whether IA32_TSC_AUX holds this CPU's ordinal, so the fast identity in
+ * early_lapic.c may use RDTSCP. Set by whichever CPU prepares first; it is a
+ * property of the CPU model, not of one CPU. It crosses the seam as the same
+ * object, so it is no longer file-scope. */
+uint32_t g_tsc_aux_ready;
 /* The idle-wakeup self-test's probe pair moved to early_platform.c with its
  * setter and getter; the idle loop below still reads it through
  * xaios_x86_early_idle_probe_get. */
@@ -203,11 +208,10 @@ static uint32_t g_tsc_aux_ready;
 extern void kmain(const xaios_boot_info_t *boot);
 #endif
 
-static inline uint64_t rdtsc(void);
-static uint32_t lapic_id(void);
-static uint32_t current_ordinal_fast(void);
-static void lapic_send(uint32_t destination, uint32_t command);
-static void lapic_write(uint32_t offset, uint32_t value);
+/* The five forward declarations that stood here -- rdtsc, lapic_id,
+ * current_ordinal_fast, lapic_send and lapic_write -- are gone: rdtsc is a
+ * `static inline` in early_lapic.h, and the other four are declared there and
+ * in early_module.h beside the accessors that define them. */
 
 #if !XAIOS_X86_COMMON_RUNTIME
 uint32_t smp_online_count(void) {
@@ -254,47 +258,17 @@ void xaios_x86_early_set_worker_release(uint32_t value) {
   __atomic_store_n(&g_common_worker_release, value, __ATOMIC_RELEASE);
 }
 
-static inline uint64_t read_cr3(void) {
-  uint64_t value = 0;
-  __asm__ volatile("mov %%cr3, %0" : "=r"(value));
-  return value;
-}
-
 /* The CR4/XCR0/XSAVE/FXSAVE primitives, the per-CPU IRQ-state area lookup and
  * the interrupt entry's state save/restore now live in early_fpu.h and
  * early_fpu.c. The primitives are `static inline` in that header, so this file
  * still inlines them at the AVX2 canary and in x86_64_ap_entry; the two
  * save/restore entry points keep their names because entry.S calls them. */
 
-static inline void write_cr3(uint64_t value) {
-  __asm__ volatile("mov %0, %%cr3" : : "r"(value) : "memory");
-}
-
-static inline uint64_t rdmsr(uint32_t msr) {
-  uint32_t low = 0;
-  uint32_t high = 0;
-  __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
-  return ((uint64_t)high << 32) | low;
-}
-
-static inline uint64_t rdtsc(void) {
-  uint32_t low = 0U;
-  uint32_t high = 0U;
-  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
-  return ((uint64_t)high << 32U) | low;
-}
-
-static inline void wrmsr(uint32_t msr, uint64_t value) {
-  __asm__ volatile("wrmsr" : : "c"(msr), "a"((uint32_t)value),
-                   "d"((uint32_t)(value >> 32)) : "memory");
-}
-
-static inline void cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
-                         uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
-  __asm__ volatile("cpuid"
-                   : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
-                   : "a"(leaf), "c"(subleaf));
-}
+/* The MSR/CR/TSC/CPUID primitives that stood here now live, also `static
+ * inline`, in early_lapic.h: this file still inlines read_cr3 while it stages
+ * the AP trampoline, rdmsr/rdtsc in the LAPIC timer self-test and the AP
+ * startup delays, and cpuid at the AVX2 canary, and early_lapic.c inlines the
+ * same six primitives in the accessors it defines. */
 
 static uint64_t memory_descriptor_count(const xaios_boot_info_t *boot) {
   if (boot == 0 || boot->memory_descriptor_size == 0) {
@@ -385,128 +359,21 @@ static void install_idt(uint16_t serial_base) {
   serial_puts(serial_base, "x86_64: IRQ vector 32 installed\n");
 }
 
-static uint32_t lapic_read(uint32_t offset) {
-  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
-  if ((apic_base & (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) ==
-      (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) {
-    return (uint32_t)rdmsr(X2APIC_MSR_BASE + (offset >> 4U));
-  }
-  volatile uint32_t *lapic = (volatile uint32_t *)(uintptr_t)(
-      apic_base & UINT64_C(0xfffff000));
-  return lapic[offset / sizeof(uint32_t)];
-}
+/* The LAPIC register accessors, the CPU-identity pair and the MSR/CR/TSC/CPUID
+ * accessors that stood here -- lapic_read, lapic_write, lapic_id, lapic_send,
+ * current_ordinal_fast, prepare_tsc_aux and the exported wrappers early_tlb.c,
+ * early_irq.c, early_cpu.c, early_mem.c, early_pci.c and
+ * early_timer_discover.c call -- now live in early_lapic.c. The aliases at the
+ * top of this file keep every call site here -- the LAPIC timer self-test and
+ * the AP startup sequence included -- spelling them the way it did, and the raw
+ * primitives come from early_lapic.h, so the call sites that inline them are
+ * unchanged. */
 
-static void lapic_write(uint32_t offset, uint32_t value) {
-  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
-  if ((apic_base & (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) ==
-      (APIC_BASE_ENABLE | APIC_BASE_X2APIC)) {
-    wrmsr(X2APIC_MSR_BASE + (offset >> 4U), value);
-    return;
-  }
-  volatile uint32_t *lapic = (volatile uint32_t *)(uintptr_t)(
-      apic_base & UINT64_C(0xfffff000));
-  lapic[offset / sizeof(uint32_t)] = value;
-  (void)lapic[APIC_ID / sizeof(uint32_t)];
-}
-
-static uint32_t lapic_id(void) {
-  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
-  uint32_t id = lapic_read(APIC_ID);
-  return (apic_base & APIC_BASE_X2APIC) != 0U ? id : id >> 24U;
-}
-
-/* This CPU's ordinal without going to the APIC.
- *
- * `x86_64_platform_current_ordinal` reads the APIC id, which under emulation
- * is a host round trip -- too expensive to pay on every external interrupt, and
- * far too expensive to pay on every iteration of a spin loop. RDTSCP returns
- * the IA32_TSC_AUX value, bring-up puts this CPU's ordinal there, and reading
- * it costs a few cycles. A CPU whose CPUID has no RDTSCP keeps the APIC read,
- * and the ordinal is validated against the record table either way. */
-static uint32_t current_ordinal_fast(void) {
-  if (g_tsc_aux_ready == 0U) return x86_64_platform_current_ordinal();
-  uint32_t low = 0U;
-  uint32_t high = 0U;
-  uint32_t aux = 0U;
-  __asm__ volatile("rdtscp" : "=a"(low), "=d"(high), "=c"(aux) : : "memory");
-  return aux < g_cpu_record_count ? aux : x86_64_platform_current_ordinal();
-}
-
-/* Whether this CPU can name itself with RDTSCP, and if so, teach it its own
- * ordinal. Called once per CPU, before that CPU can run anything that asks. */
-static void prepare_tsc_aux(uint32_t ordinal) {
-  uint32_t eax = 0U;
-  uint32_t ebx = 0U;
-  uint32_t ecx = 0U;
-  uint32_t edx = 0U;
-  cpuid(UINT32_C(0x80000000), 0U, &eax, &ebx, &ecx, &edx);
-  if (eax < UINT32_C(0x80000001)) return;
-  cpuid(UINT32_C(0x80000001), 0U, &eax, &ebx, &ecx, &edx);
-  if ((edx & (UINT32_C(1) << 27U)) == 0U) return; /* no RDTSCP */
-  wrmsr(MSR_IA32_TSC_AUX, ordinal);
-  g_tsc_aux_ready = 1U;
-}
-
-static void lapic_send(uint32_t destination, uint32_t command) {
-  uint64_t apic_base = rdmsr(MSR_IA32_APIC_BASE);
-  if ((apic_base & APIC_BASE_X2APIC) != 0U) {
-    wrmsr(X2APIC_ICR_MSR, ((uint64_t)destination << 32U) | command);
-    return;
-  }
-  while ((lapic_read(APIC_ICR_LOW) & UINT32_C(1 << 12)) != 0U) {
-    __asm__ volatile("pause");
-  }
-  lapic_write(APIC_ICR_HIGH, destination << 24U);
-  lapic_write(APIC_ICR_LOW, command);
-  while ((lapic_read(APIC_ICR_LOW) & UINT32_C(1 << 12)) != 0U) {
-    __asm__ volatile("pause");
-  }
-}
-
-/* The primitives early_tlb.c calls, exported under the names early_module.h
- * declares. They are the same functions above and below, not copies. */
-void xaios_x86_early_lapic_send(uint32_t destination, uint32_t command) {
-  lapic_send(destination, command);
-}
-
-uint32_t xaios_x86_early_current_ordinal_fast(void) {
-  return current_ordinal_fast();
-}
-
-/* The two more primitives early_irq.c's interrupt dispatch calls, exported
- * under the names early_module.h declares. They are the same flag and the same
- * write the rest of this file uses, not copies. */
+/* The one accessor of that group that stays: it reports this file's APIC-ready
+ * flag, which its own LAPIC timer self-test sets a few dozen lines below, so
+ * neither the flag nor this read crosses the seam. early_module.h declares it
+ * and early_irq.c and early_platform.c call it, as before. */
 uint32_t xaios_x86_early_lapic_ready(void) { return g_lapic_ready; }
-
-void xaios_x86_early_lapic_write(uint32_t offset, uint32_t value) {
-  lapic_write(offset, value);
-}
-
-/* The serial and panic primitives this block used to define now live in
- * early_serial.c, which defines them once under the exported names
- * early_module.h and early_serial.h declare. */
-
-/* The primitive early_cpu.c's placement report calls; declared in the same
- * early_module.h seam and defined here, not copied. */
-void xaios_x86_early_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
-                           uint32_t *ebx, uint32_t *ecx, uint32_t *edx) {
-  cpuid(leaf, subleaf, eax, ebx, ecx, edx);
-}
-
-/* The MSR/CR/TSC/APIC primitives early_mem.c and early_pci.c call, exported
- * under the names early_module.h declares. They are the same functions above
- * and below, not copies. */
-uint64_t xaios_x86_early_rdmsr(uint32_t msr) { return rdmsr(msr); }
-
-void xaios_x86_early_wrmsr(uint32_t msr, uint64_t value) { wrmsr(msr, value); }
-
-uint64_t xaios_x86_early_read_cr3(void) { return read_cr3(); }
-
-void xaios_x86_early_write_cr3(uint64_t value) { write_cr3(value); }
-
-uint64_t xaios_x86_early_rdtsc(void) { return rdtsc(); }
-
-uint32_t xaios_x86_early_lapic_id(void) { return lapic_id(); }
 
 static void tsc_delay(uint64_t cycles) {
   uint64_t deadline = rdtsc() + cycles;

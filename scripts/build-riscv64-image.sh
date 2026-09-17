@@ -227,6 +227,14 @@ for app in $USER_APPS; do
     -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
     -I"$ROOT_DIR/userspace/include" \
     -c "$ROOT_DIR/userspace/lib/xaios_user.c" -o "$BUILD_DIR/lib-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/xaios_user_net.c" -o "$BUILD_DIR/net-$app.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/xaios_user_session.c" -o "$BUILD_DIR/session-$app.o"
   # The control-plane client, which xaiosctl and the shell call into.
   "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
     -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
@@ -367,7 +375,7 @@ for app in $USER_APPS; do
   # shellcheck disable=SC2086
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-$app.o" "$BUILD_DIR/$app.o" \
-    "$BUILD_DIR/lib-$app.o" "$BUILD_DIR/control-$app.o" \
+    "$BUILD_DIR/lib-$app.o" "$BUILD_DIR/control-$app.o" "$BUILD_DIR/net-$app.o" "$BUILD_DIR/session-$app.o" \
     "$BUILD_DIR/control-primitives-$app.o" \
     "$BUILD_DIR/control-system-$app.o" \
     "$BUILD_DIR/control-storage-$app.o" \
@@ -414,7 +422,7 @@ for app in $UTILITY_APPS; do
     -c "$ROOT_DIR/userspace/apps/xutils_text.c" -o "$BUILD_DIR/xutils-text-$app.o"
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/$app.elf" "$BUILD_DIR/start-xaios-shell.o" \
-    "$BUILD_DIR/lib-xaios-shell.o" "$BUILD_DIR/control-xaios-shell.o" \
+    "$BUILD_DIR/lib-xaios-shell.o" "$BUILD_DIR/control-xaios-shell.o" "$BUILD_DIR/net-xaios-shell.o" "$BUILD_DIR/session-xaios-shell.o" \
     "$BUILD_DIR/control-primitives-xaios-shell.o" \
     "$BUILD_DIR/control-system-xaios-shell.o" \
     "$BUILD_DIR/control-storage-xaios-shell.o" \
@@ -474,7 +482,7 @@ if [ -f "$XAPT_BEARSSL" ] &&
     -c "$ROOT_DIR/userspace/lib/start.S" -o "$BUILD_DIR/start-xapt.o"
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
     -o "$BUILD_DIR/xapt.elf" "$BUILD_DIR/start-xapt.o" \
-    "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" \
+    "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" "$BUILD_DIR/net-hello.o" "$BUILD_DIR/session-hello.o" \
     "$BUILD_DIR/control-primitives-hello.o" \
     "$BUILD_DIR/control-system-hello.o" \
     "$BUILD_DIR/control-storage-hello.o" \
@@ -536,7 +544,7 @@ done
 # shellcheck disable=SC2086
 "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$BUILD_DIR/sshd.elf" "$BUILD_DIR/start-sshd.o" \
-  "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" \
+  "$BUILD_DIR/lib-hello.o" "$BUILD_DIR/control-hello.o" "$BUILD_DIR/net-hello.o" "$BUILD_DIR/session-hello.o" \
   "$BUILD_DIR/control-primitives-hello.o" \
   "$BUILD_DIR/control-system-hello.o" \
   "$BUILD_DIR/control-storage-hello.o" \
@@ -590,14 +598,22 @@ done
   -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
   -I"$ROOT_DIR/userspace/include" \
   -c "$ROOT_DIR/userspace/lib/xaios_user.c" -o "$BUILD_DIR/lib-ssh-client.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/xaios_user_net.c" -o "$BUILD_DIR/net-ssh-client.o"
+  "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL -std=c99 \
+    -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -fno-pie \
+    -I"$ROOT_DIR/userspace/include" \
+    -c "$ROOT_DIR/userspace/lib/xaios_user_session.c" -o "$BUILD_DIR/session-ssh-client.o"
 # shellcheck disable=SC2086
 "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$BUILD_DIR/ssh.elf" "$BUILD_DIR/start-ssh-client.o" \
-  "$BUILD_DIR/lib-ssh-client.o" $SSH_CLIENT_OBJS
+  "$BUILD_DIR/lib-ssh-client.o" "$BUILD_DIR/net-ssh-client.o" "$BUILD_DIR/session-ssh-client.o" $SSH_CLIENT_OBJS
 # shellcheck disable=SC2086
 "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
   -o "$BUILD_DIR/scp.elf" "$BUILD_DIR/start-ssh-client.o" \
-  "$BUILD_DIR/lib-ssh-client.o" $SSH_CLIENT_OBJS
+  "$BUILD_DIR/lib-ssh-client.o" "$BUILD_DIR/net-ssh-client.o" "$BUILD_DIR/session-ssh-client.o" $SSH_CLIENT_OBJS
 SSHD_ARGS="$SSHD_ARGS /bin/ssh=$BUILD_DIR/ssh.elf"
 SSHD_ARGS="$SSHD_ARGS /bin/scp=$BUILD_DIR/scp.elf"
 

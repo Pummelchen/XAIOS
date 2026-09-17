@@ -285,6 +285,8 @@ for source in "$ROOT_DIR/engine/src/architecture.c" \
     "$ROOT_DIR/engine/src/backend_neon.c" \
     "$ROOT_DIR/engine/src/backend_avx2.c" \
     "$ROOT_DIR/engine/src/xai_fs.c" \
+    "$ROOT_DIR/engine/src/xai_fs_codec.c" \
+    "$ROOT_DIR/engine/src/xai_fs_read.c" \
     "$ROOT_DIR/engine/src/xai_fs_writer.c" \
     "$ROOT_DIR/engine/src/xai_fs_writer_staging.c" \
     "$ROOT_DIR/engine/src/xai_fs_writer_rewrite.c" \
