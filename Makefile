@@ -1313,7 +1313,7 @@ compile-check: libc
 	for f in $$(find kernel/arch/x86_64 -name '*.c'); do \
 	  clang --target=x86_64-none-elf -std=c99 -ffreestanding \
 	    -fno-stack-protector -fno-builtin -fno-pic -fno-pie -mno-red-zone \
-	    -Wall -Wextra -Werror -Ikernel/include -Iengine/include \
+	    -Wall -Wextra -Werror -DXAIOS_X86_COMMON_RUNTIME=1 -Ikernel/include -Iengine/include \
 	    -fsyntax-only "$$f" \
 	    || failed=$$((failed + 1)); \
 	done; \
