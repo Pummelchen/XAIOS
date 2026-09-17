@@ -311,7 +311,19 @@ for app in $USER_APPS; do
       -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
       -I"$ROOT_DIR/engine/include" \
       -c "$ROOT_DIR/userspace/apps/xtop_render.c" -o "$BUILD_DIR/xtop-render.o"
-    EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/xtop-serve.o $BUILD_DIR/xtop-render.o"
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+      -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+      -fno-pie -Os -Wall -Wextra -Werror \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_glyph.c" -o "$BUILD_DIR/xtop-glyph.o"
+    "$CLANG" --target="$TARGET" -march=rv64gc -mabi=lp64d $CODE_MODEL \
+      -std=c99 -ffreestanding -fno-stack-protector -fno-builtin -fno-pic \
+      -fno-pie -Os -Wall -Wextra -Werror \
+      -I"$ROOT_DIR/userspace/include" -I"$ROOT_DIR/userspace/sshd" \
+      -I"$ROOT_DIR/engine/include" \
+      -c "$ROOT_DIR/userspace/apps/xtop_draw.c" -o "$BUILD_DIR/xtop-draw.o"
+    EXTRA_OBJS="$EXTRA_OBJS $BUILD_DIR/xtop-serve.o $BUILD_DIR/xtop-render.o $BUILD_DIR/xtop-glyph.o $BUILD_DIR/xtop-draw.o"
   fi
   # shellcheck disable=SC2086
   "$LD_LLD" -nostdlib -T "$ROOT_DIR/userspace/init/linker.ld" \
@@ -429,12 +441,12 @@ fi
 # stops at a setup prompt and there is nothing to log into.
 printf '%s\n' "Building /bin/sshd..."
 SSHD_OBJS=""
-for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen sshd_console_programs ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
+for sshd_src in sshd sshd_audit sshd_rate_limit sshd_kex sshd_console_screen sshd_console_programs sshd_auth sshd_keys ssh_crypto ssh_mlkem tweetnacl_subset ssh_protocol \
     ssh_channel ssh_alt_screen ssh_client_proxy ssh_host_key ssh_connection sftp_server \
     less_pager; do
   sshd_opt=""
   case "$sshd_src" in
-    sshd|sshd_audit|sshd_rate_limit|sshd_kex|sshd_console_screen|sshd_console_programs) sshd_opt="-Os" ;;
+    sshd|sshd_audit|sshd_rate_limit|sshd_kex|sshd_console_screen|sshd_console_programs|sshd_auth|sshd_keys) sshd_opt="-Os" ;;
     *) sshd_opt="" ;;
   esac
   # shellcheck disable=SC2086
@@ -491,7 +503,7 @@ SSHD_ARGS="/bin/sshd=$BUILD_DIR/sshd.elf"
 # bidirectional interoperability suite is entirely about.
 printf '%s\n' "Building /bin/ssh and /bin/scp..."
 SSH_CLIENT_OBJS=""
-for ssh_client_src in ssh ssh_client ssh_client_scp ssh_known_hosts ssh_crypto ssh_identity \
+for ssh_client_src in ssh ssh_client ssh_client_scp ssh_client_kex ssh_client_handshake ssh_known_hosts ssh_crypto ssh_identity \
     ssh_mlkem tweetnacl_subset ssh_protocol ssh_connection ssh_sftp; do
   ssh_client_path="$ROOT_DIR/userspace/sshd/$ssh_client_src.c"
   [ "$ssh_client_src" = ssh ] && \

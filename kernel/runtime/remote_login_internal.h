@@ -4,8 +4,8 @@
 /*
  * The surface shared by remote_login.c and the modules split out of it:
  * remote_login_archive.c, remote_login_text.c, remote_login_path.c,
- * remote_login_sysinfo.c, remote_login_tar.c, remote_login_zip.c and
- * remote_login_exec.c.
+ * remote_login_sysinfo.c, remote_login_tar.c, remote_login_zip.c,
+ * remote_login_exec.c, remote_login_copy.c and remote_login_apps.c.
  *
  * The archive, text and navigation entry points live in those modules. Only
  * remote_login.c's command dispatch reaches them, and the code they came from
@@ -19,6 +19,7 @@
  * every configuration.
  */
 
+#include <xaios/initramfs.h>
 #include <xaios/status.h>
 #include <xaios/types.h>
 #include <xaios/xaiboot_fs.h>
@@ -48,6 +49,22 @@ xaios_status_t copy_cstr_range(char *dst, uint64_t dst_capacity,
                                const char *src, uint64_t count);
 xaios_status_t remote_path_resolve(const char *cwd, const char *path, char *out,
                                    uint64_t out_capacity);
+
+/* Output and tokenizing primitives remote_login.c defines in every
+   configuration. remote_login.c's own shell sees them by definition order, but
+   the split-out modules name them across the translation-unit boundary: the
+   shipped-configuration remote_login_apps.c needs them, as do the
+   boot-test-only remote_login_copy.c, remote_login_text.c and the archive
+   modules, so their declarations cannot sit inside the boot-test guard. */
+void output_append(char *output, uint64_t capacity, uint64_t *offset,
+                   const char *text);
+xaios_status_t output_append_char(char *output, uint64_t capacity,
+                                  uint64_t *offset, char value);
+void output_append_u64(char *output, uint64_t capacity, uint64_t *offset,
+                       uint64_t value);
+xaios_status_t token_next(const char *text, uint64_t *index, char *token,
+                          uint64_t capacity);
+int has_more_args(const char *text, uint64_t index);
 
 /* Primitives the redirect/pipe driver calls in every configuration, so they
    are declared outside the boot-test guard as well. */
@@ -90,10 +107,6 @@ xaios_status_t ustar_walk(const char *archive_path, const char *destination,
 /* Primitives the archive entry points call back into. They stay owned by
    remote_login.c because the rest of the shell uses them too; only their
    linkage changes so the archive module can name them. */
-void output_append(char *output, uint64_t capacity, uint64_t *offset,
-                   const char *text);
-xaios_status_t output_append_char(char *output, uint64_t capacity,
-                                  uint64_t *offset, char value);
 xaios_status_t path_join(char *out, uint64_t out_capacity, const char *base,
                          const char *name);
 xaios_status_t read_file_buffer(const char *path, char *buffer,
@@ -123,11 +136,6 @@ xaios_status_t gzip_decode(const uint8_t *input, uint64_t input_size,
 
 /* Shell primitives that stay in remote_login.c but are now called from the
    split-out text and path modules as well. */
-xaios_status_t token_next(const char *text, uint64_t *index, char *token,
-                          uint64_t capacity);
-void output_append_u64(char *output, uint64_t capacity, uint64_t *offset,
-                       uint64_t value);
-int has_more_args(const char *text, uint64_t index);
 void remote_login_log_failure(const char *operation, const char *reason,
                               xaios_status_t status);
 int string_starts_with(const char *text, const char *prefix);
@@ -162,6 +170,22 @@ xaios_status_t remote_login_handle_less(const char *args, char *output,
                                         uint64_t output_capacity,
                                         uint64_t *output_bytes);
 
+/* The file-copy handlers of remote_login_copy.c. Like the handlers above they
+   came from a boot-test-only arm of remote_login.c, so they carry the same
+   guard. */
+xaios_status_t remote_login_copy_cp(const char *args, char *output,
+                                    uint64_t output_capacity,
+                                    uint64_t *output_bytes);
+xaios_status_t remote_login_copy_mv(const char *args, char *output,
+                                    uint64_t output_capacity,
+                                    uint64_t *output_bytes);
+xaios_status_t remote_login_copy_rm(const char *args, char *output,
+                                    uint64_t output_capacity,
+                                    uint64_t *output_bytes);
+xaios_status_t remote_login_copy_rmdir(const char *args, char *output,
+                                       uint64_t output_capacity,
+                                       uint64_t *output_bytes);
+
 /* The process and filesystem reporters of remote_login_sysinfo.c. Like the
    listing entry points above they come from a boot-test-only arm of
    remote_login.c, so they carry the same guard. */
@@ -173,5 +197,33 @@ xaios_status_t handle_du(const char *args, char *output,
                          uint64_t output_capacity, uint64_t *output_bytes);
 
 #endif /* XAIOS_BOOT_TEST_APPS */
+
+#if !XAIOS_BOOT_TEST_APPS
+
+/* The remote application table and its launcher, split into
+   remote_login_apps.c. This is the shipped-configuration surface: the shell's
+   dispatch looks a command up with remote_login_app_find and runs the
+   definition it returns with remote_login_app_run. An app-store image is run
+   from its own file through remote_login_app_run_file. */
+typedef struct remote_login_app_definition {
+  const char *command;
+  const char *path;
+  uint64_t capabilities;
+  uint8_t raw_arguments;
+  uint8_t pass_cwd;
+  uint8_t report_completion;
+} remote_login_app_definition_t;
+
+const remote_login_app_definition_t *remote_login_app_find(const char *command);
+xaios_status_t remote_login_app_run(const remote_login_app_definition_t *app,
+                                    const char *args, char *output,
+                                    uint64_t output_capacity,
+                                    uint64_t *output_bytes);
+xaios_status_t remote_login_app_run_file(
+    const remote_login_app_definition_t *app, const xaios_initramfs_file_t *file,
+    const char *args, char *output, uint64_t output_capacity,
+    uint64_t *output_bytes);
+
+#endif /* !XAIOS_BOOT_TEST_APPS */
 
 #endif /* XAIOS_KERNEL_RUNTIME_REMOTE_LOGIN_INTERNAL_H */

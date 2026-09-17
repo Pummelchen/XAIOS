@@ -1,14 +1,16 @@
 #ifndef XAIOS_X86_64_EARLY_MODULE_H
 #define XAIOS_X86_64_EARLY_MODULE_H
 
-/* The private seam between kernel/arch/x86_64/early.c and
- * kernel/arch/x86_64/early_tlb.c. Both files include this header and nothing
- * in it is visible outside those two translation units: the x86_64 CPU record,
- * the per-CPU TLB bookkeeping, and the handful of early.c primitives the
- * shootdown needs are shared here, while the globals stay file-scope in
- * whichever file owns them. Declarations and type definitions only -- the
- * functions are defined exactly once, in early.c or early_tlb.c. */
+/* The private seam between kernel/arch/x86_64/early.c and the modules split
+ * out of it (early_tlb.c, early_cpu.c, early_serial.c, early_mem.c and
+ * early_pci.c). Every one of those files includes this header and nothing in
+ * it is visible outside them: the x86_64 CPU record, the per-CPU TLB
+ * bookkeeping, and the early.c primitives the moved code calls are shared
+ * here, while the globals stay file-scope in whichever file owns them.
+ * Declarations and type definitions only -- the functions are defined exactly
+ * once, in the file the comment beside them names. */
 
+#include <xaios/boot_info.h>
 #include <xaios/smp.h>
 #include <xaios/types.h>
 
@@ -98,12 +100,41 @@ void xaios_x86_early_tlb_acknowledge(x86_64_cpu_record_t *record,
 
 /* The CPU-topology report in early_cpu.c needs two more early.c primitives
  * than the shootdown does; appended here rather than given a second header, so
- * all three early files share one seam. */
+ * all the early files share one seam. */
 void xaios_x86_early_serial_hex64(uint16_t base, uint64_t value);
 void xaios_x86_early_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
                            uint32_t *ebx, uint32_t *ecx, uint32_t *edx);
 
 /* Defined in early_cpu.c. */
 void x86_64_early_cpu_build_placement_policy(uint16_t serial_base);
+
+/* The paging/PM primitives early.c and early_pci.c call; defined in
+ * early_mem.c. */
+void xaios_x86_mem_parse_map(uint16_t serial_base,
+                             const xaios_boot_info_t *boot);
+void xaios_x86_mem_install_page_tables(uint16_t serial_base);
+uint32_t xaios_x86_mem_page_tables_loaded(void);
+void *xaios_x86_mem_alloc(uint64_t bytes, uint64_t alignment);
+uint64_t xaios_x86_mem_bootstrap_start(void);
+uint64_t xaios_x86_mem_bootstrap_end(void);
+int xaios_x86_mem_map_mmio_gib(uint64_t address);
+void xaios_x86_mem_validate_ring3(uint16_t serial_base);
+void xaios_x86_mem_note_ring3_call(void);
+void xaios_x86_mem_set_ring3_exit(uint64_t value);
+
+/* The PCI/VirtIO primitives early.c calls; defined in early_pci.c. */
+void xaios_x86_pci_discover(uint16_t serial_base);
+void xaios_x86_pci_validate_virtio_block(uint16_t serial_base);
+void xaios_x86_pci_validate_virtio_network(uint16_t serial_base);
+void xaios_x86_pci_note_msix_interrupt(void);
+
+/* The MSR/CR/TSC/APIC primitives early.c exports for early_mem.c and
+ * early_pci.c; defined in early.c. */
+uint64_t xaios_x86_early_rdmsr(uint32_t msr);
+void xaios_x86_early_wrmsr(uint32_t msr, uint64_t value);
+uint64_t xaios_x86_early_read_cr3(void);
+void xaios_x86_early_write_cr3(uint64_t value);
+uint64_t xaios_x86_early_rdtsc(void);
+uint32_t xaios_x86_early_lapic_id(void);
 
 #endif

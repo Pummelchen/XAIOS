@@ -40,10 +40,18 @@
 #define serial_dec xaios_x86_early_serial_dec
 #define panic_halt xaios_x86_early_panic_halt
 
+/* The paging/PM and PCI halves moved to early_mem.c and early_pci.c; these
+ * aliases keep every call site in this file spelling them the way it did. */
+#define early_alloc xaios_x86_mem_alloc
+#define parse_memory_map xaios_x86_mem_parse_map
+#define install_page_tables xaios_x86_mem_install_page_tables
+#define validate_ring3_syscall xaios_x86_mem_validate_ring3
+#define discover_pci xaios_x86_pci_discover
+#define validate_virtio_block_operation xaios_x86_pci_validate_virtio_block
+#define validate_virtio_network_operation xaios_x86_pci_validate_virtio_network
+
 #define COM1_PORT UINT16_C(0x3f8)
 #define PAGE_SIZE UINT64_C(4096)
-#define LARGE_PAGE_SIZE UINT64_C(0x200000)
-#define EARLY_IDENTITY_LIMIT UINT64_C(0x100000000)
 #define X86_EFLAGS_ID UINT64_C(1 << 21)
 #define X86_CR4_OSXSAVE UINT64_C(1 << 18)
 #define X86_CR4_OSFXSR UINT64_C(1 << 9)
@@ -71,14 +79,6 @@
 #define APIC_TIMER_DIVIDE UINT32_C(0x3e0)
 #define X2APIC_MSR_BASE UINT32_C(0x800)
 #define X2APIC_ICR_MSR UINT32_C(0x830)
-#define MSR_IA32_EFER UINT32_C(0xc0000080)
-#define EFER_NXE UINT64_C(1 << 11)
-#define PTE_PRESENT UINT64_C(1)
-#define PTE_WRITABLE UINT64_C(1 << 1)
-#define PTE_USER UINT64_C(1 << 2)
-#define PTE_LARGE UINT64_C(1 << 7)
-#define PTE_GLOBAL UINT64_C(1 << 8)
-#define PTE_NX (UINT64_C(1) << 63)
 #define X86_USER_BASE UINT64_C(0x100000000)
 #define X86_USER_WINDOW_SIZE UINT64_C(0x1000000)
 #define X86_USER_LOG_MAX UINT64_C(4096)
@@ -88,8 +88,6 @@
 #define IDT_PRESENT UINT8_C(0x80)
 #define IDT_INTERRUPT_GATE UINT8_C(0x0e)
 #define IDT_TRAP_GATE UINT8_C(0x0f)
-#define PCI_CONFIG_ADDRESS UINT16_C(0x0cf8)
-#define PCI_CONFIG_DATA UINT16_C(0x0cfc)
 
 typedef struct x86_64_idt_entry {
   uint16_t offset_low;
@@ -129,29 +127,6 @@ typedef struct x86_64_exception_frame {
   uint64_t rflags;
 } x86_64_exception_frame_t;
 
-typedef struct x86_64_pmm_state {
-  uint64_t descriptors;
-  uint64_t conventional_regions;
-  uint64_t total_pages;
-  uint64_t usable_pages;
-  uint64_t reserved_pages;
-  uint64_t largest_usable_base;
-  uint64_t largest_usable_pages;
-} x86_64_pmm_state_t;
-
-typedef struct x86_64_pci_state {
-  uint32_t devices;
-  uint32_t functions;
-  uint32_t bridges;
-  uint32_t virtio_devices;
-  uint32_t network_devices;
-  uint32_t nvme_devices;
-  uint32_t pcie_devices;
-  uint32_t msi_devices;
-  uint32_t msix_devices;
-  uint32_t modern_virtio_devices;
-} x86_64_pci_state_t;
-
 typedef struct x86_64_contract_state {
   uint32_t userspace_contract_ready;
   uint32_t filesystem_contract_ready;
@@ -169,27 +144,6 @@ typedef struct x86_64_hardware_gate_state {
   uint32_t performance_claims_allowed;
   uint32_t release_candidate_ready;
 } x86_64_hardware_gate_state_t;
-
-typedef struct x86_64_virtio_pci_device {
-  uint8_t bus;
-  uint8_t device;
-  uint8_t function;
-  uint8_t valid;
-  uint16_t device_id;
-  uint16_t reserved;
-  uint64_t common_config;
-  uint64_t notify_base;
-  uint64_t isr_config;
-  uint64_t device_config;
-  uint32_t notify_multiplier;
-} x86_64_virtio_pci_device_t;
-
-typedef struct virtq_descriptor {
-  uint64_t address;
-  uint32_t length;
-  uint16_t flags;
-  uint16_t next;
-} __attribute__((packed)) virtq_descriptor_t;
 
 extern void x86_64_isr_0(void);
 extern void x86_64_isr_1(void);
@@ -231,7 +185,6 @@ extern void x86_64_irq_128(void);
 extern void x86_64_irq_255(void);
 extern void x86_64_load_gdt(const x86_64_idtr_t *gdtr);
 extern void x86_64_load_tss(void);
-extern void x86_64_enter_ring3(uint64_t entry, uint64_t stack);
 extern void x86_64_ring3_resume(void);
 extern uint8_t x86_64_ap_trampoline_start[];
 extern uint8_t x86_64_ap_trampoline_end[];
@@ -246,32 +199,19 @@ extern uint8_t x86_64_ap_trampoline_gdt_offset[];
 
 static x86_64_idt_entry_t g_idt[256] __attribute__((aligned(16)));
 extern void (*const x86_64_device_irq_stubs[64])(void);
-static uint64_t g_pml4[512] __attribute__((aligned(PAGE_SIZE)));
-static uint64_t g_pdpt[512] __attribute__((aligned(PAGE_SIZE)));
-static uint64_t g_pd[4][512] __attribute__((aligned(PAGE_SIZE)));
-static uint64_t g_user_pd[512] __attribute__((aligned(PAGE_SIZE)));
-static uint64_t g_mmio_pdpt[512] __attribute__((aligned(PAGE_SIZE)));
-static uint64_t g_mmio_pd[512] __attribute__((aligned(PAGE_SIZE)));
-static uint64_t g_mmio_gib_base;
 static uint64_t g_gdt[7] __attribute__((aligned(16)));
 static x86_64_tss_t g_tss;
 static uint8_t g_syscall_stack[X86_KERNEL_STACK_SIZE]
     __attribute__((aligned(PAGE_SIZE)));
-static uint8_t *g_user_test_page;
-static x86_64_pmm_state_t g_pmm;
-static x86_64_pci_state_t g_pci;
 static x86_64_contract_state_t g_contract;
 static x86_64_hardware_gate_state_t g_hardware_gate;
 static uint32_t g_exception_vectors_installed;
 static volatile uint32_t g_expected_exception_vector = UINT32_MAX;
 static volatile uint64_t g_exception_test_count;
-static uint32_t g_page_tables_loaded;
 static uint16_t g_code_selector;
 static uint32_t g_lapic_ready;
 static uint32_t g_lapic_x2apic;
 volatile uint64_t g_x86_lapic_timer_interrupts;
-static volatile uint64_t g_ring3_syscalls;
-static volatile uint64_t g_ring3_exit_code;
 volatile uint64_t g_ring3_return_value;
 static x86_64_acpi_info_t g_acpi;
 static xaios_boot_info_t g_boot_info_copy;
@@ -280,13 +220,8 @@ static uint8_t g_xsave_test[UINT32_C(65536)] __attribute__((aligned(64)));
 static x86_64_cpu_record_t *g_cpu_records;
 static uint32_t g_cpu_record_count;
 static uint32_t g_bsp_ordinal = UINT32_MAX;
-static uint64_t g_early_alloc_cursor;
-static uint64_t g_early_alloc_start;
-static uint64_t g_early_alloc_end;
 static uint64_t g_xsave_enabled;
 static uint32_t g_xsave_area_size;
-static volatile uint64_t g_virtio_msix_interrupts;
-static uint64_t g_virtio_msix_isr;
 static volatile uint32_t g_common_worker_release;
 static uint64_t g_tsc_frequency;
 static uint64_t g_lapic_frequency;
@@ -306,9 +241,6 @@ static volatile uint32_t g_idle_halt_probe_legacy;
 #if XAIOS_X86_COMMON_RUNTIME
 extern void kmain(const xaios_boot_info_t *boot);
 #endif
-
-extern const uint8_t _binary_hello_bin_start[];
-extern const uint8_t _binary_hello_bin_end[];
 
 static inline uint64_t rdtsc(void);
 static uint32_t lapic_id(void);
@@ -437,10 +369,12 @@ void x86_64_platform_release_workers(void) {
 }
 
 uint64_t x86_64_platform_bootstrap_start(void) {
-  return g_early_alloc_start;
+  return xaios_x86_mem_bootstrap_start();
 }
 
-uint64_t x86_64_platform_bootstrap_end(void) { return g_early_alloc_cursor; }
+uint64_t x86_64_platform_bootstrap_end(void) {
+  return xaios_x86_mem_bootstrap_end();
+}
 
 void x86_64_platform_timer_start(uint32_t initial_count, uint32_t periodic) {
   if (g_lapic_ready == 0U) return;
@@ -539,8 +473,6 @@ uint64_t x86_64_platform_user_return(void) {
   if (ordinal >= g_cpu_record_count) panic_halt(COM1_PORT, "user result CPU");
   return g_cpu_records[ordinal].user_return_value;
 }
-
-static uint8_t mmio_read8(uint64_t address);
 
 static inline uint64_t read_cr2(void) {
   uint64_t value = 0;
@@ -671,33 +603,10 @@ static uint64_t memory_descriptor_count(const xaios_boot_info_t *boot) {
   return boot->memory_map_size / boot->memory_descriptor_size;
 }
 
-static uint64_t align_up(uint64_t value, uint64_t align) {
-  return (value + align - 1U) & ~(align - 1U);
-}
-
-static uint64_t align_down(uint64_t value, uint64_t align) {
-  return value & ~(align - 1U);
-}
-
 static void bytes_copy(void *destination, const void *source, uint64_t bytes) {
   uint8_t *output = (uint8_t *)destination;
   const uint8_t *input = (const uint8_t *)source;
   for (uint64_t i = 0U; i < bytes; ++i) output[i] = input[i];
-}
-
-static void *early_alloc(uint64_t bytes, uint64_t alignment) {
-  if (bytes == 0U || alignment == 0U ||
-      (alignment & (alignment - 1U)) != 0U ||
-      g_early_alloc_cursor > g_early_alloc_end) {
-    return 0;
-  }
-  uint64_t start = align_up(g_early_alloc_cursor, alignment);
-  if (start < g_early_alloc_cursor || start > g_early_alloc_end ||
-      bytes > g_early_alloc_end - start) {
-    return 0;
-  }
-  g_early_alloc_cursor = start + bytes;
-  return (void *)(uintptr_t)start;
 }
 
 #if !XAIOS_X86_COMMON_RUNTIME
@@ -947,6 +856,21 @@ void xaios_x86_early_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax,
   cpuid(leaf, subleaf, eax, ebx, ecx, edx);
 }
 
+/* The MSR/CR/TSC/APIC primitives early_mem.c and early_pci.c call, exported
+ * under the names early_module.h declares. They are the same functions above
+ * and below, not copies. */
+uint64_t xaios_x86_early_rdmsr(uint32_t msr) { return rdmsr(msr); }
+
+void xaios_x86_early_wrmsr(uint32_t msr, uint64_t value) { wrmsr(msr, value); }
+
+uint64_t xaios_x86_early_read_cr3(void) { return read_cr3(); }
+
+void xaios_x86_early_write_cr3(uint64_t value) { write_cr3(value); }
+
+uint64_t xaios_x86_early_rdtsc(void) { return rdtsc(); }
+
+uint32_t xaios_x86_early_lapic_id(void) { return lapic_id(); }
+
 static void tsc_delay(uint64_t cycles) {
   uint64_t deadline = rdtsc() + cycles;
   while ((int64_t)(rdtsc() - deadline) < 0) __asm__ volatile("pause");
@@ -972,7 +896,7 @@ static uint64_t x86_64_interrupt_entry_body(x86_64_exception_frame_t *frame) {
   }
   if (frame != 0 && frame->vector == 128U) {
     if ((frame->cs & 3U) != 3U) panic_halt(COM1_PORT, "ring3 syscall CPL");
-    ++g_ring3_syscalls;
+    xaios_x86_mem_note_ring3_call();
 #if XAIOS_X86_COMMON_RUNTIME
     uint64_t result = syscall_dispatch(frame->rax, frame->rdi, frame->rsi,
                                        frame->rdx);
@@ -1005,7 +929,7 @@ static uint64_t x86_64_interrupt_entry_body(x86_64_exception_frame_t *frame) {
       return 0U;
     }
     if (frame->rax == 2U) {
-      g_ring3_exit_code = frame->rdi;
+      xaios_x86_mem_set_ring3_exit(frame->rdi);
       return (uint64_t)(uintptr_t)x86_64_ring3_resume;
     }
     panic_halt(COM1_PORT, "ring3 syscall number");
@@ -1037,8 +961,7 @@ static uint64_t x86_64_interrupt_entry_body(x86_64_exception_frame_t *frame) {
 #endif
   }
   if (frame != 0 && frame->vector == 34U && g_lapic_ready != 0U) {
-    if (g_virtio_msix_isr != 0U) (void)mmio_read8(g_virtio_msix_isr);
-    ++g_virtio_msix_interrupts;
+    xaios_x86_pci_note_msix_interrupt();
     lapic_write(APIC_EOI, 0U);
     return 0U;
   }
@@ -1191,64 +1114,6 @@ void x86_64_ap_entry(uint32_t ordinal) {
 #endif
 }
 
-static void parse_memory_map(uint16_t serial_base, const xaios_boot_info_t *boot) {
-  g_pmm = (x86_64_pmm_state_t){0};
-  uint64_t allocator_base = 0U;
-  uint64_t allocator_pages = 0U;
-  uint64_t offset = 0;
-  while (offset + sizeof(xaios_memory_descriptor_t) <= boot->memory_map_size) {
-    const xaios_memory_descriptor_t *desc =
-        (const xaios_memory_descriptor_t *)(uintptr_t)(boot->memory_map + offset);
-    uint64_t pages = desc->number_of_pages;
-    g_pmm.descriptors++;
-    g_pmm.total_pages += pages;
-    if (desc->type == XAIOS_MEMORY_TYPE_CONVENTIONAL) {
-      uint64_t region_start = align_up(desc->physical_start, PAGE_SIZE);
-      uint64_t region_end = align_down(desc->physical_start + pages * PAGE_SIZE,
-                                       PAGE_SIZE);
-      uint64_t usable_pages = 0;
-      if (region_end > region_start) {
-        usable_pages = (region_end - region_start) / PAGE_SIZE;
-      }
-      g_pmm.conventional_regions++;
-      g_pmm.usable_pages += usable_pages;
-      if (usable_pages > g_pmm.largest_usable_pages) {
-        g_pmm.largest_usable_pages = usable_pages;
-        g_pmm.largest_usable_base = region_start;
-      }
-      uint64_t allocator_end =
-          region_end < EARLY_IDENTITY_LIMIT ? region_end : EARLY_IDENTITY_LIMIT;
-      uint64_t candidate_pages =
-          allocator_end > region_start
-              ? (allocator_end - region_start) / PAGE_SIZE
-              : 0U;
-      if (candidate_pages > allocator_pages) {
-        allocator_base = region_start;
-        allocator_pages = candidate_pages;
-      }
-    } else {
-      g_pmm.reserved_pages += pages;
-    }
-    offset += boot->memory_descriptor_size;
-  }
-
-  if (g_pmm.descriptors == 0 || g_pmm.usable_pages == 0 ||
-      allocator_pages == 0U) {
-    panic_halt(serial_base, "memory map parse failed");
-  }
-  g_early_alloc_cursor = allocator_base;
-  g_early_alloc_start = allocator_base;
-  g_early_alloc_end = allocator_base + allocator_pages * PAGE_SIZE;
-
-  serial_puts(serial_base, "x86_64: PMM parsed descriptors=");
-  serial_dec(serial_base, g_pmm.descriptors);
-  serial_puts(serial_base, " usable_pages=");
-  serial_dec(serial_base, g_pmm.usable_pages);
-  serial_puts(serial_base, " largest_base=");
-  serial_hex64(serial_base, g_pmm.largest_usable_base);
-  serial_puts(serial_base, "\n");
-}
-
 static void parse_acpi(uint16_t serial_base, const xaios_boot_info_t *boot) {
   if (!x86_64_acpi_parse(boot->acpi_rsdp, &g_acpi)) {
     panic_halt(serial_base, "ACPI RSDP/root/MADT validation failed");
@@ -1363,76 +1228,6 @@ static void prepare_irq_state_areas(uint16_t serial_base) {
   serial_puts(serial_base, " cpus=");
   serial_dec(serial_base, g_cpu_record_count);
   serial_puts(serial_base, "\n");
-}
-
-static void install_page_tables(uint16_t serial_base) {
-  if (g_user_test_page == 0) {
-    g_user_test_page = (uint8_t *)early_alloc(LARGE_PAGE_SIZE, LARGE_PAGE_SIZE);
-    if (g_user_test_page == 0) panic_halt(serial_base, "early user window");
-  }
-  for (uint32_t i = 0; i < 512; ++i) {
-    g_pml4[i] = 0;
-    g_pdpt[i] = 0;
-  }
-  for (uint32_t table = 0; table < 4; ++table) {
-    for (uint32_t index = 0; index < 512; ++index) {
-      uint64_t address =
-          ((uint64_t)table * UINT64_C(0x40000000)) +
-          ((uint64_t)index * LARGE_PAGE_SIZE);
-      uint64_t flags = PTE_PRESENT | PTE_LARGE | PTE_GLOBAL;
-      if (address < UINT64_C(0x200000)) {
-        flags |= PTE_WRITABLE;
-      } else {
-        flags |= PTE_WRITABLE | PTE_NX;
-      }
-      g_pd[table][index] = address | flags;
-    }
-    g_pdpt[table] = ((uint64_t)(uintptr_t)g_pd[table]) | PTE_PRESENT |
-                    PTE_WRITABLE;
-  }
-  for (uint32_t index = 0; index < 512; ++index) g_user_pd[index] = 0U;
-  uint32_t user_pdpt = (uint32_t)((X86_USER_BASE >> 30U) & UINT64_C(0x1ff));
-  uint32_t user_pd = (uint32_t)((X86_USER_BASE >> 21U) & UINT64_C(0x1ff));
-  g_user_pd[user_pd] = ((uint64_t)(uintptr_t)g_user_test_page) |
-                       PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_LARGE;
-  g_pdpt[user_pdpt] = ((uint64_t)(uintptr_t)g_user_pd) | PTE_PRESENT |
-                      PTE_WRITABLE | PTE_USER;
-  g_pml4[0] = ((uint64_t)(uintptr_t)g_pdpt) | PTE_PRESENT | PTE_WRITABLE |
-              PTE_USER;
-
-  uint64_t efer = rdmsr(MSR_IA32_EFER);
-  wrmsr(MSR_IA32_EFER, efer | EFER_NXE);
-  write_cr3((uint64_t)(uintptr_t)g_pml4);
-  g_page_tables_loaded = 1;
-
-  serial_puts(serial_base, "x86_64: early page tables loaded cr3=");
-  serial_hex64(serial_base, read_cr3());
-  serial_puts(serial_base, " identity_limit=");
-  serial_hex64(serial_base, EARLY_IDENTITY_LIMIT);
-  serial_puts(serial_base, "\n");
-  serial_puts(serial_base, "x86_64: VMM policy kernel/user split prepared\n");
-}
-
-static void X86_BRINGUP_ONLY validate_ring3_syscall(uint16_t serial_base) {
-  uint64_t image_size =
-      (uint64_t)(_binary_hello_bin_end - _binary_hello_bin_start);
-  if (image_size == 0U || image_size > LARGE_PAGE_SIZE) {
-    panic_halt(serial_base, "userspace hello image size");
-  }
-  for (uint64_t i = 0U; i < LARGE_PAGE_SIZE; ++i) {
-    g_user_test_page[i] = 0U;
-  }
-  for (uint64_t i = 0U; i < image_size; ++i) {
-    g_user_test_page[i] = _binary_hello_bin_start[i];
-  }
-  g_ring3_syscalls = 0U;
-  g_ring3_exit_code = UINT64_MAX;
-  x86_64_enter_ring3(X86_USER_BASE,
-                     X86_USER_BASE + LARGE_PAGE_SIZE - 16U);
-  if (g_ring3_syscalls != 3U) panic_halt(serial_base, "ring3 syscall count");
-  if (g_ring3_exit_code != 0U) panic_halt(serial_base, "ring3 exit code");
-  serial_puts(serial_base,
-              "x86_64: real /bin/hello ELF syscall ABI passed calls=3 exit=0\n");
 }
 
 /* The PIT's input frequency, by definition: 14.31818 MHz divided by twelve.
@@ -1799,487 +1594,6 @@ static void start_application_processors(uint16_t serial_base,
 #endif
 }
 
-static uint32_t pci_read_config(uint8_t bus, uint8_t device, uint8_t function,
-                                uint8_t offset) {
-  uint32_t address = UINT32_C(0x80000000) | ((uint32_t)bus << 16) |
-                     ((uint32_t)device << 11) | ((uint32_t)function << 8) |
-                     ((uint32_t)offset & UINT32_C(0xfc));
-  outl(PCI_CONFIG_ADDRESS, address);
-  return inl(PCI_CONFIG_DATA);
-}
-
-static void pci_write_config(uint8_t bus, uint8_t device, uint8_t function,
-                             uint8_t offset, uint32_t value) {
-  uint32_t address = UINT32_C(0x80000000) | ((uint32_t)bus << 16) |
-                     ((uint32_t)device << 11) | ((uint32_t)function << 8) |
-                     ((uint32_t)offset & UINT32_C(0xfc));
-  outl(PCI_CONFIG_ADDRESS, address);
-  outl(PCI_CONFIG_DATA, value);
-}
-
-static uint8_t pci_read_config8(uint8_t bus, uint8_t device, uint8_t function,
-                                uint8_t offset) {
-  uint32_t value = pci_read_config(bus, device, function, offset);
-  return (uint8_t)(value >> ((offset & 3U) * 8U));
-}
-
-static uint64_t pci_bar_address(uint8_t bus, uint8_t device,
-                                uint8_t function, uint8_t bar) {
-  if (bar >= 6U) return 0U;
-  uint8_t offset = (uint8_t)(0x10U + bar * 4U);
-  uint32_t low = pci_read_config(bus, device, function, offset);
-  if ((low & 1U) != 0U) return 0U;
-  uint64_t address = low & UINT32_C(0xfffffff0);
-  if ((low & UINT32_C(6)) == UINT32_C(4) && bar + 1U < 6U) {
-    address |= (uint64_t)pci_read_config(bus, device, function,
-                                         (uint8_t)(offset + 4U))
-               << 32U;
-  }
-  return address;
-}
-
-static uint8_t mmio_read8(uint64_t address) {
-  return *(volatile uint8_t *)(uintptr_t)address;
-}
-
-static uint16_t mmio_read16(uint64_t address) {
-  return *(volatile uint16_t *)(uintptr_t)address;
-}
-
-static uint32_t mmio_read32(uint64_t address) {
-  return *(volatile uint32_t *)(uintptr_t)address;
-}
-
-static void mmio_write8(uint64_t address, uint8_t value) {
-  *(volatile uint8_t *)(uintptr_t)address = value;
-}
-
-static void mmio_write16(uint64_t address, uint16_t value) {
-  *(volatile uint16_t *)(uintptr_t)address = value;
-}
-
-static void mmio_write32(uint64_t address, uint32_t value) {
-  *(volatile uint32_t *)(uintptr_t)address = value;
-}
-
-static void mmio_write64(uint64_t address, uint64_t value) {
-  *(volatile uint64_t *)(uintptr_t)address = value;
-}
-
-static int find_virtio_pci_device(uint16_t wanted_device_id,
-                                  x86_64_virtio_pci_device_t *result) {
-  if (result == 0) return 0;
-  *result = (x86_64_virtio_pci_device_t){0};
-  for (uint16_t bus = 0U; bus < 256U; ++bus) {
-    for (uint8_t device = 0U; device < 32U; ++device) {
-      uint32_t header = pci_read_config((uint8_t)bus, device, 0U, 0x0cU);
-      uint8_t functions = ((header >> 16U) & UINT32_C(0x80)) != 0U ? 8U : 1U;
-      for (uint8_t function = 0U; function < functions; ++function) {
-        uint32_t id =
-            pci_read_config((uint8_t)bus, device, function, 0x00U);
-        if ((uint16_t)id != UINT16_C(0x1af4) ||
-            (uint16_t)(id >> 16U) != wanted_device_id) {
-          continue;
-        }
-        result->bus = (uint8_t)bus;
-        result->device = device;
-        result->function = function;
-        result->device_id = wanted_device_id;
-        uint8_t pointer =
-            pci_read_config8((uint8_t)bus, device, function, 0x34U) & 0xfcU;
-        uint32_t visited = 0U;
-        while (pointer >= 0x40U && pointer <= 0xfcU && visited++ < 48U) {
-          uint8_t capability = pci_read_config8(
-              (uint8_t)bus, device, function, pointer);
-          uint8_t next = pci_read_config8(
-              (uint8_t)bus, device, function, (uint8_t)(pointer + 1U)) &
-                         0xfcU;
-          if (capability == 0x09U &&
-              pci_read_config8((uint8_t)bus, device, function,
-                               (uint8_t)(pointer + 2U)) >= 16U) {
-            uint8_t type = pci_read_config8(
-                (uint8_t)bus, device, function, (uint8_t)(pointer + 3U));
-            uint8_t bar = pci_read_config8(
-                (uint8_t)bus, device, function, (uint8_t)(pointer + 4U));
-            uint64_t bar_address =
-                pci_bar_address((uint8_t)bus, device, function, bar);
-            uint32_t offset = pci_read_config(
-                (uint8_t)bus, device, function, (uint8_t)(pointer + 8U));
-            uint64_t address = bar_address + offset;
-            if (bar_address != 0U && address >= bar_address) {
-              if (type == 1U) result->common_config = address;
-              if (type == 2U) {
-                result->notify_base = address;
-                result->notify_multiplier = pci_read_config(
-                    (uint8_t)bus, device, function,
-                    (uint8_t)(pointer + 16U));
-              }
-              if (type == 3U) result->isr_config = address;
-              if (type == 4U) result->device_config = address;
-            }
-          }
-          if (next == 0U || next == pointer) break;
-          pointer = next;
-        }
-        if (result->common_config != 0U && result->notify_base != 0U &&
-            result->notify_multiplier != 0U) {
-          uint32_t command = pci_read_config(
-              (uint8_t)bus, device, function, 0x04U);
-          pci_write_config((uint8_t)bus, device, function, 0x04U,
-                           command | UINT32_C(6));
-          result->valid = 1U;
-          return 1;
-        }
-        return 0;
-      }
-    }
-  }
-  return 0;
-}
-
-static void inspect_pci_capabilities(uint8_t bus, uint8_t device,
-                                     uint8_t function) {
-  uint32_t status_command = pci_read_config(bus, device, function, 0x04U);
-  if ((status_command & UINT32_C(1 << 20)) == 0U) return;
-  uint8_t pointer = pci_read_config8(bus, device, function, 0x34U) & 0xfcU;
-  uint32_t visited = 0U;
-  while (pointer >= 0x40U && pointer <= 0xfcU && visited++ < 48U) {
-    uint8_t capability = pci_read_config8(bus, device, function, pointer);
-    if (capability == 0x05U) ++g_pci.msi_devices;
-    if (capability == 0x10U) ++g_pci.pcie_devices;
-    if (capability == 0x11U) ++g_pci.msix_devices;
-    uint8_t next =
-        pci_read_config8(bus, device, function, (uint8_t)(pointer + 1U)) &
-        0xfcU;
-    if (next == pointer) break;
-    pointer = next;
-  }
-}
-
-static void X86_BRINGUP_ONLY discover_pci(uint16_t serial_base) {
-  g_pci = (x86_64_pci_state_t){0};
-  for (uint16_t bus = 0; bus < 256; ++bus) {
-    for (uint8_t device = 0; device < 32; ++device) {
-      uint32_t header0 = pci_read_config((uint8_t)bus, device, 0, 0);
-      if (header0 == UINT32_C(0xffffffff)) {
-        continue;
-      }
-      uint32_t header_type_reg = pci_read_config((uint8_t)bus, device, 0, 0x0c);
-      uint8_t header_type = (uint8_t)((header_type_reg >> 16) & 0xffU);
-      uint8_t functions = (header_type & 0x80U) != 0U ? 8U : 1U;
-      for (uint8_t function = 0; function < functions; ++function) {
-        uint32_t id = pci_read_config((uint8_t)bus, device, function, 0);
-        if (id == UINT32_C(0xffffffff)) {
-          continue;
-        }
-        uint16_t vendor = (uint16_t)(id & UINT32_C(0xffff));
-        uint16_t device_id = (uint16_t)((id >> 16) & UINT32_C(0xffff));
-        uint32_t class_reg =
-            pci_read_config((uint8_t)bus, device, function, 0x08);
-        uint8_t class_code = (uint8_t)(class_reg >> 24);
-        uint8_t subclass = (uint8_t)((class_reg >> 16) & UINT32_C(0xff));
-        g_pci.functions++;
-        if (function == 0) {
-          g_pci.devices++;
-        }
-        if (class_code == 0x06U && subclass == 0x04U) {
-          g_pci.bridges++;
-        }
-        if (vendor == 0x1af4U) {
-          g_pci.virtio_devices++;
-          if (device_id >= 0x1040U && device_id <= 0x107fU) {
-            ++g_pci.modern_virtio_devices;
-          }
-        }
-        if (class_code == 0x02U) {
-          g_pci.network_devices++;
-        }
-        if (class_code == 0x01U && subclass == 0x08U) {
-          g_pci.nvme_devices++;
-        }
-        inspect_pci_capabilities((uint8_t)bus, device, function);
-      }
-    }
-  }
-
-  if (g_pci.devices == 0) {
-    panic_halt(serial_base, "PCI enumeration found no devices");
-  }
-
-  serial_puts(serial_base, "x86_64: PCI discovery devices=");
-  serial_dec(serial_base, g_pci.devices);
-  serial_puts(serial_base, " functions=");
-  serial_dec(serial_base, g_pci.functions);
-  serial_puts(serial_base, " virtio=");
-  serial_dec(serial_base, g_pci.virtio_devices);
-  serial_puts(serial_base, " net=");
-  serial_dec(serial_base, g_pci.network_devices);
-  serial_puts(serial_base, " nvme=");
-  serial_dec(serial_base, g_pci.nvme_devices);
-  serial_puts(serial_base, " pcie=");
-  serial_dec(serial_base, g_pci.pcie_devices);
-  serial_puts(serial_base, " msi=");
-  serial_dec(serial_base, g_pci.msi_devices);
-  serial_puts(serial_base, " msix=");
-  serial_dec(serial_base, g_pci.msix_devices);
-  serial_puts(serial_base, " modern_virtio=");
-  serial_dec(serial_base, g_pci.modern_virtio_devices);
-  serial_puts(serial_base, "\n");
-}
-
-static int virtio_begin(const x86_64_virtio_pci_device_t *device) {
-  uint64_t common = device->common_config;
-  mmio_write8(common + 20U, 0U);
-  for (uint32_t spin = 0U; spin < 1000000U; ++spin) {
-    if (mmio_read8(common + 20U) == 0U) break;
-  }
-  if (mmio_read8(common + 20U) != 0U) return 0;
-  mmio_write8(common + 20U, 1U);
-  mmio_write8(common + 20U, 3U);
-  mmio_write32(common + 0U, 1U);
-  uint32_t high_features = mmio_read32(common + 4U);
-  if ((high_features & 1U) == 0U) return 0;
-  mmio_write32(common + 8U, 0U);
-  mmio_write32(common + 12U, 0U);
-  mmio_write32(common + 8U, 1U);
-  mmio_write32(common + 12U, 1U);
-  mmio_write8(common + 20U, 11U);
-  if ((mmio_read8(common + 20U) & 8U) == 0U) return 0;
-  return 1;
-}
-
-static int virtio_setup_queue(const x86_64_virtio_pci_device_t *device,
-                              uint16_t queue_index, uint8_t *queue_memory,
-                              uint16_t msix_vector,
-                              uint16_t *notify_offset) {
-  uint64_t common = device->common_config;
-  mmio_write16(common + 22U, queue_index);
-  uint16_t maximum = mmio_read16(common + 24U);
-  if (maximum == 0U || queue_memory == 0 || notify_offset == 0) return 0;
-  uint16_t size = maximum < 8U ? maximum : 8U;
-  for (uint32_t i = 0U; i < PAGE_SIZE; ++i) queue_memory[i] = 0U;
-  uint64_t descriptor_address = (uint64_t)(uintptr_t)queue_memory;
-  uint64_t available_address = descriptor_address + UINT64_C(256);
-  uint64_t used_address = descriptor_address + UINT64_C(512);
-  mmio_write16(common + 24U, size);
-  mmio_write16(common + 26U, msix_vector);
-  mmio_write64(common + 32U, descriptor_address);
-  mmio_write64(common + 40U, available_address);
-  mmio_write64(common + 48U, used_address);
-  *notify_offset = mmio_read16(common + 30U);
-  mmio_write16(common + 28U, 1U);
-  return mmio_read16(common + 28U) == 1U;
-}
-
-static void virtio_notify(const x86_64_virtio_pci_device_t *device,
-                          uint16_t queue_index, uint16_t notify_offset) {
-  uint64_t address = device->notify_base +
-                     (uint64_t)notify_offset * device->notify_multiplier;
-  __atomic_thread_fence(__ATOMIC_RELEASE);
-  mmio_write16(address, queue_index);
-}
-
-static int map_high_mmio_gib(uint64_t address) {
-  if (address < EARLY_IDENTITY_LIMIT) return 1;
-  uint64_t base = address & ~UINT64_C(0x3fffffff);
-  if (g_mmio_gib_base != 0U) return g_mmio_gib_base == base;
-  uint32_t pml4_index = (uint32_t)((base >> 39U) & UINT64_C(0x1ff));
-  uint32_t pdpt_index = (uint32_t)((base >> 30U) & UINT64_C(0x1ff));
-  for (uint32_t i = 0U; i < 512U; ++i) {
-    g_mmio_pdpt[i] = 0U;
-    g_mmio_pd[i] = (base + (uint64_t)i * LARGE_PAGE_SIZE) | PTE_PRESENT |
-                   PTE_WRITABLE | PTE_LARGE | PTE_NX;
-  }
-  if (pml4_index == 0U) {
-    if (g_pdpt[pdpt_index] != 0U) return 0;
-    g_pdpt[pdpt_index] = (uint64_t)(uintptr_t)g_mmio_pd | PTE_PRESENT |
-                         PTE_WRITABLE;
-    g_mmio_gib_base = base;
-    write_cr3(read_cr3());
-    return 1;
-  }
-  g_mmio_pdpt[pdpt_index] = (uint64_t)(uintptr_t)g_mmio_pd | PTE_PRESENT |
-                            PTE_WRITABLE;
-  g_pml4[pml4_index] = (uint64_t)(uintptr_t)g_mmio_pdpt | PTE_PRESENT |
-                       PTE_WRITABLE;
-  g_mmio_gib_base = base;
-  write_cr3(read_cr3());
-  return 1;
-}
-
-static int configure_msix(const x86_64_virtio_pci_device_t *device,
-                          uint16_t table_entry, uint8_t vector) {
-  uint8_t pointer = pci_read_config8(device->bus, device->device,
-                                     device->function, 0x34U) &
-                    0xfcU;
-  uint32_t visited = 0U;
-  while (pointer >= 0x40U && pointer <= 0xfcU && visited++ < 48U) {
-    uint32_t header = pci_read_config(device->bus, device->device,
-                                      device->function, pointer);
-    if ((header & UINT32_C(0xff)) == UINT32_C(0x11)) {
-      uint16_t control = (uint16_t)(header >> 16U);
-      uint16_t table_size = (uint16_t)((control & UINT16_C(0x07ff)) + 1U);
-      if (table_entry >= table_size) return 0;
-      uint32_t table = pci_read_config(device->bus, device->device,
-                                       device->function,
-                                       (uint8_t)(pointer + 4U));
-      uint8_t bar = (uint8_t)(table & 7U);
-      uint64_t table_base =
-          pci_bar_address(device->bus, device->device, device->function, bar) +
-          (table & UINT32_C(0xfffffff8));
-      uint64_t entry = table_base + (uint64_t)table_entry * 16U;
-      if (table_base == 0U || entry < table_base ||
-          !map_high_mmio_gib(entry)) {
-        return 0;
-      }
-      mmio_write32(entry + 12U, 1U);
-      mmio_write32(entry + 0U,
-                   UINT32_C(0xfee00000) | (lapic_id() << 12U));
-      mmio_write32(entry + 4U, 0U);
-      mmio_write32(entry + 8U, vector);
-      mmio_write32(entry + 12U, 0U);
-      control = (uint16_t)((control | UINT16_C(0x8000)) &
-                           ~UINT16_C(0x4000));
-      pci_write_config(device->bus, device->device, device->function, pointer,
-                       (header & UINT32_C(0xffff)) |
-                           ((uint32_t)control << 16U));
-      return 1;
-    }
-    uint8_t next = (uint8_t)((header >> 8U) & UINT32_C(0xfc));
-    if (next == 0U || next == pointer) break;
-    pointer = next;
-  }
-  return 0;
-}
-
-static int virtio_wait_used(volatile uint16_t *used_index,
-                            uint16_t expected) {
-  uint64_t deadline = rdtsc() + UINT64_C(2000000000);
-  while (__atomic_load_n(used_index, __ATOMIC_ACQUIRE) != expected &&
-         (int64_t)(rdtsc() - deadline) < 0) {
-    __asm__ volatile("pause");
-  }
-  return *used_index == expected;
-}
-
-static void X86_BRINGUP_ONLY validate_virtio_block_operation(uint16_t serial_base) {
-  x86_64_virtio_pci_device_t device;
-  int found = find_virtio_pci_device(UINT16_C(0x1042), &device);
-  serial_puts(serial_base, "x86_64: VirtIO block PCI transport found=");
-  serial_dec(serial_base, found != 0);
-  serial_puts(serial_base, " common=");
-  serial_hex64(serial_base, device.common_config);
-  serial_puts(serial_base, " notify=");
-  serial_hex64(serial_base, device.notify_base);
-  serial_puts(serial_base, " multiplier=");
-  serial_dec(serial_base, device.notify_multiplier);
-  serial_puts(serial_base, "\n");
-  if (!found || !map_high_mmio_gib(device.common_config) ||
-      !map_high_mmio_gib(device.notify_base) || !virtio_begin(&device)) {
-    panic_halt(serial_base, "modern VirtIO block negotiation");
-  }
-  uint8_t *queue = (uint8_t *)early_alloc(PAGE_SIZE, PAGE_SIZE);
-  uint8_t *request = (uint8_t *)early_alloc(PAGE_SIZE, PAGE_SIZE);
-  uint16_t notify_offset = 0U;
-  if (request == 0 || !configure_msix(&device, 0U, 34U) ||
-      !virtio_setup_queue(&device, 0U, queue, 0U, &notify_offset)) {
-    panic_halt(serial_base, "VirtIO block queue");
-  }
-  for (uint32_t i = 0U; i < PAGE_SIZE; ++i) request[i] = 0U;
-  virtq_descriptor_t *descriptors = (virtq_descriptor_t *)(void *)queue;
-  volatile uint16_t *available_index =
-      (volatile uint16_t *)(void *)(queue + 258U);
-  volatile uint16_t *available_ring =
-      (volatile uint16_t *)(void *)(queue + 260U);
-  volatile uint16_t *used_index =
-      (volatile uint16_t *)(void *)(queue + 514U);
-  uint8_t *data = request + 16U;
-  uint8_t *status = request + 528U;
-  *status = UINT8_C(0xff);
-  descriptors[0] = (virtq_descriptor_t){
-      (uint64_t)(uintptr_t)request, 16U, 1U, 1U};
-  descriptors[1] = (virtq_descriptor_t){
-      (uint64_t)(uintptr_t)data, 512U, 3U, 2U};
-  descriptors[2] = (virtq_descriptor_t){
-      (uint64_t)(uintptr_t)status, 1U, 2U, 0U};
-  available_ring[0] = 0U;
-  *available_index = 1U;
-  g_virtio_msix_isr = device.isr_config;
-  g_virtio_msix_interrupts = 0U;
-  mmio_write8(device.common_config + 20U, 15U);
-  virtio_notify(&device, 0U, notify_offset);
-  __asm__ volatile("sti" ::: "memory");
-  int completed = virtio_wait_used(used_index, 1U);
-  __asm__ volatile("cli" ::: "memory");
-  if (!completed || g_virtio_msix_interrupts == 0U || *status != 0U ||
-      data[510] != UINT8_C(0x55) || data[511] != UINT8_C(0xaa)) {
-    panic_halt(serial_base, "VirtIO block DMA read");
-  }
-  serial_puts(serial_base,
-              "x86_64: modern VirtIO block DMA read passed sector=0 bytes=512\n");
-  serial_puts(serial_base,
-              "x86_64: VirtIO block MSI-X completion interrupt passed vector=34\n");
-}
-
-static void X86_BRINGUP_ONLY validate_virtio_network_operation(uint16_t serial_base) {
-  x86_64_virtio_pci_device_t device;
-  if (!find_virtio_pci_device(UINT16_C(0x1041), &device) ||
-      !map_high_mmio_gib(device.common_config) ||
-      !map_high_mmio_gib(device.notify_base) || !virtio_begin(&device)) {
-    panic_halt(serial_base, "modern VirtIO network negotiation");
-  }
-  uint8_t *queue = (uint8_t *)early_alloc(PAGE_SIZE, PAGE_SIZE);
-  uint8_t *packet = (uint8_t *)early_alloc(PAGE_SIZE, PAGE_SIZE);
-  uint16_t notify_offset = 0U;
-  if (packet == 0 ||
-      !virtio_setup_queue(&device, 1U, queue, UINT16_C(0xffff),
-                          &notify_offset)) {
-    panic_halt(serial_base, "VirtIO network queue");
-  }
-  for (uint32_t i = 0U; i < PAGE_SIZE; ++i) packet[i] = 0U;
-  uint8_t *frame = packet + 10U;
-  for (uint32_t i = 0U; i < 6U; ++i) frame[i] = UINT8_C(0xff);
-  const uint8_t source[6] = {0x52U, 0x54U, 0x00U, 0x12U, 0x34U, 0x56U};
-  for (uint32_t i = 0U; i < 6U; ++i) frame[6U + i] = source[i];
-  frame[12] = 0x08U;
-  frame[13] = 0x06U;
-  frame[14] = 0x00U;
-  frame[15] = 0x01U;
-  frame[16] = 0x08U;
-  frame[17] = 0x00U;
-  frame[18] = 0x06U;
-  frame[19] = 0x04U;
-  frame[20] = 0x00U;
-  frame[21] = 0x01U;
-  for (uint32_t i = 0U; i < 6U; ++i) frame[22U + i] = source[i];
-  frame[28] = 10U;
-  frame[29] = 0U;
-  frame[30] = 2U;
-  frame[31] = 15U;
-  frame[38] = 10U;
-  frame[39] = 0U;
-  frame[40] = 2U;
-  frame[41] = 2U;
-  virtq_descriptor_t *descriptors = (virtq_descriptor_t *)(void *)queue;
-  volatile uint16_t *available_index =
-      (volatile uint16_t *)(void *)(queue + 258U);
-  volatile uint16_t *available_ring =
-      (volatile uint16_t *)(void *)(queue + 260U);
-  volatile uint16_t *used_index =
-      (volatile uint16_t *)(void *)(queue + 514U);
-  descriptors[0] = (virtq_descriptor_t){
-      (uint64_t)(uintptr_t)packet, 52U, 0U, 0U};
-  available_ring[0] = 0U;
-  *available_index = 1U;
-  mmio_write8(device.common_config + 20U, 15U);
-  virtio_notify(&device, 1U, notify_offset);
-  if (!virtio_wait_used(used_index, 1U)) {
-    panic_halt(serial_base, "VirtIO network DMA TX");
-  }
-  serial_puts(serial_base,
-              "x86_64: modern VirtIO network DMA TX passed bytes=42\n");
-}
-
 static void X86_BRINGUP_ONLY validate_x86_os_contract(uint16_t serial_base) {
   uint32_t portable = xaios_common_runtime_probe();
   uint32_t storage_ready =
@@ -2439,7 +1753,7 @@ void x86_64_kmain(const xaios_boot_info_t *boot) {
   prepare_cpu_records(serial_base);
   serial_puts(serial_base, "x86_64: ACPI topology and NUMA tables validated\n");
   install_page_tables(serial_base);
-  if (g_page_tables_loaded == 0U) {
+  if (xaios_x86_mem_page_tables_loaded() == 0U) {
     panic_halt(serial_base, "page tables not loaded");
   }
   serial_puts(serial_base, "x86_64: Intel Desktop milestone 46 page tables passed\n");

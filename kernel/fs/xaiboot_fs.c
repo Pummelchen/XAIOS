@@ -92,15 +92,8 @@
  * tree, one workload and one instrument, rather than comparing today's numbers
  * against numbers written down yesterday on a different build. Set through
  * XAIOS_KERNEL_CFLAGS_EXTRA; the shipped default is on. */
-#ifndef XBFS_APPEND_IN_PLACE
-#define XBFS_APPEND_IN_PLACE 1
-#endif
 
 #define XBFS_MAX_OPEN_FILES 256U
-#define XBFS_NODE_FREE 0U
-#define XBFS_NODE_DIR 1U
-#define XBFS_NODE_FILE 2U
-#define XBFS_MOUNT_READ_WRITE 1U
 
 typedef struct xaios_xbfs_disk {
   char magic[XBFS_MAGIC_LEN];
@@ -176,27 +169,6 @@ static uint32_t g_mount_flags;
    xbfs_metadata_internal.h. */
 static xaios_spinlock_t g_xaiboot_fs_lock = XAIOS_SPINLOCK_INIT;
 static uint8_t g_file_buffer[XBFS_V5_MAX_FILE_BYTES];
-/* Sized for the largest format, not for the one that existed when it was
-   written. `rename_node` walks `xbfs_geometry_max_nodes()`, which v6 raised to 1024
-   while this stayed at v5's 256 -- so a rename on a v6 volume cleared and
-   read back rows 256 through 1023, running 191 KiB past a 64 KiB array. That
-   is the same mistake `write_limit` exists to prevent for `g_file_buffer`,
-   made once more here and missed because no v6 volume in any test had ever
-   been renamed on.
-
-   Sized rather than clamped, because clamping is wrong for this one: a rename
-   that skips the nodes past the limit leaves them holding paths under a
-   directory that no longer exists, which is worse than refusing. */
-static char g_path_transaction[XBFS_V6_MAX_NODES][XBFS_PATH_MAX];
-
-/* Every format's node count has to fit, so a future one cannot quietly
-   reintroduce the overflow by raising the maximum alone. */
-typedef char xbfs_path_transaction_fits
-    [(XBFS_V6_MAX_NODES >= XBFS_V5_MAX_NODES &&
-      XBFS_V6_MAX_NODES >= XBFS_V4_MAX_NODES &&
-      XBFS_V6_MAX_NODES >= XBFS_MAX_NODES)
-         ? 1
-         : -1];
 
 /* The active geometry lives in xbfs_state.c behind xbfs_geometry_*; see
    xbfs_internal.h. The version dispatch selects it. */
@@ -240,6 +212,57 @@ uint64_t xbfs_blk_capacity(void) {
   return virtio_block_capacity_sectors();
 }
 
+/* The volume state an extracted module cannot reach directly.
+ *
+ * g_xbfs, the open-file table and the mount flags stay here. Two of these hand
+ * back a pointer into live mutable state -- xbfs_node_row into the node table
+ * and xbfs_block_bitmap into the block bitmap -- and each is good for the
+ * duration of the call that asked for it and no longer: the caller must not
+ * retain it, cache it or hand it to another translation unit. Everything else
+ * is a value in or out. None of these takes the volume lock; every caller
+ * already holds it, exactly as the static code these replaced did. */
+xaios_xbfs_node_t *xbfs_node_row(uint32_t index) {
+  return &g_xbfs.nodes[index];
+}
+
+uint8_t *xbfs_block_bitmap(void) { return g_xbfs.block_bitmap; }
+
+uint64_t xbfs_block_bitmap_bytes(void) { return sizeof(g_xbfs.block_bitmap); }
+
+uint64_t xbfs_generation_get(void) { return g_xbfs.generation; }
+
+uint64_t xbfs_generation_take(void) { return g_xbfs.generation++; }
+
+uint32_t xbfs_mounted(void) { return g_mounted; }
+
+uint32_t xbfs_mount_flags(void) { return g_mount_flags; }
+
+void xbfs_open_files_forget_tree(const char *root) {
+  for (uint32_t i = 0; i < XBFS_MAX_OPEN_FILES; ++i) {
+    if (g_open_files[i].in_use != 0 &&
+        xbfs_path_is_at_or_below(g_open_files[i].path, root)) {
+      g_open_files[i].in_use = 0;
+      g_open_files[i].path[0] = '\0';
+    }
+  }
+}
+
+void xbfs_open_files_rebase(const char *old_path, const char *new_path) {
+  uint64_t old_len = xbfs_cstr_len(old_path);
+  uint64_t new_len = xbfs_cstr_len(new_path);
+  for (uint32_t i = 0; i < XBFS_MAX_OPEN_FILES; ++i) {
+    if (g_open_files[i].in_use == 0 ||
+        !xbfs_path_is_at_or_below(g_open_files[i].path, old_path)) {
+      continue;
+    }
+    char suffix[XBFS_PATH_MAX];
+    xbfs_copy_path(suffix, g_open_files[i].path + old_len);
+    xbfs_copy_path(g_open_files[i].path, new_path);
+    xbfs_bytes_copy(g_open_files[i].path + new_len, suffix,
+               xbfs_cstr_len(suffix) + 1U);
+  }
+}
+
 static void reset_open_files(void) {
   for (uint32_t i = 0; i < XBFS_MAX_OPEN_FILES; ++i) {
     g_open_files[i].in_use = 0;
@@ -250,9 +273,6 @@ static void reset_open_files(void) {
 }
 
 
-static int node_is_visible(const xaios_xbfs_node_t *node) {
-  return node != 0 && (node->active != 0 || node->snapshot_active != 0);
-}
 
 
 /* FNV-1a resumed from where it left off, which is what makes an append cheap.
@@ -266,41 +286,6 @@ static int node_is_visible(const xaios_xbfs_node_t *node) {
  * append path below can leave the rest of the file alone. */
 
 
-xaios_status_t xbfs_validate_path(const char *path) {
-  if (path == 0 || path[0] != '/') {
-    return XAIOS_ERR_INVALID;
-  }
-  uint32_t len = 0;
-  uint32_t last_slash = 1;
-  for (uint32_t i = 0; i < xbfs_geometry_path_max(); ++i) {
-    char c = path[i];
-    if (c == '\0') {
-      if (len == 0 || (len > 1U && last_slash != 0)) {
-        return XAIOS_ERR_INVALID;
-      }
-      return XAIOS_OK;
-    }
-    if (c < '!' || c > '~' || c == ':' || c == '*' || c == '?' ||
-        c == '"' || c == '<' || c == '>' || c == '|') {
-      return XAIOS_ERR_INVALID;
-    }
-    if (c == '/' && last_slash != 0 && i != 0) {
-      return XAIOS_ERR_INVALID;
-    }
-    last_slash = c == '/' ? 1U : 0U;
-    ++len;
-  }
-  return XAIOS_ERR_INVALID;
-}
-
-static xaios_status_t normalize_path(const char *path,
-                                    char normalized[XBFS_PATH_MAX]) {
-  if (xbfs_validate_path(path) != XAIOS_OK) {
-    return XAIOS_ERR_INVALID;
-  }
-  xbfs_copy_path(normalized, path);
-  return XAIOS_OK;
-}
 
 
 static uint64_t node_count_by_type(uint32_t type) {
@@ -313,85 +298,7 @@ static uint64_t node_count_by_type(uint32_t type) {
   return count;
 }
 
-/* Whether a block is spoken for, and claiming or releasing one.
-   
-   Three small functions rather than shifts written out at each use: a bitmap
-   indexed wrongly hands out a block that is already in use, and one place to
-   be wrong is better than every caller. */
-static uint32_t block_used(uint64_t block) {
-  if (block >= xbfs_geometry_data_sectors()) return 1U;
-  return (g_xbfs.block_bitmap[block >> 3U] &
-          (uint8_t)(1U << (block & 7U))) != 0U ? 1U : 0U;
-}
 
-static void block_claim(uint64_t block) {
-  if (block >= xbfs_geometry_data_sectors()) return;
-  g_xbfs.block_bitmap[block >> 3U] |= (uint8_t)(1U << (block & 7U));
-}
-
-static void block_release(uint64_t block) {
-  if (block >= xbfs_geometry_data_sectors()) return;
-  g_xbfs.block_bitmap[block >> 3U] &= (uint8_t)~(1U << (block & 7U));
-}
-
-/* The bitmap as older versions record it: one byte per block.
-   
-   In memory it is a bit per block, because a byte would cost two megabytes on
-   a v6 volume. On disk that packing is v6's; a v5 volume keeps the encoding it
-   was written with, so a machine that mounts one still writes something a v5
-   kernel could read. Converting on the way in and out is the price of not
-   rewriting other people's disks. */
-static void bitmap_from_bytes(const uint8_t *source, uint64_t blocks) {
-  xbfs_bytes_zero(g_xbfs.block_bitmap, sizeof(g_xbfs.block_bitmap));
-  for (uint64_t i = 0U; i < blocks; ++i) {
-    if (source[i] != 0U) {
-      g_xbfs.block_bitmap[i >> 3U] |= (uint8_t)(1U << (i & 7U));
-    }
-  }
-}
-
-static void bitmap_to_bytes(uint8_t *destination, uint64_t blocks) {
-  for (uint64_t i = 0U; i < blocks; ++i) {
-    destination[i] = (uint8_t)((g_xbfs.block_bitmap[i >> 3U] &
-                                (uint8_t)(1U << (i & 7U))) != 0U ? 1U : 0U);
-  }
-}
-
-static uint64_t block_count_used(void) {
-  uint64_t count = 0;
-  for (uint64_t i = 0; i < xbfs_geometry_data_sectors(); ++i) {
-    if (block_used(i) != 0U) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-/* How many blocks a set of extents covers. The size field says how many bytes
-   the file holds; this says how much space it occupies, and the two agreeing
-   is one of the things fsck checks. */
-static uint64_t extent_blocks(const xaios_xbfs_extent_t *extents,
-                              uint32_t count) {
-  uint64_t total = 0U;
-  for (uint32_t index = 0U; index < count && index < XBFS_V6_MAX_EXTENTS;
-       ++index) {
-    total += extents[index].length;
-  }
-  return total;
-}
-
-/* The nth block of a file, walking its extents. */
-static uint64_t extent_block_at(const xaios_xbfs_extent_t *extents,
-                                uint32_t count, uint64_t index) {
-  uint64_t seen = 0U;
-  for (uint32_t e = 0U; e < count && e < XBFS_V6_MAX_EXTENTS; ++e) {
-    if (index < seen + extents[e].length) {
-      return extents[e].start + (index - seen);
-    }
-    seen += extents[e].length;
-  }
-  return UINT64_MAX;
-}
 
 /* Turn a list of block numbers into extents, joining consecutive blocks into
    one run. This is how a volume written by an older version is read: its nodes
@@ -436,26 +343,6 @@ uint32_t extents_to_blocks(const xaios_xbfs_extent_t *extents,
   return written;
 }
 
-static xaios_xbfs_node_t *find_node(const char *path, uint32_t include_snapshot) {
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
-    if ((node->active != 0 ||
-         (include_snapshot != 0 && node->snapshot_active != 0)) &&
-        xbfs_str_eq(node->path, path)) {
-      return node;
-    }
-  }
-  return 0;
-}
-
-static xaios_xbfs_node_t *find_free_node(void) {
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    if (g_xbfs.nodes[i].active == 0 && g_xbfs.nodes[i].snapshot_active == 0) {
-      return &g_xbfs.nodes[i];
-    }
-  }
-  return 0;
-}
 
 static xaios_status_t read_metadata_slot(uint32_t slot) {
   uint8_t first_sector[XBFS_SECTOR_SIZE];
@@ -517,7 +404,7 @@ static xaios_status_t read_metadata_slot(uint32_t slot) {
                (geometry.data_sectors + 7U) / 8U);
     p += (geometry.data_sectors + 7U) / 8U;
   } else {
-    bitmap_from_bytes(metadata + p, geometry.data_sectors);
+    xbfs_bitmap_from_bytes(metadata + p, geometry.data_sectors);
     p += geometry.data_sectors;
   }
   if (version == XBFS_V6_VERSION) {
@@ -644,7 +531,7 @@ static xaios_status_t read_metadata(void) {
   return read_metadata_slot(chosen);
 }
 
-static xaios_status_t write_metadata(void) {
+xaios_status_t xbfs_write_metadata(void) {
   uint8_t *metadata = xbfs_metadata_buffer();
   xbfs_bytes_zero(metadata, xbfs_metadata_buffer_bytes());
   uint64_t p = 0;
@@ -668,7 +555,7 @@ static xaios_status_t write_metadata(void) {
                (xbfs_geometry_data_sectors() + 7U) / 8U);
     p += (xbfs_geometry_data_sectors() + 7U) / 8U;
   } else {
-    bitmap_to_bytes(metadata + p, xbfs_geometry_data_sectors());
+    xbfs_bitmap_to_bytes(metadata + p, xbfs_geometry_data_sectors());
     p += xbfs_geometry_data_sectors();
   }
   if (xbfs_geometry_version() == XBFS_V6_VERSION) {
@@ -774,229 +661,7 @@ static uint64_t absolute_data_sector(uint64_t block_index) {
   return xbfs_data_start_sector() + block_index;
 }
 
-/* Claim enough blocks for a file, as few runs as possible.
- *
- * Walks the volume taking the first run long enough for what is left. A file
- * that fits in one run costs one extent; a fragmented volume costs several,
- * which is the case extents exist for. Running out of extents before running
- * out of space is a real failure and is reported as one -- a file recorded
- * with only part of its blocks would read as truncated later, which is worse
- * than not being written. */
-/* Place a file in at most XBFS_V6_MAX_EXTENTS runs of free blocks.
- *
- * This took the first free runs it found, in address order, and gave up once
- * it had XBFS_V6_MAX_EXTENTS of them. On a fresh volume that is the same as any
- * policy and cheaper than most. On a volume that has been written and
- * rewritten for a while it is the worst available: the low blocks are the most
- * broken up, so first-fit collects that many short runs out of the rubble at the
- * bottom and never reaches the long runs above them. The volume then reports
- * plenty of free space and refuses the write, and because the same path is
- * what snapshots a file, `commit_snapshot` fails on a filesystem `fsck` calls
- * sound -- which halts the machine on its next boot, because the update
- * self-test stages a snapshot and asserts that it worked. See B-52.
- *
- * One scan, which stops early in the case that has always worked and must not
- * get slower: the first run long enough to hold the whole file ends it. That
- * is one extent, it cannot be improved on, and on a mostly empty volume it is
- * the run at block zero -- the same handful of iterations the old code took.
- *
- * The scan also keeps the XBFS_V6_MAX_EXTENTS longest runs as it goes, and
- * those are used only when it reaches the end without finding one that fits,
- * which on a healthy volume does not happen. Filling from the longest first is
- * not merely better than address order, it is the best any policy can do
- * against this constraint: the question is whether some XBFS_V6_MAX_EXTENTS
- * runs can cover the file, and if the longest that many cannot, no such set
- * can. The number was sixteen when this was written and is sixty-four since
- * B-55; the array below is sized by the macro, so it was the prose that went
- * stale and not the code.
- */
-static xaios_status_t allocate_extents(uint64_t blocks_needed,
-                                       xaios_xbfs_extent_t *extents,
-                                       uint32_t *out_count) {
-  *out_count = 0U;
-  if (blocks_needed == 0U) return XAIOS_OK;
-  if (blocks_needed > xbfs_geometry_data_sectors()) return XAIOS_ERR_INVALID;
 
-  struct free_run {
-    uint64_t start;
-    uint64_t length;
-  };
-  struct free_run longest[XBFS_V6_MAX_EXTENTS];
-  uint32_t longest_count = 0U;
-  uint32_t used = 0U;
-  uint64_t remaining = blocks_needed;
-
-  uint64_t block = 0U;
-  while (block < xbfs_geometry_data_sectors()) {
-    if (block_used(block) != 0U) {
-      ++block;
-      continue;
-    }
-    uint64_t start = block;
-    uint64_t run = 0U;
-    while (start + run < xbfs_geometry_data_sectors() &&
-           block_used(start + run) == 0U) {
-      ++run;
-      /* Stop measuring once it is long enough. The exact length past that
-         point is not used, and on a mostly empty volume the first run is the
-         whole volume. */
-      if (run >= blocks_needed) break;
-    }
-    block = start + run;
-
-    if (run >= blocks_needed) {
-      extents[0].start = (uint32_t)start;
-      extents[0].length = (uint32_t)blocks_needed;
-      used = 1U;
-      remaining = 0U;
-      break;
-    }
-
-    /* Keep the XBFS_V6_MAX_EXTENTS longest, longest first. Insertion rather than a sort:
-       the array is XBFS_V6_MAX_EXTENTS entries and the scan is the expensive half. */
-    uint32_t at = longest_count;
-    while (at > 0U && longest[at - 1U].length < run) {
-      if (at < XBFS_V6_MAX_EXTENTS) longest[at] = longest[at - 1U];
-      --at;
-    }
-    if (at < XBFS_V6_MAX_EXTENTS) {
-      longest[at].start = start;
-      longest[at].length = run;
-      if (longest_count < XBFS_V6_MAX_EXTENTS) ++longest_count;
-    }
-  }
-
-  if (remaining != 0U) {
-    for (uint32_t i = 0U; i < longest_count && remaining != 0U; ++i) {
-      uint64_t take = longest[i].length;
-      if (take > remaining) take = remaining;
-      extents[used].start = (uint32_t)longest[i].start;
-      extents[used].length = (uint32_t)take;
-      ++used;
-      remaining -= take;
-    }
-  }
-
-  if (remaining != 0U) {
-    *out_count = 0U;
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NO_MEMORY;
-  }
-
-  /* Claimed only once the whole placement is known. The old code claimed as it
-     went and released again on failure, so a refused allocation still moved
-     both the allocation and the free counter -- the two telemetry numbers a
-     reader would use to ask whether this was happening at all. */
-  for (uint32_t e = 0U; e < used; ++e) {
-    for (uint32_t offset = 0U; offset < extents[e].length; ++offset) {
-      block_claim((uint64_t)extents[e].start + offset);
-      xbfs_stat_bump(XBFS_STAT_ALLOCATION);
-    }
-  }
-  *out_count = used;
-  return XAIOS_OK;
-}
-
-static void free_extents(const xaios_xbfs_extent_t *extents, uint32_t count) {
-  for (uint32_t e = 0U; e < count && e < XBFS_V6_MAX_EXTENTS; ++e) {
-    for (uint32_t offset = 0U; offset < extents[e].length; ++offset) {
-      uint64_t block = (uint64_t)extents[e].start + offset;
-      if (block < xbfs_geometry_data_sectors() && block_used(block) != 0U) {
-        block_release(block);
-        xbfs_stat_bump(XBFS_STAT_FREE);
-      }
-    }
-  }
-}
-
-/* Claim more blocks onto the end of a file's list, leaving the ones it already
-   has exactly where they are.
-
-   `allocate_extents` builds a list from nothing. This adds to a live one, and
-   the difference that matters is the first thing it tries: the block
-   immediately after the file's current last block. A log grows one block at a
-   time, and taking the next block whenever it is free keeps the whole file in
-   a single run, so the extent count does not move however long the file gets.
-   Only when that block is already taken does this spend an extent, and when
-   the format has no extents left it fails rather than truncating the run --
-   the caller then writes the file the old way, which is slower and correct.
-
-   Failure restores the list byte for byte and releases every block this call
-   claimed, including the ones that merely lengthened the existing tail extent.
-   A file left holding blocks that a failed append allocated would leak them;
-   one left with a longer tail than its size accounts for would read as
-   containing bytes nobody wrote. */
-#if XBFS_APPEND_IN_PLACE
-static xaios_status_t extend_extents(xaios_xbfs_extent_t *extents,
-                                     uint32_t *extent_count,
-                                     uint64_t blocks_needed) {
-  if (blocks_needed == 0U) return XAIOS_OK;
-  uint32_t original_count = *extent_count;
-  uint32_t original_tail_length =
-      original_count != 0U ? extents[original_count - 1U].length : 0U;
-  uint64_t remaining = blocks_needed;
-
-  while (remaining != 0U) {
-    if (*extent_count != 0U) {
-      xaios_xbfs_extent_t *tail = &extents[*extent_count - 1U];
-      uint64_t next = (uint64_t)tail->start + (uint64_t)tail->length;
-      if (next < xbfs_geometry_data_sectors() && block_used(next) == 0U) {
-        block_claim(next);
-        xbfs_stat_bump(XBFS_STAT_ALLOCATION);
-        tail->length += 1U;
-        --remaining;
-        continue;
-      }
-    }
-    if (*extent_count >= XBFS_V6_MAX_EXTENTS) break;
-    uint64_t block = 0U;
-    uint64_t run = 0U;
-    while (block < xbfs_geometry_data_sectors() && run == 0U) {
-      if (block_used(block) != 0U) {
-        ++block;
-        continue;
-      }
-      while (block + run < xbfs_geometry_data_sectors() && run < remaining &&
-             block_used(block + run) == 0U) {
-        ++run;
-      }
-    }
-    if (run == 0U) break;
-    extents[*extent_count].start = (uint32_t)block;
-    extents[*extent_count].length = (uint32_t)run;
-    ++(*extent_count);
-    for (uint64_t offset = 0U; offset < run; ++offset) {
-      block_claim(block + offset);
-      xbfs_stat_bump(XBFS_STAT_ALLOCATION);
-    }
-    remaining -= run;
-  }
-
-  if (remaining != 0U) {
-    for (uint32_t e = original_count; e < *extent_count; ++e) {
-      for (uint32_t offset = 0U; offset < extents[e].length; ++offset) {
-        block_release((uint64_t)extents[e].start + offset);
-        xbfs_stat_bump(XBFS_STAT_FREE);
-      }
-      extents[e].start = 0U;
-      extents[e].length = 0U;
-    }
-    if (original_count != 0U) {
-      xaios_xbfs_extent_t *tail = &extents[original_count - 1U];
-      for (uint32_t offset = original_tail_length; offset < tail->length;
-           ++offset) {
-        block_release((uint64_t)tail->start + offset);
-        xbfs_stat_bump(XBFS_STAT_FREE);
-      }
-      tail->length = original_tail_length;
-    }
-    *extent_count = original_count;
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  return XAIOS_OK;
-}
-#endif /* XBFS_APPEND_IN_PLACE */
 
 static xaios_status_t validate_disk(uint64_t expected_checksum) {
   xbfs_geometry_t geometry;
@@ -1032,9 +697,9 @@ static xaios_status_t validate_disk(uint64_t expected_checksum) {
         node->snapshot_type != XBFS_NODE_FILE) {
       return XAIOS_ERR_INVALID;
     }
-    if (extent_blocks(node->extents, node->extent_count) >
+    if (xbfs_extent_blocks(node->extents, node->extent_count) >
             geometry.file_max_blocks ||
-        extent_blocks(node->snapshot_extents, node->snapshot_extent_count) >
+        xbfs_extent_blocks(node->snapshot_extents, node->snapshot_extent_count) >
             geometry.file_max_blocks ||
         node->extent_count > XBFS_V6_MAX_EXTENTS ||
         node->snapshot_extent_count > XBFS_V6_MAX_EXTENTS ||
@@ -1074,9 +739,9 @@ static xaios_status_t format_volume(void) {
      volume with a single valid copy until its second metadata write, which
      is exactly the window this is meant to remove. The two writes alternate
      slots, so both end up holding a complete, self-consistent image. */
-  if (write_metadata() != XAIOS_OK) return XAIOS_ERR_IO;
+  if (xbfs_write_metadata() != XAIOS_OK) return XAIOS_ERR_IO;
   if (xbfs_metadata_mirror_enabled() == 0U) return XAIOS_OK;
-  return write_metadata();
+  return xbfs_write_metadata();
 }
 
 static xaios_status_t migrate_volume_to_v5(void) {
@@ -1098,7 +763,7 @@ static xaios_status_t migrate_volume_to_v5(void) {
   for (uint32_t remaining = xbfs_geometry_data_sectors(); remaining != 0U;
        --remaining) {
     uint32_t i = remaining - 1U;
-    if (block_used(i) == 0U) {
+    if (xbfs_block_used(i) == 0U) {
       continue;
     }
     if (xbfs_blk_read(old_data_start + i, sector, sizeof(sector)) != XAIOS_OK ||
@@ -1119,7 +784,7 @@ static xaios_status_t migrate_volume_to_v5(void) {
   g_xbfs.data_start_sector = xbfs_data_start_sector();
   g_xbfs.data_sectors = XBFS_V5_DATA_SECTORS;
   ++g_xbfs.generation;
-  if (xbfs_clear_journal() != XAIOS_OK || write_metadata() != XAIOS_OK) {
+  if (xbfs_clear_journal() != XAIOS_OK || xbfs_write_metadata() != XAIOS_OK) {
     return XAIOS_ERR_IO;
   }
   klog("xaibootfs: migrated v%u to v5 nodes=%u sectors=%u\n", old_version,
@@ -1127,7 +792,6 @@ static xaios_status_t migrate_volume_to_v5(void) {
   return XAIOS_OK;
 }
 
-static xaios_status_t create_dir(const char *path);
 
 static xaios_status_t mount_volume(uint32_t mount_flags) {
   xbfs_geometry_select(XBFS_VERSION);
@@ -1155,7 +819,7 @@ static xaios_status_t mount_volume(uint32_t mount_flags) {
     xbfs_stat_bump(XBFS_STAT_BOOT_LOAD);
     klog("xaibootfs: existing state loaded files=%lu directories=%lu blocks=%lu generation=%lu committed=%lu\n",
          node_count_by_type(XBFS_NODE_FILE), node_count_by_type(XBFS_NODE_DIR),
-         block_count_used(), g_xbfs.generation, g_xbfs.committed_generation);
+         xbfs_block_count_used(), g_xbfs.generation, g_xbfs.committed_generation);
   } else {
     klog("xaibootfs: no valid filesystem at sector=%lu; formatting\n",
          XBFS_START_SECTOR);
@@ -1171,9 +835,9 @@ static xaios_status_t mount_volume(uint32_t mount_flags) {
   }
 
   if ((g_mount_flags & XBFS_MOUNT_READ_WRITE) != 0U) {
-    xaios_xbfs_node_t *root = find_node("/", 1);
+    xaios_xbfs_node_t *root = xbfs_find_node("/", 1);
     if (root == 0) {
-      if (create_dir("/") != XAIOS_OK) {
+      if (xbfs_create_dir("/") != XAIOS_OK) {
         return XAIOS_ERR_IO;
       }
     } else if (root->active == 0) {
@@ -1193,62 +857,6 @@ static xaios_status_t mount_volume(uint32_t mount_flags) {
   return XAIOS_OK;
 }
 
-static int parent_exists_for(const char *path) {
-  char parent[XBFS_PATH_MAX];
-  xbfs_parent_path_of(path, parent);
-  if (xbfs_str_eq(parent, "/")) {
-    return 1;
-  }
-  xaios_xbfs_node_t *node = find_node(parent, 0);
-  return node != 0 && node->active != 0 && node->type == XBFS_NODE_DIR;
-}
-
-static xaios_status_t create_dir(const char *path) {
-  if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0 ||
-      xbfs_validate_path(path) != XAIOS_OK || !parent_exists_for(path)) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_xbfs_node_t *node = find_node(path, 1);
-  if (node != 0 && node->active != 0) {
-    return node->type == XBFS_NODE_DIR ? XAIOS_OK : XAIOS_ERR_INVALID;
-  }
-  if (node == 0) {
-    node = find_free_node();
-  }
-  if (node == 0) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NO_MEMORY;
-  }
-  if (node->snapshot_active == 0) {
-    xbfs_bytes_zero(node, sizeof(*node));
-  }
-  node->active = 1;
-  node->type = XBFS_NODE_DIR;
-  node->size = 0;
-  node->content_hash = 0;
-  node->generation = g_xbfs.generation++;
-  node->extent_count = 0;
-  xbfs_bytes_zero(node->extents, sizeof(node->extents));
-  xbfs_copy_path(node->path, path);
-  klog("xaibootfs: mkdir path=%s generation=%lu\n",
-       node->path, node->generation);
-  return write_metadata();
-}
-
-static xaios_status_t ensure_base_directories(void) {
-  static const char *const paths[] = {
-      "/", "/etc", "/bin", "/state", "/state/services",
-      "/state/workspaces", "/state/updates", "/config", "/logs",
-      "/workspaces", "/models", "/tmp", "/home", "/home/admin",
-  };
-  for (uint32_t i = 0; i < sizeof(paths) / sizeof(paths[0]); ++i) {
-    if (create_dir(paths[i]) != XAIOS_OK) {
-      return XAIOS_ERR_IO;
-    }
-  }
-  return XAIOS_OK;
-}
 
 
 static xaios_status_t write_extents(const xaios_xbfs_extent_t *extents,
@@ -1256,14 +864,14 @@ static xaios_status_t write_extents(const xaios_xbfs_extent_t *extents,
                                     uint64_t size) {
   const uint8_t *bytes = (const uint8_t *)data;
   uint8_t sector[XBFS_SECTOR_SIZE];
-  uint64_t blocks = extent_blocks(extents, extent_count);
+  uint64_t blocks = xbfs_extent_blocks(extents, extent_count);
   for (uint64_t i = 0; i < blocks; ++i) {
     uint64_t offset = i * XBFS_SECTOR_SIZE;
     uint64_t chunk = size > offset ? size - offset : 0U;
     if (chunk > XBFS_SECTOR_SIZE) chunk = XBFS_SECTOR_SIZE;
     xbfs_bytes_zero(sector, sizeof(sector));
     if (chunk != 0U) xbfs_bytes_copy(sector, bytes + offset, chunk);
-    uint64_t block = extent_block_at(extents, extent_count, i);
+    uint64_t block = xbfs_extent_block_at(extents, extent_count, i);
     if (block == UINT64_MAX ||
         xbfs_blk_write(absolute_data_sector(block), sector,
                   XBFS_SECTOR_SIZE) != XAIOS_OK) {
@@ -1278,9 +886,9 @@ static xaios_status_t read_extents(const xaios_xbfs_extent_t *extents,
                                    uint64_t size) {
   uint8_t *bytes = (uint8_t *)buffer;
   uint8_t sector[XBFS_SECTOR_SIZE];
-  uint64_t blocks = extent_blocks(extents, extent_count);
+  uint64_t blocks = xbfs_extent_blocks(extents, extent_count);
   for (uint64_t i = 0; i < blocks; ++i) {
-    uint64_t block = extent_block_at(extents, extent_count, i);
+    uint64_t block = xbfs_extent_block_at(extents, extent_count, i);
     if (block == UINT64_MAX ||
         xbfs_blk_read(absolute_data_sector(block), sector,
                  XBFS_SECTOR_SIZE) != XAIOS_OK) {
@@ -1303,19 +911,19 @@ static xaios_status_t clone_extents(const xaios_xbfs_extent_t *source,
                                     xaios_xbfs_extent_t *destination,
                                     uint32_t *destination_count) {
   uint8_t sector[XBFS_SECTOR_SIZE];
-  uint64_t blocks = extent_blocks(source, source_count);
-  if (allocate_extents(blocks, destination, destination_count) != XAIOS_OK) {
+  uint64_t blocks = xbfs_extent_blocks(source, source_count);
+  if (xbfs_allocate_extents(blocks, destination, destination_count) != XAIOS_OK) {
     return XAIOS_ERR_NO_MEMORY;
   }
   for (uint64_t i = 0; i < blocks; ++i) {
-    uint64_t from = extent_block_at(source, source_count, i);
-    uint64_t to = extent_block_at(destination, *destination_count, i);
+    uint64_t from = xbfs_extent_block_at(source, source_count, i);
+    uint64_t to = xbfs_extent_block_at(destination, *destination_count, i);
     if (from == UINT64_MAX || to == UINT64_MAX ||
         xbfs_blk_read(absolute_data_sector(from), sector,
                  XBFS_SECTOR_SIZE) != XAIOS_OK ||
         xbfs_blk_write(absolute_data_sector(to), sector,
                   XBFS_SECTOR_SIZE) != XAIOS_OK) {
-      free_extents(destination, *destination_count);
+      xbfs_free_extents(destination, *destination_count);
       *destination_count = 0U;
       return XAIOS_ERR_IO;
     }
@@ -1326,11 +934,11 @@ static xaios_status_t clone_extents(const xaios_xbfs_extent_t *source,
 xaios_status_t xbfs_write_file_locked(const char *path, const void *data,
                                 uint64_t size) {
   if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0 ||
-      xbfs_validate_path(path) != XAIOS_OK || !parent_exists_for(path) ||
+      xbfs_validate_path(path) != XAIOS_OK || !xbfs_parent_exists_for(path) ||
       (data == 0 && size != 0) || size > xbfs_geometry_max_file_bytes()) {
     klog("xaibootfs: write rejected path=%s mounted=%u flags=0x%x parent=%u size=%lu\n",
          path == 0 ? "<null>" : path, g_mounted, g_mount_flags,
-         path == 0 ? 0U : (uint32_t)parent_exists_for(path), size);
+         path == 0 ? 0U : (uint32_t)xbfs_parent_exists_for(path), size);
     xbfs_stat_bump(XBFS_STAT_REJECT);
     return XAIOS_ERR_INVALID;
   }
@@ -1339,41 +947,41 @@ xaios_status_t xbfs_write_file_locked(const char *path, const void *data,
   xaios_xbfs_extent_t new_extents[XBFS_V6_MAX_EXTENTS];
   uint32_t new_extent_count = 0U;
   xbfs_bytes_zero(new_extents, sizeof(new_extents));
-  if (allocate_extents(new_count, new_extents, &new_extent_count) !=
+  if (xbfs_allocate_extents(new_count, new_extents, &new_extent_count) !=
       XAIOS_OK) {
     klog("xaibootfs: write allocation failed path=%s blocks=%lu used=%lu\n",
-         path, new_count, block_count_used());
+         path, new_count, xbfs_block_count_used());
     return XAIOS_ERR_NO_MEMORY;
   }
   if (write_extents(new_extents, new_extent_count, data, size) != XAIOS_OK) {
     klog("xaibootfs: write block IO failed path=%s blocks=%lu\n",
          path, new_count);
-    free_extents(new_extents, new_extent_count);
+    xbfs_free_extents(new_extents, new_extent_count);
     return XAIOS_ERR_IO;
   }
 
-  xaios_xbfs_node_t *node = find_node(path, 1);
+  xaios_xbfs_node_t *node = xbfs_find_node(path, 1);
   if (node != 0 && node->active != 0 && node->type != XBFS_NODE_FILE) {
     klog("xaibootfs: write rejected existing non-file path=%s type=%u\n",
          path, node->type);
-    free_extents(new_extents, new_extent_count);
+    xbfs_free_extents(new_extents, new_extent_count);
     xbfs_stat_bump(XBFS_STAT_REJECT);
     return XAIOS_ERR_INVALID;
   }
   if (node == 0) {
-    node = find_free_node();
+    node = xbfs_find_free_node();
   }
   if (node == 0) {
     klog("xaibootfs: write no free node path=%s files=%lu directories=%lu\n",
          path, node_count_by_type(XBFS_NODE_FILE),
          node_count_by_type(XBFS_NODE_DIR));
-    free_extents(new_extents, new_extent_count);
+    xbfs_free_extents(new_extents, new_extent_count);
     xbfs_stat_bump(XBFS_STAT_REJECT);
     return XAIOS_ERR_NO_MEMORY;
   }
 
   if (node->active != 0 && node->type == XBFS_NODE_FILE) {
-    free_extents(node->extents, node->extent_count);
+    xbfs_free_extents(node->extents, node->extent_count);
   }
   node->active = 1;
   node->type = XBFS_NODE_FILE;
@@ -1390,9 +998,9 @@ xaios_status_t xbfs_write_file_locked(const char *path, const void *data,
   xbfs_stat_bump(XBFS_STAT_WRITE);
   klog("xaibootfs: write path=%s size=%lu blocks=%lu generation=%lu\n",
        node->path, node->size,
-       (unsigned long)extent_blocks(node->extents, node->extent_count),
+       (unsigned long)xbfs_extent_blocks(node->extents, node->extent_count),
        node->generation);
-  return write_metadata();
+  return xbfs_write_metadata();
 }
 
 static xaios_status_t read_file(const char *path, void *buffer,
@@ -1402,7 +1010,7 @@ static xaios_status_t read_file(const char *path, void *buffer,
     xbfs_stat_bump(XBFS_STAT_REJECT);
     return XAIOS_ERR_INVALID;
   }
-  xaios_xbfs_node_t *node = find_node(path, 0);
+  xaios_xbfs_node_t *node = xbfs_find_node(path, 0);
   if (node == 0 || node->active == 0 || node->type != XBFS_NODE_FILE ||
       node->size > buffer_size) {
     xbfs_stat_bump(XBFS_STAT_REJECT);
@@ -1421,251 +1029,11 @@ static xaios_status_t read_file(const char *path, void *buffer,
   xbfs_stat_bump(XBFS_STAT_READ);
   klog("xaibootfs: read path=%s size=%lu blocks=%lu generation=%lu\n",
        node->path, node->size,
-       (unsigned long)extent_blocks(node->extents, node->extent_count),
+       (unsigned long)xbfs_extent_blocks(node->extents, node->extent_count),
        node->generation);
   return XAIOS_OK;
 }
 
-static int has_active_children(const char *path) {
-  uint64_t parent_len = xbfs_cstr_len(path);
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
-    if (node->active == 0 || xbfs_str_eq(node->path, path)) {
-      continue;
-    }
-    if (xbfs_bytes_eq(node->path, path, parent_len) && node->path[parent_len] == '/') {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-
-static xaios_status_t delete_node(const char *path) {
-  if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0 ||
-      xbfs_validate_path(path) != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_xbfs_node_t *node = find_node(path, 0);
-  if (node == 0 || node->active == 0) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  if (node->type == XBFS_NODE_DIR && has_active_children(path)) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_BUSY;
-  }
-  if (node->type == XBFS_NODE_FILE) {
-    free_extents(node->extents, node->extent_count);
-    node->extent_count = 0;
-  }
-  node->active = 0;
-  node->generation = g_xbfs.generation++;
-  xbfs_stat_bump(XBFS_STAT_DELETE);
-  klog("xaibootfs: delete path=%s generation=%lu\n",
-       node->path, node->generation);
-  return write_metadata();
-}
-
-static xaios_status_t delete_tree(const char *path) {
-  char normalized[XBFS_PATH_MAX];
-  if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0 ||
-      normalize_path(path, normalized) != XAIOS_OK ||
-      xbfs_str_eq(normalized, "/")) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_xbfs_node_t *root = find_node(normalized, 0);
-  if (root == 0 || root->active == 0) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  uint32_t deleted = 0;
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
-    if (node->active == 0 || !xbfs_path_is_at_or_below(node->path, normalized)) {
-      continue;
-    }
-    if (node->type == XBFS_NODE_FILE) {
-      free_extents(node->extents, node->extent_count);
-      node->extent_count = 0;
-      xbfs_bytes_zero(node->extents, sizeof(node->extents));
-    }
-    node->active = 0;
-    node->generation = g_xbfs.generation++;
-    ++deleted;
-  }
-  for (uint32_t i = 0; i < XBFS_MAX_OPEN_FILES; ++i) {
-    if (g_open_files[i].in_use != 0 &&
-        xbfs_path_is_at_or_below(g_open_files[i].path, normalized)) {
-      g_open_files[i].in_use = 0;
-      g_open_files[i].path[0] = '\0';
-    }
-  }
-  xbfs_stat_add(XBFS_STAT_DELETE, deleted);
-  klog("xaibootfs: delete-tree path=%s nodes=%u generation=%lu\n",
-       normalized, deleted, g_xbfs.generation);
-  return write_metadata();
-}
-
-static xaios_status_t rename_node(const char *old_path, const char *new_path) {
-  char normalized_old[XBFS_PATH_MAX];
-  char normalized_new[XBFS_PATH_MAX];
-  if (g_mounted == 0 || (g_mount_flags & XBFS_MOUNT_READ_WRITE) == 0 ||
-      normalize_path(old_path, normalized_old) != XAIOS_OK ||
-      normalize_path(new_path, normalized_new) != XAIOS_OK ||
-      !parent_exists_for(normalized_new)) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_xbfs_node_t *node = find_node(normalized_old, 0);
-  if (node == 0 || node->active == 0) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  if (find_node(normalized_new, 0) != 0) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_BUSY;
-  }
-  if (xbfs_str_eq(normalized_old, "/") ||
-      (node->type == XBFS_NODE_DIR &&
-       xbfs_path_is_at_or_below(normalized_new, normalized_old))) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-
-  uint64_t old_len = xbfs_cstr_len(normalized_old);
-  uint64_t new_len = xbfs_cstr_len(normalized_new);
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    g_path_transaction[i][0] = '\0';
-    xaios_xbfs_node_t *candidate = &g_xbfs.nodes[i];
-    if (candidate->active == 0 ||
-        !xbfs_path_is_at_or_below(candidate->path, normalized_old)) {
-      continue;
-    }
-    const char *suffix = candidate->path + old_len;
-    uint64_t suffix_len = xbfs_cstr_len(suffix);
-    if (new_len + suffix_len + 1U > xbfs_geometry_path_max()) {
-      xbfs_stat_bump(XBFS_STAT_REJECT);
-      return XAIOS_ERR_INVALID;
-    }
-    xbfs_copy_path(g_path_transaction[i], normalized_new);
-    xbfs_bytes_copy(g_path_transaction[i] + new_len, suffix, suffix_len + 1U);
-    if (xbfs_validate_path(g_path_transaction[i]) != XAIOS_OK) {
-      xbfs_stat_bump(XBFS_STAT_REJECT);
-      return XAIOS_ERR_INVALID;
-    }
-  }
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    if (g_path_transaction[i][0] == '\0') {
-      continue;
-    }
-    for (uint32_t j = 0; j < xbfs_geometry_max_nodes(); ++j) {
-      if (g_path_transaction[j][0] == '\0' && g_xbfs.nodes[j].active != 0 &&
-          xbfs_str_eq(g_path_transaction[i], g_xbfs.nodes[j].path)) {
-        xbfs_stat_bump(XBFS_STAT_REJECT);
-        return XAIOS_ERR_BUSY;
-      }
-    }
-  }
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    if (g_path_transaction[i][0] != '\0') {
-      xbfs_copy_path(g_xbfs.nodes[i].path, g_path_transaction[i]);
-      g_xbfs.nodes[i].generation = g_xbfs.generation++;
-    }
-  }
-  for (uint32_t i = 0; i < XBFS_MAX_OPEN_FILES; ++i) {
-    if (g_open_files[i].in_use == 0 ||
-        !xbfs_path_is_at_or_below(g_open_files[i].path, normalized_old)) {
-      continue;
-    }
-    char suffix[XBFS_PATH_MAX];
-    xbfs_copy_path(suffix, g_open_files[i].path + old_len);
-    xbfs_copy_path(g_open_files[i].path, normalized_new);
-    xbfs_bytes_copy(g_open_files[i].path + new_len, suffix,
-               xbfs_cstr_len(suffix) + 1U);
-  }
-  xbfs_stat_bump(XBFS_STAT_RENAME);
-  klog("xaibootfs: rename old=%s new=%s generation=%lu\n",
-       normalized_old, normalized_new, g_xbfs.generation);
-  return write_metadata();
-}
-
-static xaios_status_t stat_node(const char *path, xaios_xbfs_stat_t *stat) {
-  char normalized[XBFS_PATH_MAX];
-  if (stat == 0 || normalize_path(path, normalized) != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_xbfs_node_t *node = find_node(normalized, 1);
-  if (!node_is_visible(node)) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-  stat->type = node->type;
-  stat->block_count =
-      (uint16_t)extent_blocks(node->extents, node->extent_count);
-  stat->size = node->size;
-  stat->generation = node->generation;
-  stat->content_hash = node->content_hash;
-  xbfs_stat_bump(XBFS_STAT_STAT);
-  klog("xaibootfs: stat path=%s type=%u size=%lu generation=%lu\n",
-       normalized, stat->type, stat->size, stat->generation);
-  return XAIOS_OK;
-}
-
-
-static xaios_status_t list_dir(const char *path, char *buffer,
-                              uint64_t buffer_size, uint64_t *out_size) {
-  char normalized[XBFS_PATH_MAX];
-  uint64_t offset = 0;
-  xaios_status_t append_status = XAIOS_OK;
-  if (buffer == 0 || out_size == 0 || buffer_size == 0 ||
-      normalize_path(path, normalized) != XAIOS_OK) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_INVALID;
-  }
-
-  xaios_xbfs_node_t *dir = find_node(normalized, 1);
-  if (!node_is_visible(dir) || dir->type != XBFS_NODE_DIR) {
-    if (!xbfs_str_eq(normalized, "/")) {
-      xbfs_stat_bump(XBFS_STAT_REJECT);
-      return XAIOS_ERR_NOT_FOUND;
-    }
-  }
-
-  buffer[0] = '\0';
-  for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
-    xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
-    const char *name = 0;
-    if (!node_is_visible(node) || xbfs_str_eq(node->path, normalized) ||
-        !xbfs_direct_child_of(normalized, node->path, &name)) {
-      continue;
-    }
-    append_status = xbfs_append_cstr(buffer, buffer_size, &offset, name);
-    if (append_status == XAIOS_OK) {
-      append_status = xbfs_append_char(buffer, buffer_size, &offset, '\n');
-    }
-    if (append_status != XAIOS_OK) {
-      if (out_size != 0) {
-        *out_size = offset;
-      }
-      xbfs_stat_bump(XBFS_STAT_REJECT);
-      return append_status;
-    }
-  }
-
-  if (xbfs_str_eq(normalized, "/") && offset == 0U) {
-    xbfs_stat_bump(XBFS_STAT_REJECT);
-    return XAIOS_ERR_NOT_FOUND;
-  }
-
-  *out_size = offset;
-  xbfs_stat_bump(XBFS_STAT_LIST);
-  klog("xaibootfs: list path=%s bytes=%lu\n", normalized, offset);
-  return XAIOS_OK;
-}
 
 static xaios_status_t commit_snapshot(const char *label) {
   (void)label;
@@ -1676,7 +1044,7 @@ static xaios_status_t commit_snapshot(const char *label) {
   for (uint32_t i = 0; i < xbfs_geometry_max_nodes(); ++i) {
     xaios_xbfs_node_t *node = &g_xbfs.nodes[i];
     if (node->snapshot_active != 0 && node->snapshot_type == XBFS_NODE_FILE) {
-      free_extents(node->snapshot_extents, node->snapshot_extent_count);
+      xbfs_free_extents(node->snapshot_extents, node->snapshot_extent_count);
     }
     node->snapshot_active = 0;
     node->snapshot_type = XBFS_NODE_FREE;
@@ -1710,8 +1078,8 @@ static xaios_status_t commit_snapshot(const char *label) {
   xbfs_stat_bump(XBFS_STAT_COMMIT);
   klog("xaibootfs: snapshot committed generation=%lu files=%lu directories=%lu blocks=%lu\n",
        g_xbfs.committed_generation, node_count_by_type(XBFS_NODE_FILE),
-       node_count_by_type(XBFS_NODE_DIR), block_count_used());
-  return write_metadata();
+       node_count_by_type(XBFS_NODE_DIR), xbfs_block_count_used());
+  return xbfs_write_metadata();
 }
 
 static xaios_status_t restore_snapshot_node(xaios_xbfs_node_t *node) {
@@ -1719,7 +1087,7 @@ static xaios_status_t restore_snapshot_node(xaios_xbfs_node_t *node) {
     return XAIOS_OK;
   }
   if (node->active != 0 && node->type == XBFS_NODE_FILE) {
-    free_extents(node->extents, node->extent_count);
+    xbfs_free_extents(node->extents, node->extent_count);
   }
   node->active = 1;
   node->type = node->snapshot_type;
@@ -1752,7 +1120,7 @@ static xaios_status_t rollback_snapshot(void) {
     if (node->snapshot_active == 0 && node->active != 0 &&
         node->generation >= g_xbfs.committed_generation) {
       if (node->type == XBFS_NODE_FILE) {
-        free_extents(node->extents, node->extent_count);
+        xbfs_free_extents(node->extents, node->extent_count);
       }
       node->active = 0;
       node->extent_count = 0;
@@ -1777,8 +1145,8 @@ static xaios_status_t rollback_snapshot(void) {
   xbfs_stat_bump(XBFS_STAT_ROLLBACK);
   klog("xaibootfs: snapshot rollback committed=%lu files=%lu directories=%lu blocks=%lu\n",
        g_xbfs.committed_generation, node_count_by_type(XBFS_NODE_FILE),
-       node_count_by_type(XBFS_NODE_DIR), block_count_used());
-  return write_metadata();
+       node_count_by_type(XBFS_NODE_DIR), xbfs_block_count_used());
+  return xbfs_write_metadata();
 }
 
 static xaios_status_t xaiboot_fs_commit_locked(const char *label) {
@@ -1790,7 +1158,7 @@ static xaios_status_t xaiboot_fs_rollback_locked(void) {
 }
 
 static xaios_status_t xaiboot_fs_mkdir_locked(const char *path) {
-  return create_dir(path);
+  return xbfs_create_dir(path);
 }
 
 static xaios_status_t xaiboot_fs_write_locked(const char *path, const void *data, uint64_t size) {
@@ -1802,23 +1170,23 @@ static xaios_status_t xaiboot_fs_read_locked(const char *path, void *buffer, uin
 }
 
 static xaios_status_t xaiboot_fs_delete_locked(const char *path) {
-  return delete_node(path);
+  return xbfs_delete_node(path);
 }
 
 static xaios_status_t xaiboot_fs_delete_tree_locked(const char *path) {
-  return delete_tree(path);
+  return xbfs_delete_tree(path);
 }
 
 static xaios_status_t xaiboot_fs_rename_locked(const char *old_path, const char *new_path) {
-  return rename_node(old_path, new_path);
+  return xbfs_rename_node(old_path, new_path);
 }
 
 static xaios_status_t xaiboot_fs_stat_locked(const char *path, xaios_xbfs_stat_t *stat) {
-  return stat_node(path, stat);
+  return xbfs_stat_node(path, stat);
 }
 
 static xaios_status_t xaiboot_fs_list_locked(const char *path, char *buffer, uint64_t buffer_size, uint64_t *out_size) {
-  return list_dir(path, buffer, buffer_size, out_size);
+  return xbfs_list_dir(path, buffer, buffer_size, out_size);
 }
 
 static xaios_xbfs_file_handle_t *handle_for_fd(uint32_t fd) {
@@ -1831,7 +1199,7 @@ static xaios_xbfs_file_handle_t *handle_for_fd(uint32_t fd) {
 
 static int64_t xaiboot_fs_open_locked(const char *path, uint32_t flags) {
   char normalized[XBFS_PATH_MAX];
-  if (normalize_path(path, normalized) != XAIOS_OK ||
+  if (xbfs_normalize_path(path, normalized) != XAIOS_OK ||
       (flags & (XAIOS_XBFS_OPEN_READ | XAIOS_XBFS_OPEN_WRITE)) == 0 ||
       (flags & ~(XAIOS_XBFS_OPEN_READ | XAIOS_XBFS_OPEN_WRITE |
                  XAIOS_XBFS_OPEN_CREATE | XAIOS_XBFS_OPEN_TRUNCATE)) != 0) {
@@ -1839,13 +1207,13 @@ static int64_t xaiboot_fs_open_locked(const char *path, uint32_t flags) {
     return (int64_t)XAIOS_ERR_INVALID;
   }
 
-  xaios_xbfs_node_t *node = find_node(normalized, 0);
+  xaios_xbfs_node_t *node = xbfs_find_node(normalized, 0);
   if (node == 0 || node->active == 0) {
     if ((flags & XAIOS_XBFS_OPEN_CREATE) == 0) {
       xbfs_stat_bump(XBFS_STAT_REJECT);
       return (int64_t)XAIOS_ERR_NOT_FOUND;
     }
-    if ((flags & XAIOS_XBFS_OPEN_WRITE) == 0 || !parent_exists_for(normalized)) {
+    if ((flags & XAIOS_XBFS_OPEN_WRITE) == 0 || !xbfs_parent_exists_for(normalized)) {
       xbfs_stat_bump(XBFS_STAT_REJECT);
       return (int64_t)XAIOS_ERR_INVALID;
     }
@@ -1858,7 +1226,7 @@ static int64_t xaiboot_fs_open_locked(const char *path, uint32_t flags) {
     if (xbfs_write_file_locked(normalized, 0, 0) != XAIOS_OK) {
       return (int64_t)XAIOS_ERR_IO;
     }
-    node = find_node(normalized, 0);
+    node = xbfs_find_node(normalized, 0);
   }
   if ((flags & XAIOS_XBFS_OPEN_TRUNCATE) != 0 && node != 0 &&
       node->active != 0) {
@@ -1947,7 +1315,7 @@ static int64_t xaiboot_fs_read_fd_locked(uint32_t fd, void *buffer, uint64_t siz
  * before the whole-file path's metadata commit loses.
  *
  * The write ordering is the same as well: content out first, then
- * `write_metadata`, which carries the only flush. Nothing is published until
+ * `xbfs_write_metadata`, which carries the only flush. Nothing is published until
  * the metadata naming the new size is durable.
  *
  * It refuses rather than half-working. A cursor that is not at the end, a file
@@ -1968,7 +1336,7 @@ static int64_t xaiboot_fs_read_fd_locked(uint32_t fd, void *buffer, uint64_t siz
 #if XBFS_APPEND_IN_PLACE
 static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
                               const void *buffer, uint64_t size) {
-  xaios_xbfs_node_t *node = find_node(handle->path, 0);
+  xaios_xbfs_node_t *node = xbfs_find_node(handle->path, 0);
   if (node == 0 || node->active == 0 || node->type != XBFS_NODE_FILE ||
       size == 0U || handle->cursor != node->size) {
     return 0;
@@ -1985,7 +1353,7 @@ static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
   /* Only a node whose block list matches its size can be reasoned about this
      way. Nothing produces any other shape today; a version that did would take
      the whole-file path rather than have this guess. */
-  if (extent_blocks(node->extents, node->extent_count) != old_blocks) {
+  if (xbfs_extent_blocks(node->extents, node->extent_count) != old_blocks) {
     return 0;
   }
 
@@ -1993,7 +1361,7 @@ static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
   uint32_t extent_count = node->extent_count;
   xbfs_bytes_zero(extents, sizeof(extents));
   xbfs_bytes_copy(extents, node->extents, sizeof(extents));
-  if (extend_extents(extents, &extent_count, new_blocks - old_blocks) !=
+  if (xbfs_extend_extents(extents, &extent_count, new_blocks - old_blocks) !=
       XAIOS_OK) {
     return 0;
   }
@@ -2009,7 +1377,7 @@ static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
     uint64_t within = offset % XBFS_SECTOR_SIZE;
     uint64_t chunk = XBFS_SECTOR_SIZE - within;
     if (chunk > size - written) chunk = size - written;
-    uint64_t block = extent_block_at(extents, extent_count, index);
+    uint64_t block = xbfs_extent_block_at(extents, extent_count, index);
     if (block == UINT64_MAX) {
       failed = 1;
       break;
@@ -2042,9 +1410,9 @@ static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
     /* Nothing is published, so give back only what this call claimed. The
        blocks the file already had are untouched and so is the node. */
     for (uint64_t i = old_blocks; i < new_blocks; ++i) {
-      uint64_t block = extent_block_at(extents, extent_count, i);
-      if (block != UINT64_MAX && block_used(block) != 0U) {
-        block_release(block);
+      uint64_t block = xbfs_extent_block_at(extents, extent_count, i);
+      if (block != UINT64_MAX && xbfs_block_used(block) != 0U) {
+        xbfs_block_release(block);
         xbfs_stat_bump(XBFS_STAT_FREE);
       }
     }
@@ -2069,9 +1437,9 @@ static int append_fd_in_place(xaios_xbfs_file_handle_t *handle,
   xbfs_stat_bump(XBFS_STAT_APPEND);
   klog("xaibootfs: append path=%s added=%lu size=%lu touched=%lu blocks=%lu generation=%lu\n",
        node->path, size, node->size, blocks_touched,
-       (unsigned long)extent_blocks(node->extents, node->extent_count),
+       (unsigned long)xbfs_extent_blocks(node->extents, node->extent_count),
        node->generation);
-  if (write_metadata() != XAIOS_OK) {
+  if (xbfs_write_metadata() != XAIOS_OK) {
     return -1;
   }
   return 1;
@@ -2125,7 +1493,7 @@ static int64_t xaiboot_fs_write_fd_locked(uint32_t fd, const void *buffer, uint6
 #endif
 
   uint64_t file_size = 0;
-  if (find_node(handle->path, 0) != 0) {
+  if (xbfs_find_node(handle->path, 0) != 0) {
     if (read_file(handle->path, g_file_buffer, sizeof(g_file_buffer), &file_size) !=
         XAIOS_OK) {
       return (int64_t)XAIOS_ERR_IO;
@@ -2280,7 +1648,7 @@ static xaios_status_t xaiboot_fs_mount_device_locked(const char *identifier) {
     xbfs_stat_bump(XBFS_STAT_BOOT_LOAD);
     klog("xaibootfs: persistent loaded files=%lu dirs=%lu blocks=%lu gen=%lu\n",
          node_count_by_type(XBFS_NODE_FILE), node_count_by_type(XBFS_NODE_DIR),
-         block_count_used(), g_xbfs.generation);
+         xbfs_block_count_used(), g_xbfs.generation);
   } else {
     if (!xbfs_metadata_header_is_blank()) {
       klog("xaibootfs: persistent metadata invalid; refusing destructive format\n");
@@ -2319,13 +1687,13 @@ static xaios_status_t xaiboot_fs_mount_device_locked(const char *identifier) {
       migrate_volume_to_v5() != XAIOS_OK) {
     return mount_failure(device, XAIOS_ERR_IO);
   }
-  xaios_xbfs_node_t *root = find_node("/", 1);
+  xaios_xbfs_node_t *root = xbfs_find_node("/", 1);
   if (root == 0) {
-    if (create_dir("/") != XAIOS_OK) {
+    if (xbfs_create_dir("/") != XAIOS_OK) {
       return mount_failure(device, XAIOS_ERR_IO);
     }
   }
-  if (ensure_base_directories() != XAIOS_OK) {
+  if (xbfs_ensure_base_directories() != XAIOS_OK) {
     return mount_failure(device, XAIOS_ERR_IO);
   }
   klog("xaibootfs: persistent mounted v5 nodes=%u sectors=%u\n",
@@ -2360,7 +1728,7 @@ static void fsck_count_file_extents(const xaios_xbfs_extent_t *extents,
                                     uint8_t *references,
                                     xaios_xbfs_fsck_result_t *result) {
   if (extent_count > XBFS_V6_MAX_EXTENTS ||
-      extent_blocks(extents, extent_count) > xbfs_geometry_file_max_blocks()) {
+      xbfs_extent_blocks(extents, extent_count) > xbfs_geometry_file_max_blocks()) {
     ++result->errors;
     return;
   }
@@ -2389,7 +1757,7 @@ static xaios_xbfs_fsck_result_t xaiboot_fs_fsck_locked(void) {
   result.version = geometry.version;
   result.files = node_count_by_type(XBFS_NODE_FILE);
   result.directories = node_count_by_type(XBFS_NODE_DIR);
-  result.blocks_used = block_count_used();
+  result.blocks_used = xbfs_block_count_used();
   result.errors = 0;
 
   for (uint32_t n = 0; n < geometry.max_nodes; ++n) {
@@ -2407,7 +1775,7 @@ static xaios_xbfs_fsck_result_t xaiboot_fs_fsck_locked(void) {
   }
 
   for (uint32_t i = 0; i < geometry.data_sectors; ++i) {
-    int in_use = block_used(i) != 0U;
+    int in_use = xbfs_block_used(i) != 0U;
     int referenced = references[i] != 0U;
     if (in_use != referenced) {
       ++result.errors;
@@ -2626,10 +1994,10 @@ void xaiboot_fs_self_test(void) {
 
   kassert(mount_volume(XBFS_MOUNT_READ_WRITE) == XAIOS_OK);
   kassert(format_volume() == XAIOS_OK);
-  kassert(ensure_base_directories() == XAIOS_OK);
-  xaios_xbfs_node_t *base_node = find_node("/tmp", 1);
+  kassert(xbfs_ensure_base_directories() == XAIOS_OK);
+  xaios_xbfs_node_t *base_node = xbfs_find_node("/tmp", 1);
   kassert(base_node != 0 && base_node->type == XBFS_NODE_DIR);
-  base_node = find_node("/home/admin", 1);
+  base_node = xbfs_find_node("/home/admin", 1);
   kassert(base_node != 0 && base_node->type == XBFS_NODE_DIR);
 
   kassert(xaiboot_fs_record_service_state("/svc/source-index", "running") ==
@@ -2657,14 +2025,14 @@ void xaiboot_fs_self_test(void) {
 
   char listing[XAIOS_XBFS_MAX_LIST_BYTES];
   xaios_xbfs_stat_t stat;
-  kassert(list_dir("/state", listing, sizeof(listing), &size) == XAIOS_OK);
+  kassert(xbfs_list_dir("/state", listing, sizeof(listing), &size) == XAIOS_OK);
   kassert(size > 0);
-  kassert(stat_node("/state/services/large.state", &stat) == XAIOS_OK);
+  kassert(xbfs_stat_node("/state/services/large.state", &stat) == XAIOS_OK);
   kassert(stat.type == XBFS_NODE_FILE);
   kassert(stat.size == sizeof(large));
-  kassert(rename_node("/config/xaios.conf", "/config/xaios-renamed.conf") ==
+  kassert(xbfs_rename_node("/config/xaios.conf", "/config/xaios-renamed.conf") ==
           XAIOS_OK);
-  kassert(stat_node("/config/xaios-renamed.conf", &stat) == XAIOS_OK);
+  kassert(xbfs_stat_node("/config/xaios-renamed.conf", &stat) == XAIOS_OK);
   kassert(read_file("/config/xaios.conf", buffer, sizeof(buffer), &size) ==
           XAIOS_ERR_NOT_FOUND);
 
@@ -2690,7 +2058,7 @@ void xaiboot_fs_self_test(void) {
                        XAIOS_XBFS_OPEN_READ | XAIOS_XBFS_OPEN_WRITE |
                            XAIOS_XBFS_OPEN_TRUNCATE);
   kassert(fd > 0);
-  kassert(stat_node("/logs/fd-api.log", &stat) == XAIOS_OK);
+  kassert(xbfs_stat_node("/logs/fd-api.log", &stat) == XAIOS_OK);
   kassert(stat.size == 0);
   kassert(xaiboot_fs_close((uint32_t)fd) == XAIOS_OK);
   kassert(xaiboot_fs_open("/missing/nope", XAIOS_XBFS_OPEN_READ) ==
@@ -2700,7 +2068,7 @@ void xaiboot_fs_self_test(void) {
   kassert(xbfs_write_file_locked("/state/services/source-index.state",
                      k_service_restarting,
                      sizeof(k_service_restarting)) == XAIOS_OK);
-  kassert(delete_node("/state/updates/update.state") == XAIOS_OK);
+  kassert(xbfs_delete_node("/state/updates/update.state") == XAIOS_OK);
   kassert(xbfs_write_file_locked("/logs/boot.log", k_boot_log, sizeof(k_boot_log)) ==
           XAIOS_OK);
   kassert(xbfs_write_pending_journal_file("/state/services/replayed.state",
@@ -2731,8 +2099,8 @@ void xaiboot_fs_self_test(void) {
 
   kassert(xbfs_write_file_locked("/bad/missing-parent", k_config_v1,
                      sizeof(k_config_v1)) == XAIOS_ERR_INVALID);
-  kassert(create_dir("/state/services/bad") == XAIOS_OK);
-  kassert(delete_node("/state/services") == XAIOS_ERR_BUSY);
+  kassert(xbfs_create_dir("/state/services/bad") == XAIOS_OK);
+  kassert(xbfs_delete_node("/state/services") == XAIOS_ERR_BUSY);
   uint8_t too_large[XBFS_MAX_FILE_BYTES + 1U];
   kassert(xbfs_write_file_locked("/state/services/too-large", too_large,
                      sizeof(too_large)) == XAIOS_ERR_INVALID);
@@ -2776,7 +2144,7 @@ void xaiboot_fs_self_test(void) {
   /* The same question for the rename staging table, which walks every node
      the active format allows. */
   kassert((uint64_t)xbfs_geometry_max_nodes() <=
-          (uint64_t)(sizeof(g_path_transaction) / sizeof(g_path_transaction[0])));
+          xbfs_dir_path_transaction_rows());
   /* And for the two remaining buffers a format's own numbers index into.
      Both are sized for v6 today and neither has ever been wrong; they are
      asserted because the two that were wrong were wrong the same way -- a
@@ -2910,10 +2278,10 @@ void xaiboot_fs_self_test(void) {
        until failure stops with a few blocks still free, and an append that
        then succeeds would have proved nothing -- which is how this control
        would have passed while testing the opposite of what it says. */
-    while (block_count_used() < (uint64_t)xbfs_geometry_data_sectors() &&
+    while (xbfs_block_count_used() < (uint64_t)xbfs_geometry_data_sectors() &&
            filled < XBFS_MAX_NODES) {
       uint64_t free_blocks =
-          (uint64_t)xbfs_geometry_data_sectors() - block_count_used();
+          (uint64_t)xbfs_geometry_data_sectors() - xbfs_block_count_used();
       uint64_t chunk = free_blocks * XBFS_SECTOR_SIZE;
       if (chunk > (uint64_t)XBFS_MAX_FILE_BYTES) {
         chunk = (uint64_t)XBFS_MAX_FILE_BYTES;
@@ -2927,7 +2295,7 @@ void xaiboot_fs_self_test(void) {
       if (xbfs_write_file_locked(fill_path, buffer, chunk) != XAIOS_OK) break;
       ++filled;
     }
-    kassert(block_count_used() == (uint64_t)xbfs_geometry_data_sectors());
+    kassert(xbfs_block_count_used() == (uint64_t)xbfs_geometry_data_sectors());
     uint64_t blocked_size = 0;
     kassert(read_file("/state/append-probe", buffer, sizeof(buffer),
                       &blocked_size) == XAIOS_OK);
@@ -2949,9 +2317,9 @@ void xaiboot_fs_self_test(void) {
       kassert(xbfs_append_cstr(fill_path, sizeof(fill_path), &offset,
                           "/state/fill-") == XAIOS_OK);
       kassert(xbfs_append_u32(fill_path, sizeof(fill_path), &offset, i) == XAIOS_OK);
-      kassert(delete_node(fill_path) == XAIOS_OK);
+      kassert(xbfs_delete_node(fill_path) == XAIOS_OK);
     }
-    kassert(delete_node("/state/append-probe") == XAIOS_OK);
+    kassert(xbfs_delete_node("/state/append-probe") == XAIOS_OK);
     klog("xaibootfs: append self-test passed appends=%lu fallbacks=%lu records=%lu filled=%u refused_full=%lu\n",
          xaiboot_fs_append_count(), xaiboot_fs_append_fallback_count(),
          (uint64_t)record_count, filled, blocked_size);
@@ -2960,7 +2328,7 @@ void xaiboot_fs_self_test(void) {
        write_limit(), (uint64_t)sizeof(g_file_buffer));
   klog("xaibootfs: allocator self-test passed allocations=%lu frees=%lu blocks=%lu\n",
        xaiboot_fs_allocation_count(), xaiboot_fs_free_count(),
-       block_count_used());
+       xbfs_block_count_used());
   klog("xaibootfs: directory tree self-test passed directories=%lu\n",
        xaiboot_fs_directory_count());
   klog("xaibootfs: multi-sector file self-test passed files=%lu multi_sector=%lu\n",

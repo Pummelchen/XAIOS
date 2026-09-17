@@ -20,6 +20,19 @@
 #define FNV1A64_OFFSET UINT64_C(14695981039346656037)
 #define FNV1A64_PRIME UINT64_C(1099511628211)
 
+/* The append path switch and the node-type and mount-flag values the
+   namespace code reads. These lived in xaiboot_fs.c; xbfs_dir.c and
+   xbfs_alloc.c need them, so they are declared where every translation unit
+   can see them. The default stays guarded so a build that sets
+   -DXBFS_APPEND_IN_PLACE=0 still turns the append path off. */
+#ifndef XBFS_APPEND_IN_PLACE
+#define XBFS_APPEND_IN_PLACE 1
+#endif
+#define XBFS_NODE_FREE 0U
+#define XBFS_NODE_DIR 1U
+#define XBFS_NODE_FILE 2U
+#define XBFS_MOUNT_READ_WRITE 1U
+
 /* The geometry every on-disk version records.
  *
  * xbfs_state.c builds the mounted volume's geometry from these, so the values
@@ -330,5 +343,78 @@ xaios_status_t xaiboot_fs_record_update_transaction_locked(
 xaios_status_t xaiboot_fs_record_admin_status_locked(
     const char *service, const char *state, uint32_t starts, uint32_t restarts,
     uint32_t logs);
+
+/* The directory/namespace module, in xbfs_dir.c.
+ *
+ * Path validation and normalization, node lookup, and the create/delete/
+ * rename/stat/list operations. The bodies are unchanged from xaiboot_fs.c;
+ * only the names that cross a translation unit gained the xbfs_ prefix. Every
+ * entry point runs with the volume lock held, exactly as the static functions
+ * it replaces did, and none of them takes the lock itself. */
+xaios_status_t xbfs_validate_path(const char *path);
+xaios_status_t xbfs_normalize_path(const char *path,
+                                   char normalized[XBFS_PATH_MAX]);
+xaios_xbfs_node_t *xbfs_find_node(const char *path, uint32_t include_snapshot);
+xaios_xbfs_node_t *xbfs_find_free_node(void);
+/* Both return a pointer into the live node table, the same pointer
+   xbfs_node_row hands back, and it is good only for the duration of the call
+   that asked for it: the caller must not retain it. */
+int xbfs_parent_exists_for(const char *path);
+xaios_status_t xbfs_create_dir(const char *path);
+xaios_status_t xbfs_ensure_base_directories(void);
+xaios_status_t xbfs_delete_node(const char *path);
+xaios_status_t xbfs_delete_tree(const char *path);
+xaios_status_t xbfs_rename_node(const char *old_path, const char *new_path);
+xaios_status_t xbfs_stat_node(const char *path, xaios_xbfs_stat_t *stat);
+xaios_status_t xbfs_list_dir(const char *path, char *buffer,
+                             uint64_t buffer_size, uint64_t *out_size);
+/* How many rename-staging rows xbfs_dir.c holds, so the self-test in
+   xaiboot_fs.c can assert a format's node maximum still fits it. */
+uint64_t xbfs_dir_path_transaction_rows(void);
+
+/* The volume state xbfs_dir.c and xbfs_alloc.c cannot reach directly.
+ *
+ * The node table, the block bitmap, the generation, the mount flags and the
+ * open-file table all live in xaiboot_fs.c. Two of these hand back a pointer
+ * into live mutable state -- xbfs_node_row into the node table, xbfs_block_bitmap
+ * into the block bitmap -- and each is good only for the duration of the call
+ * that asked for it: the caller must not retain it, cache it or hand it to
+ * another translation unit. Everything else is a value in or out. None of
+ * these takes the volume lock; every caller already holds it, as the static
+ * code these replaced did. */
+xaios_xbfs_node_t *xbfs_node_row(uint32_t index);
+uint8_t *xbfs_block_bitmap(void);
+uint64_t xbfs_block_bitmap_bytes(void);
+uint64_t xbfs_generation_get(void);
+uint64_t xbfs_generation_take(void);
+uint32_t xbfs_mounted(void);
+uint32_t xbfs_mount_flags(void);
+xaios_status_t xbfs_write_metadata(void);
+/* Forget the open handles under a deleted subtree, and move the ones under a
+   renamed subtree to its new path. These are the loops over the open-file
+   table that used to sit in delete_tree and rename_node. */
+void xbfs_open_files_forget_tree(const char *root);
+void xbfs_open_files_rebase(const char *old_path, const char *new_path);
+
+/* The allocation/extent module, in xbfs_alloc.c. Each of these was a static
+   function in xaiboot_fs.c and gains the xbfs_ prefix; the bodies are
+   unchanged. */
+uint32_t xbfs_block_used(uint64_t block);
+void xbfs_block_release(uint64_t block);
+void xbfs_bitmap_from_bytes(const uint8_t *source, uint64_t blocks);
+void xbfs_bitmap_to_bytes(uint8_t *destination, uint64_t blocks);
+uint64_t xbfs_block_count_used(void);
+uint64_t xbfs_extent_blocks(const xaios_xbfs_extent_t *extents, uint32_t count);
+uint64_t xbfs_extent_block_at(const xaios_xbfs_extent_t *extents,
+                              uint32_t count, uint64_t index);
+xaios_status_t xbfs_allocate_extents(uint64_t blocks_needed,
+                                     xaios_xbfs_extent_t *extents,
+                                     uint32_t *out_count);
+void xbfs_free_extents(const xaios_xbfs_extent_t *extents, uint32_t count);
+#if XBFS_APPEND_IN_PLACE
+xaios_status_t xbfs_extend_extents(xaios_xbfs_extent_t *extents,
+                                   uint32_t *extent_count,
+                                   uint64_t blocks_needed);
+#endif
 
 #endif /* XAIOS_KERNEL_FS_XBFS_INTERNAL_H */

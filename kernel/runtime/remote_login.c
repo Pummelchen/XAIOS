@@ -34,9 +34,6 @@
 #ifndef XAIOS_BOOT_TEST_APPS
 #define XAIOS_BOOT_TEST_APPS 0
 #endif
-#ifndef XAIOS_FAILURE_TEST_APP
-#define XAIOS_FAILURE_TEST_APP 0
-#endif
 
 static uint64_t g_remote_login_sessions;
 static uint64_t g_remote_login_commands;
@@ -647,165 +644,6 @@ xaios_status_t path_join(char *out, uint64_t out_capacity, const char *base,
   return XAIOS_OK;
 }
 
-static int path_is_same_or_child(const char *parent, const char *path) {
-  uint64_t parent_len = cstr_len(parent);
-  if (parent_len == 0U || path == 0) return 0;
-  for (uint64_t i = 0U; i < parent_len; ++i) {
-    if (parent[i] != path[i]) return 0;
-  }
-  return path[parent_len] == '\0' || path[parent_len] == '/';
-}
-
-static xaios_status_t copy_file_path(const char *src, const char *dst) {
-  char buffer[512];
-  int64_t src_fd = xaiboot_fs_open(src, XAIOS_XBFS_OPEN_READ);
-  if (src_fd < 0) return XAIOS_ERR_NOT_FOUND;
-  int64_t dst_fd = xaiboot_fs_open(
-      dst, XAIOS_XBFS_OPEN_WRITE | XAIOS_XBFS_OPEN_CREATE |
-               XAIOS_XBFS_OPEN_TRUNCATE);
-  if (dst_fd < 0) {
-    (void)xaiboot_fs_close((uint32_t)src_fd);
-    return XAIOS_ERR_INVALID;
-  }
-  xaios_status_t status = XAIOS_OK;
-  for (;;) {
-    int64_t got = xaiboot_fs_read_fd((uint32_t)src_fd, buffer, sizeof(buffer));
-    if (got < 0) {
-      status = XAIOS_ERR_IO;
-      break;
-    }
-    if (got == 0) break;
-    int64_t written =
-        xaiboot_fs_write_fd((uint32_t)dst_fd, buffer, (uint64_t)got);
-    if (written != got) {
-      status = XAIOS_ERR_IO;
-      break;
-    }
-  }
-  if (xaiboot_fs_close((uint32_t)src_fd) != XAIOS_OK) status = XAIOS_ERR_IO;
-  if (xaiboot_fs_close((uint32_t)dst_fd) != XAIOS_OK) status = XAIOS_ERR_IO;
-  return status;
-}
-
-static xaios_status_t copy_path_recursive(const char *src, const char *dst,
-                                         int recursive) {
-  xaios_xbfs_stat_t src_stat;
-  xaios_xbfs_stat_t dst_stat;
-  if (xaiboot_fs_stat(src, &src_stat) != XAIOS_OK) return XAIOS_ERR_NOT_FOUND;
-  if (src_stat.type == 2U) {
-    if (remote_ensure_parent(dst) != XAIOS_OK) return XAIOS_ERR_INVALID;
-    return copy_file_path(src, dst);
-  }
-  if (src_stat.type != 1U || recursive == 0) return XAIOS_ERR_INVALID;
-  if (path_is_same_or_child(src, dst) != 0) return XAIOS_ERR_INVALID;
-  if (xaiboot_fs_stat(dst, &dst_stat) != XAIOS_OK) {
-    if (remote_ensure_parent(dst) != XAIOS_OK ||
-        xaiboot_fs_mkdir(dst) != XAIOS_OK) {
-      return XAIOS_ERR_INVALID;
-    }
-  } else if (dst_stat.type != 1U) {
-    return XAIOS_ERR_INVALID;
-  }
-
-  char listing[XAIOS_XBFS_MAX_LIST_BYTES];
-  uint64_t listing_size = 0U;
-  if (xaiboot_fs_list(src, listing, sizeof(listing), &listing_size) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  uint64_t line_start = 0U;
-  while (line_start < listing_size) {
-    uint64_t line_end = line_start;
-    while (line_end < listing_size && listing[line_end] != '\n') ++line_end;
-    if (line_end > line_start) {
-      char name[XAIOS_XBFS_PATH_MAX];
-      char child_src[XAIOS_XBFS_PATH_MAX];
-      char child_dst[XAIOS_XBFS_PATH_MAX];
-      if (copy_cstr_range(name, sizeof(name), listing + line_start,
-                          line_end - line_start) != XAIOS_OK ||
-          path_join(child_src, sizeof(child_src), src, name) != XAIOS_OK ||
-          path_join(child_dst, sizeof(child_dst), dst, name) != XAIOS_OK ||
-          copy_path_recursive(child_src, child_dst, recursive) != XAIOS_OK) {
-        return XAIOS_ERR_IO;
-      }
-    }
-    line_start = line_end + 1U;
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_cp(const char *args, char *output,
-                              uint64_t output_capacity, uint64_t *output_bytes) {
-  char operands[17][XAIOS_XBFS_PATH_MAX];
-  uint32_t operand_count = 0U;
-  uint64_t index = 0U;
-  int recursive = 0;
-  int end_options = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  while (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    if (end_options == 0 && string_equal(token, "--")) {
-      end_options = 1;
-    } else if (end_options == 0 &&
-               (string_equal(token, "-R") || string_equal(token, "-r"))) {
-      recursive = 1;
-    } else if (end_options == 0 && token[0] == '-') {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cp: unsupported option");
-    } else if (operand_count >= 17U ||
-               copy_cstr(operands[operand_count], sizeof(operands[0]), token) !=
-                   XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cp: too many operands");
-    } else {
-      ++operand_count;
-    }
-  }
-  if (operand_count < 2U) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cp: missing file operand");
-  }
-
-  char destination[XAIOS_XBFS_PATH_MAX];
-  if (remote_path_resolve(g_remote_login_cwd, operands[operand_count - 1U],
-                          destination, sizeof(destination)) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cp: invalid destination");
-  }
-  xaios_xbfs_stat_t destination_stat;
-  int destination_is_dir =
-      xaiboot_fs_stat(destination, &destination_stat) == XAIOS_OK &&
-      destination_stat.type == 1U;
-  if (operand_count > 2U && destination_is_dir == 0) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "cp: destination is not a directory");
-  }
-  for (uint32_t operand = 0U; operand + 1U < operand_count; ++operand) {
-    char source[XAIOS_XBFS_PATH_MAX];
-    char target[XAIOS_XBFS_PATH_MAX];
-    if (remote_path_resolve(g_remote_login_cwd, operands[operand], source,
-                            sizeof(source)) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cp: invalid source");
-    }
-    if (destination_is_dir != 0) {
-      char basename[XAIOS_XBFS_PATH_MAX];
-      if (remote_login_path_basename(source, basename, sizeof(basename)) != XAIOS_OK ||
-          path_join(target, sizeof(target), destination, basename) != XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes,
-                            "cp: destination path too long");
-      }
-    } else if (copy_cstr(target, sizeof(target), destination) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cp: invalid destination");
-    }
-    if (copy_path_recursive(source, target, recursive) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "cp: copy failed");
-    }
-  }
-  output[0] = '\0';
-  return XAIOS_OK;
-}
-
 xaios_status_t read_file_lines(const char *path, char *buffer,
                                     uint64_t buffer_capacity, uint64_t *size) {
   if (path == 0 || buffer == 0 || size == 0 || buffer_capacity == 0U) {
@@ -1349,457 +1187,6 @@ xaios_status_t remote_login_zip_finish(uint8_t *archive, uint64_t capacity,
   return XAIOS_OK;
 }
 
-static xaios_status_t move_path(const char *src, const char *dst) {
-  char resolved_src[XAIOS_XBFS_PATH_MAX];
-  char resolved_dst[XAIOS_XBFS_PATH_MAX];
-  if (src == 0 || dst == 0 || src[0] == '\0' || dst[0] == '\0')
-    return XAIOS_ERR_INVALID;
-  if (remote_path_resolve(g_remote_login_cwd, src, resolved_src,
-                         sizeof(resolved_src)) != XAIOS_OK ||
-      remote_path_resolve(g_remote_login_cwd, dst, resolved_dst,
-                         sizeof(resolved_dst)) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  xaios_xbfs_stat_t destination;
-  if (xaiboot_fs_stat(resolved_dst, &destination) == XAIOS_OK &&
-      destination.type == 1U) {
-    char basename[XAIOS_XBFS_PATH_MAX];
-    char target[XAIOS_XBFS_PATH_MAX];
-    if (remote_login_path_basename(resolved_src, basename, sizeof(basename)) != XAIOS_OK ||
-        path_join(target, sizeof(target), resolved_dst, basename) != XAIOS_OK ||
-        copy_cstr(resolved_dst, sizeof(resolved_dst), target) != XAIOS_OK)
-      return XAIOS_ERR_INVALID;
-  }
-  if (path_is_same_or_child(resolved_src, resolved_dst) != 0 ||
-      remote_ensure_parent(resolved_dst) != XAIOS_OK)
-    return XAIOS_ERR_INVALID;
-  return xaiboot_fs_rename(resolved_src, resolved_dst);
-}
-
-static xaios_status_t handle_mv(const char *args, char *output,
-                              uint64_t output_capacity,
-                              uint64_t *output_bytes) {
-  char operands[17][XAIOS_XBFS_PATH_MAX];
-  uint32_t count = 0U;
-  uint64_t index = 0U;
-  int end_options = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  while (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    if (end_options == 0 && string_equal(token, "--")) {
-      end_options = 1;
-      continue;
-    }
-    if (end_options == 0 && token[0] == '-')
-      return command_fail(output, output_capacity, output_bytes,
-                          "mv: unsupported option");
-    if (count >= 17U ||
-        copy_cstr(operands[count], sizeof(operands[0]), token) != XAIOS_OK)
-      return command_fail(output, output_capacity, output_bytes,
-                          "mv: too many operands");
-    ++count;
-  }
-  if (count < 2U)
-    return command_fail(output, output_capacity, output_bytes,
-                        "mv: missing operand");
-  if (count > 2U) {
-    char destination[XAIOS_XBFS_PATH_MAX];
-    xaios_xbfs_stat_t stat;
-    if (remote_path_resolve(g_remote_login_cwd, operands[count - 1U],
-                            destination, sizeof(destination)) != XAIOS_OK ||
-        xaiboot_fs_stat(destination, &stat) != XAIOS_OK || stat.type != 1U)
-      return command_fail(output, output_capacity, output_bytes,
-                          "mv: destination is not a directory");
-  }
-  for (uint32_t i = 0U; i + 1U < count; ++i) {
-    if (move_path(operands[i], operands[count - 1U]) != XAIOS_OK)
-      return command_fail(output, output_capacity, output_bytes, "mv: failed");
-  }
-  output[0] = '\0';
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_rm_path(const char *arg, int recursive, int force) {
-  char resolved[XAIOS_XBFS_PATH_MAX];
-  xaios_xbfs_stat_t stat;
-  if (arg == 0 || arg[0] == '\0' ||
-      remote_path_resolve(g_remote_login_cwd, arg, resolved, sizeof(resolved)) !=
-          XAIOS_OK || string_equal(resolved, "/")) {
-    return XAIOS_ERR_INVALID;
-  }
-  if (xaiboot_fs_stat(resolved, &stat) != XAIOS_OK) {
-    return force != 0 ? XAIOS_OK : XAIOS_ERR_NOT_FOUND;
-  }
-  if (stat.type == 1U && recursive == 0) return XAIOS_ERR_INVALID;
-  if ((recursive != 0 ? xaiboot_fs_delete_tree(resolved)
-                      : xaiboot_fs_delete(resolved)) != XAIOS_OK) {
-    return XAIOS_ERR_IO;
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_rm(const char *args, char *output,
-                              uint64_t output_capacity,
-                              uint64_t *output_bytes) {
-  uint64_t index = 0U;
-  uint32_t paths = 0U;
-  int recursive = 0;
-  int force = 0;
-  int end_options = 0;
-  char token[XAIOS_XBFS_PATH_MAX];
-  while (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    if (end_options == 0 && string_equal(token, "--")) {
-      end_options = 1;
-      continue;
-    }
-    if (end_options == 0 && token[0] == '-') {
-      for (uint64_t flag = 1U; token[flag] != '\0'; ++flag) {
-        if (token[flag] == 'r' || token[flag] == 'R') recursive = 1;
-        else if (token[flag] == 'f') force = 1;
-        else {
-          return command_fail(output, output_capacity, output_bytes,
-                              "rm: unsupported option");
-        }
-      }
-      continue;
-    }
-    if (handle_rm_path(token, recursive, force) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "rm: cannot remove path");
-    }
-    ++paths;
-  }
-  if (paths == 0U && force == 0) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "rm: missing operand");
-  }
-  output[0] = '\0';
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_rmdir(const char *args, char *output,
-                                  uint64_t output_capacity,
-                                  uint64_t *output_bytes) {
-  uint64_t index = 0U;
-  uint32_t paths = 0U;
-  char token[XAIOS_XBFS_PATH_MAX];
-  while (token_next(args, &index, token, sizeof(token)) == XAIOS_OK) {
-    char resolved[XAIOS_XBFS_PATH_MAX];
-    xaios_xbfs_stat_t stat;
-    if (token[0] == '-' ||
-        remote_path_resolve(g_remote_login_cwd, token, resolved,
-                            sizeof(resolved)) != XAIOS_OK ||
-        string_equal(resolved, "/") == 1U ||
-        xaiboot_fs_stat(resolved, &stat) != XAIOS_OK || stat.type != 1U ||
-        xaiboot_fs_delete(resolved) != XAIOS_OK) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "rmdir: cannot remove directory");
-    }
-    ++paths;
-  }
-  if (paths == 0U) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "rmdir: missing operand");
-  }
-  output[0] = '\0';
-  return XAIOS_OK;
-}
-
-#endif
-
-#if !XAIOS_BOOT_TEST_APPS
-typedef struct remote_app_definition {
-  const char *command;
-  const char *path;
-  uint64_t capabilities;
-  uint8_t raw_arguments;
-  uint8_t pass_cwd;
-  uint8_t report_completion;
-} remote_app_definition_t;
-
-#define REMOTE_APP(command_, path_, capabilities_)                            \
-  {command_, path_, capabilities_, 0U, 0U, 1U}
-#define REMOTE_TERMINAL_APP(command_, path_, capabilities_)                   \
-  {command_, path_, capabilities_, 1U, 0U, 1U}
-#define REMOTE_UTILITY_APP(command_, capabilities_)                           \
-  {command_, "/bin/" command_, capabilities_, 1U, 1U, 0U}
-
-static const remote_app_definition_t g_remote_apps[] = {
-    REMOTE_APP("hello", "/bin/hello", XAIOS_CAP_LOG | XAIOS_CAP_EXIT),
-    REMOTE_APP("helloworldc99", "/bin/helloworldc99",
-               XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT),
-    /* XAIOS_CAP_NET is what authorizes net_resolve. Without it xapt can open
-       sockets but cannot turn a name into an address, so a configured host
-       works only as a literal and every hostname fails identically whether or
-       not it is DNSSEC-signed. */
-    REMOTE_APP("xapt", "/bin/xapt",
-     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
-         XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE |
-         XAIOS_CAP_NET | XAIOS_CAP_NET_SOCKET |
-         XAIOS_CAP_RANDOM |
-         XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_CONTROL_ADMIN |
-         XAIOS_CAP_UPDATE | XAIOS_CAP_ADMIN),
-    REMOTE_TERMINAL_APP("nano", "/bin/nano",
-     XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
-         XAIOS_CAP_FS_WRITE | XAIOS_CAP_REMOTE_LOGIN),
-    REMOTE_TERMINAL_APP("xtop", "/bin/xtop",
-                        XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                            XAIOS_CAP_CONTROL_QUERY),
-    REMOTE_TERMINAL_APP("pong", "/bin/pong",
-                        XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT),
-    /* Operator control surface. Arguments are forwarded verbatim to the
-       control protocol, which authorizes them under the observer role. */
-    {"xaiosctl", "/bin/xaiosctl",
-     XAIOS_CAP_CONSOLE | XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME |
-         XAIOS_CAP_CONTROL_QUERY | XAIOS_CAP_STORAGE_READ,
-     1U, 0U, 0U},
-    REMOTE_APP("sysinfo", "/bin/sysinfo",
-               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_TIME),
-    REMOTE_APP("systest", "/bin/systest",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_FS_READ |
-         XAIOS_CAP_FS_WRITE),
-    REMOTE_APP("smptest", "/bin/smptest",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL | XAIOS_CAP_SMP |
-         XAIOS_CAP_THREADS),
-    REMOTE_APP("nettest", "/bin/nettest",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_OSCTL | XAIOS_CAP_NET |
-         XAIOS_CAP_TIME),
-    REMOTE_APP("sshtest", "/bin/sshtest",
-               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN),
-    REMOTE_APP("lstm-xor", "/bin/lstm-xor",
-               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
-                   XAIOS_CAP_ML),
-    REMOTE_APP("mltest", "/bin/mltest",
-               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_CPU_AI |
-                   XAIOS_CAP_ML),
-    REMOTE_APP("posix-shell", "/bin/posix-shell",
-               XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_REMOTE_LOGIN),
-    REMOTE_APP("agenttest", "/bin/agenttest",
-     XAIOS_CAP_LOG | XAIOS_CAP_EXIT | XAIOS_CAP_AGENT | XAIOS_CAP_CPU_AI |
-         XAIOS_CAP_ML),
-    REMOTE_UTILITY_APP("ls", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("mkdir", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("touch", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("cp", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("mv", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("rm", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("rmdir", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("stat", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                  XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("cat", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                 XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("head", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                  XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("tail", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                  XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("less", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                  XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("grep", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                  XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("find", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                  XAIOS_CAP_FS_READ),
-    REMOTE_UTILITY_APP("sed", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                 XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("write", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("tar", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                 XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("cpio", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                  XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("zip", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                 XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("unzip", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                   XAIOS_CAP_FS_READ | XAIOS_CAP_FS_WRITE),
-    REMOTE_UTILITY_APP("ps", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                XAIOS_CAP_CONTROL_QUERY),
-    REMOTE_UTILITY_APP("df", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                XAIOS_CAP_CONTROL_QUERY |
-                                XAIOS_CAP_STORAGE_READ),
-    REMOTE_UTILITY_APP("du", XAIOS_CAP_CONSOLE | XAIOS_CAP_EXIT |
-                                XAIOS_CAP_FS_READ),
-#if XAIOS_FAILURE_TEST_APP
-    REMOTE_APP("app-fail", "/bin/app-fail", XAIOS_CAP_LOG | XAIOS_CAP_EXIT),
-    REMOTE_APP("app-crash", "/bin/app-crash",
-               XAIOS_CAP_LOG | XAIOS_CAP_EXIT),
-#endif
-};
-
-static const remote_app_definition_t *remote_app_find(const char *command) {
-  for (uint32_t i = 0U;
-       i < sizeof(g_remote_apps) / sizeof(g_remote_apps[0]); ++i) {
-    if (string_equal(command, g_remote_apps[i].command) != 0) {
-      return &g_remote_apps[i];
-    }
-  }
-  return 0;
-}
-
-static int line_has_prefix(const char *line, uint32_t length,
-                           const char *prefix) {
-  uint32_t i = 0U;
-  if (line == 0 || prefix == 0) return 0;
-  while (prefix[i] != '\0') {
-    if (i >= length || line[i] != prefix[i]) return 0;
-    ++i;
-  }
-  return 1;
-}
-
-static void append_app_log_lines(char *output, uint64_t output_capacity,
-                                 uint64_t *output_bytes, const char *log,
-                                 uint32_t log_bytes, const char *path) {
-  uint32_t line_start = 0U;
-  for (uint32_t i = 0U; i <= log_bytes; ++i) {
-    if (i != log_bytes && log[i] != '\n') continue;
-    uint32_t line_bytes = i - line_start;
-    if (line_has_prefix(&log[line_start], line_bytes, path) != 0) {
-      for (uint32_t j = line_start; j < i; ++j) {
-        (void)output_append_char(output, output_capacity, output_bytes, log[j]);
-      }
-      (void)output_append_char(output, output_capacity, output_bytes, '\n');
-    }
-    line_start = i + 1U;
-  }
-}
-
-/* The most console output one application run hands back. */
-#define REMOTE_APP_CONSOLE_CAPTURE_MAX UINT64_C(65536)
-
-static xaios_status_t handle_remote_app_file(
-    const remote_app_definition_t *app, const xaios_initramfs_file_t *file,
-    const char *args, char *output,
-    uint64_t output_capacity, uint64_t *output_bytes) {
-  const char *argv[XAIOS_USER_ARG_MAX];
-  char argument_storage[XAIOS_USER_ARG_MAX - 1U][XAIOS_XBFS_PATH_MAX];
-  uint32_t argc = 1U;
-  uint64_t argument_cursor = 0U;
-  uint64_t argument_bytes = 0U;
-  char *log;
-  char *console;
-  uint64_t cursor;
-  uint64_t start_cursor = 0U;
-  uint64_t next_cursor = 0U;
-  uint64_t latest_cursor = 0U;
-  uint32_t log_bytes;
-  uint64_t console_bytes;
-  uint64_t console_capacity;
-  int exit_code = 0;
-  xaios_status_t status;
-
-  if (app == 0 || file == 0 || args == 0 || file->executable == 0U) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: executable unavailable");
-  }
-  argv[0] = app->command;
-  if (app->pass_cwd != 0U) argv[argc++] = g_remote_login_cwd;
-  if (app->raw_arguments != 0U && args[0] != '\0') {
-    if (cstr_len(args) + 1U > XAIOS_USER_ARG_BYTES_MAX) {
-      return command_fail(output, output_capacity, output_bytes,
-                          "application: argument data exceeds limit");
-    }
-    argv[argc++] = args;
-  } else {
-    while (has_more_args(args, argument_cursor) != 0) {
-      uint64_t before = argument_cursor;
-      if (argc >= XAIOS_USER_ARG_MAX ||
-          token_next(args, &argument_cursor, argument_storage[argc - 1U],
-                     sizeof(argument_storage[0])) != XAIOS_OK) {
-        return command_fail(output, output_capacity, output_bytes,
-                            "application: too many or oversized arguments");
-      }
-      argument_bytes += argument_cursor - before;
-      if (argument_bytes > XAIOS_USER_ARG_BYTES_MAX) {
-        return command_fail(output, output_capacity, output_bytes,
-                            "application: argument data exceeds limit");
-      }
-      argv[argc] = argument_storage[argc - 1U];
-      ++argc;
-    }
-  }
-
-  log = (char *)kheap_alloc(XAIOS_KLOG_FLUSH_MAX, 16U);
-  if (log == 0) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: output buffer unavailable");
-  }
-  /* Capture as much as the caller can take back, rather than a fixed eight
-     kilobytes: a screen-sized frame from a terminal application is larger
-     than that, and a capture that stops early hands back a torn frame. The
-     ceiling keeps one command from asking for the whole heap. */
-  console_capacity = output_capacity;
-  if (console_capacity > REMOTE_APP_CONSOLE_CAPTURE_MAX) {
-    console_capacity = REMOTE_APP_CONSOLE_CAPTURE_MAX;
-  }
-  if (console_capacity < XAIOS_KLOG_FLUSH_MAX) {
-    console_capacity = XAIOS_KLOG_FLUSH_MAX;
-  }
-  console = (char *)kheap_alloc(console_capacity, 16U);
-  if (console == 0) {
-    kheap_free(log);
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: output buffer unavailable");
-  }
-  cursor = klog_ring_total_written();
-  if (klog_console_capture_begin(console, console_capacity) == 0) {
-    kheap_free(console);
-    kheap_free(log);
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: output capture unavailable");
-  }
-  status = user_process_run_transient_args(file, app->capabilities, argc, argv,
-                                           &exit_code);
-  console_bytes = klog_console_capture_end();
-  log_bytes = klog_ring_snapshot(log, XAIOS_KLOG_FLUSH_MAX, cursor,
-                                 &start_cursor, &next_cursor, &latest_cursor);
-  if (status == XAIOS_OK) {
-    for (uint64_t i = 0U; i < console_bytes; ++i) {
-      (void)output_append_char(output, output_capacity, output_bytes, console[i]);
-    }
-    append_app_log_lines(output, output_capacity, output_bytes, log, log_bytes,
-                         app->path);
-  }
-  kheap_free(console);
-  kheap_free(log);
-
-  if (status == XAIOS_ERR_BUSY) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: another transient command is running");
-  }
-  if (status != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: launch failed");
-  }
-  if (exit_code != 0) {
-    output_append(output, output_capacity, output_bytes, app->command);
-    output_append(output, output_capacity, output_bytes, ": exit status ");
-    output_append_u64(output, output_capacity, output_bytes,
-                      (uint64_t)(uint32_t)exit_code);
-    output_append(output, output_capacity, output_bytes, "\n");
-    return XAIOS_ERR_INVALID;
-  }
-  if (app->report_completion != 0U) {
-    output_append(output, output_capacity, output_bytes, app->command);
-    output_append(output, output_capacity, output_bytes, ": complete\n");
-  }
-  return XAIOS_OK;
-}
-
-static xaios_status_t handle_remote_app(
-    const remote_app_definition_t *app, const char *args, char *output,
-    uint64_t output_capacity, uint64_t *output_bytes) {
-  const xaios_initramfs_file_t *file = 0;
-  if (app == 0 || initramfs_lookup(app->path, &file) != XAIOS_OK) {
-    return command_fail(output, output_capacity, output_bytes,
-                        "application: executable unavailable");
-  }
-  return handle_remote_app_file(app, file, args, output, output_capacity,
-                                output_bytes);
-}
 #endif
 
 xaios_status_t remote_login_exec(const char *command, char *output,
@@ -1853,15 +1240,15 @@ xaios_status_t remote_login_exec(const char *command, char *output,
                   "discovered state\n");
     return XAIOS_OK;
 #else
-    return handle_remote_app(remote_app_find(cmd), args, output,
+    return remote_login_app_run(remote_login_app_find(cmd), args, output,
                              output_capacity, output_bytes);
 #endif
   }
 #if !XAIOS_BOOT_TEST_APPS
   {
-    const remote_app_definition_t *app = remote_app_find(cmd);
+    const remote_login_app_definition_t *app = remote_login_app_find(cmd);
     if (app != 0) {
-      return handle_remote_app(app, args, output, output_capacity,
+      return remote_login_app_run(app, args, output, output_capacity,
                                output_bytes);
     }
   }
@@ -1918,7 +1305,7 @@ xaios_status_t remote_login_exec(const char *command, char *output,
       alias_args[used++] = ' ';
       (void)copy_cstr(alias_args + used, sizeof(alias_args) - used, args);
     }
-    return handle_remote_app(remote_app_find("ls"), alias_args, output,
+    return remote_login_app_run(remote_login_app_find("ls"), alias_args, output,
                              output_capacity, output_bytes);
   }
 #endif
@@ -1933,7 +1320,7 @@ xaios_status_t remote_login_exec(const char *command, char *output,
   }
 #if XAIOS_BOOT_TEST_APPS
   if (string_equal(cmd, "cp") == 1U) {
-    return handle_cp(args, output, output_capacity, output_bytes);
+    return remote_login_copy_cp(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "grep") == 1U) {
     return handle_grep(args, output, output_capacity, output_bytes);
@@ -1987,13 +1374,13 @@ xaios_status_t remote_login_exec(const char *command, char *output,
     return remote_login_handle_less(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "mv") == 1U) {
-    return handle_mv(args, output, output_capacity, output_bytes);
+    return remote_login_copy_mv(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "rm") == 1U) {
-    return handle_rm(args, output, output_capacity, output_bytes);
+    return remote_login_copy_rm(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "rmdir") == 1U) {
-    return handle_rmdir(args, output, output_capacity, output_bytes);
+    return remote_login_copy_rmdir(args, output, output_capacity, output_bytes);
   }
   if (string_equal(cmd, "stat") == 1U) {
     if (has_more_args(args, arg_index) != 0) {
@@ -2030,9 +1417,9 @@ xaios_status_t remote_login_exec(const char *command, char *output,
   {
     xaios_app_image_t image;
     if (app_store_load(cmd, &image) == XAIOS_OK) {
-      remote_app_definition_t app = {
+      remote_login_app_definition_t app = {
           cmd, image.path, image.capabilities, 0U, 0U, 1U};
-      xaios_status_t status = handle_remote_app_file(
+      xaios_status_t status = remote_login_app_run_file(
           &app, &image.file, args, output, output_capacity, output_bytes);
       app_store_release(&image);
       return status;

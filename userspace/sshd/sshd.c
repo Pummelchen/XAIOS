@@ -1,4 +1,5 @@
 #include "sshd.h"
+#include "sshd_auth.h"
 #include "sshd_audit.h"
 #include "sshd_console_screen.h"
 #include "sshd_console_programs.h"
@@ -17,13 +18,6 @@
 #include <xaios_user.h>
 #include "sshd_internal.h"
 
-#ifndef XAIOS_PASSWORD_AUTH_AVAILABLE
-#define XAIOS_PASSWORD_AUTH_AVAILABLE 0
-#endif
-
-static sshd_user_t g_users[SSHD_MAX_USERS];
-static uint32_t g_user_count = 0;
-
 static sshd_stats_t g_server_stats;
 static xaios_admin_config_user_t g_runtime_config;
 static uint32_t g_password_auth_enabled;
@@ -41,16 +35,9 @@ static nano_editor_t g_console_nano;
 static pong_game_t g_console_pong;
 static less_pager_t g_console_less;
 static uint32_t g_console_auth_state;
-static uint32_t g_console_auth_failures;
 static uint64_t g_console_ui_next_refresh;
 static uint32_t g_console_ui_cursor_visible;
-static uint32_t g_console_pin_available;
 
-/* Defined with the console PIN credential below; needed by the input echo and
-   by the login prompt, both of which appear earlier in this file. */
-static int console_input_is_pin_prefix(const char *text, uint32_t length);
-static int console_input_is_pin(const char *text, uint32_t length);
-static int authenticate_console_pin(const char *pin);
 /* Defined below with the console session state it enters. */
 static void console_auth_succeeded(void);
 static uint32_t console_hostname(char *out, uint32_t capacity);
@@ -66,17 +53,14 @@ enum {
   SSHD_CONSOLE_AUTH_SHELL = 3U
 };
 
-static int authenticate_password(const char *username, const char *password);
-/* Defined with the user database they read. */
-static int sshd_user_exists(const char *username);
+/* Defined below with the console session state they read and write. */
 static void console_set_username(const char *username);
-static const char *console_only_username(void);
-static const char *sshd_account_name(void);
+static void console_set_account_username(void);
 static const char *console_username(void);
 
-static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
-                                   uint64_t zero_offset,
-                                   uint64_t zero_size) {
+uint64_t sshd_fnv1a64_zero_range(const void *data, uint64_t size,
+                                 uint64_t zero_offset,
+                                 uint64_t zero_size) {
   const uint8_t *bytes = (const uint8_t *)data;
   uint64_t hash = UINT64_C(1469598103934665603);
   for (uint64_t i = 0U; i < size; ++i) {
@@ -89,7 +73,7 @@ static uint64_t fnv1a64_zero_range(const void *data, uint64_t size,
   return hash;
 }
 
-static int read_exact_file(const char *path, void *buffer, uint64_t size) {
+int sshd_read_exact_file(const char *path, void *buffer, uint64_t size) {
   xaios_xbfs_stat_user_t stat;
   if (path == 0 || buffer == 0 || size == 0U ||
       xaios_fs_stat(path, &stat) != 0 || stat.size != size) {
@@ -122,13 +106,14 @@ static int config_record_valid(const xaios_admin_config_user_t *config) {
           XAIOS_PASSWORD_AUTH_AVAILABLE != 0) &&
          config->reserved == 0U &&
          config->checksum ==
-             fnv1a64_zero_range(config, sizeof(*config), checksum_offset,
-                                sizeof(config->checksum));
+             sshd_fnv1a64_zero_range(config, sizeof(*config), checksum_offset,
+                                     sizeof(config->checksum));
 }
 
 static int load_runtime_config(void) {
   xaios_admin_config_user_t config;
-  if (read_exact_file(XAIOS_ADMIN_CONFIG_PATH, &config, sizeof(config)) != 0 ||
+  if (sshd_read_exact_file(XAIOS_ADMIN_CONFIG_PATH, &config,
+                           sizeof(config)) != 0 ||
       !config_record_valid(&config)) {
     ssh_mem_zero(&config, sizeof(config));
     return -1;
@@ -147,13 +132,6 @@ uint32_t sshd_max_channels_per_connection(void) {
 uint32_t sshd_command_rate_per_minute(void) {
   return g_runtime_config.command_rate_per_minute;
 }
-
-/* The authorized-key loader's share of the durable cost. They stay here with
-   the key cache that owns them; log_durable_cost() takes them as arguments
-   rather than reaching across into this section. */
-static uint32_t g_key_load_calls;
-static uint32_t g_key_load_file_reads;
-static uint64_t g_key_load_ns;
 
 /* Say on the console why a connection was refused before it was served.
  *
@@ -629,7 +607,7 @@ static int console_autologin_enabled(void) {
 static void console_begin_login(void) {
   g_console_command_length = 0U;
   g_console_ignore_lf = 0U;
-  if (g_user_count == 0U || g_password_auth_enabled == 0U) {
+  if (sshd_auth_user_count() == 0U || g_password_auth_enabled == 0U) {
     g_console_auth_state = SSHD_CONSOLE_AUTH_LOCKED;
     console_write(
         "Local console locked: password authentication is not configured.\n"
@@ -643,7 +621,7 @@ static void console_begin_login(void) {
     console_write(
         "Automatic login is enabled on this console.\n"
         "Type \"exit\" to return to a login prompt.\n");
-    console_set_username(console_only_username());
+    console_set_account_username();
     console_auth_succeeded();
     return;
   }
@@ -907,34 +885,10 @@ static void console_execute_command(void) {
     console_prompt();
 }
 
-/* Consecutive failures cost the attacker wall clock time. This matters most
-   for the six digit PIN, whose search space is small enough to exhaust in
-   seconds against a prompt that answers instantly. */
-#define SSHD_CONSOLE_FAILURE_LIMIT 5U
-#define SSHD_CONSOLE_LOCKOUT_NS UINT64_C(60000000000)
-
-static uint64_t g_console_lockout_until_ns;
-
-static int console_locked_out(void) {
-  if (g_console_lockout_until_ns == 0U) return 0;
-  if (xaios_clock_nanos() >= g_console_lockout_until_ns) {
-    g_console_lockout_until_ns = 0U;
-    g_console_auth_failures = 0U;
-    return 0;
-  }
-  return 1;
-}
-
-static void console_record_auth_failure(void) {
-  if (++g_console_auth_failures >= SSHD_CONSOLE_FAILURE_LIMIT) {
-    g_console_lockout_until_ns = xaios_clock_nanos() + SSHD_CONSOLE_LOCKOUT_NS;
-  }
-}
-
 static void console_auth_failed(void) {
-  console_record_auth_failure();
+  sshd_auth_console_record_failure();
   g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
-  if (g_console_lockout_until_ns != 0U) {
+  if (sshd_auth_console_lockout_active() != 0) {
     console_write(
         "Login incorrect\n"
         "Too many failed attempts. Try again in 60 seconds.\n");
@@ -946,8 +900,7 @@ static void console_auth_failed(void) {
 }
 
 static void console_auth_succeeded(void) {
-  g_console_auth_failures = 0U;
-  g_console_lockout_until_ns = 0U;
+  sshd_auth_console_clear_failures();
   g_console_auth_state = SSHD_CONSOLE_AUTH_SHELL;
   console_write("XAIOS local console session opened\n");
   console_prompt();
@@ -957,7 +910,7 @@ static void console_submit_auth(void) {
   uint32_t submitted_length = g_console_command_length;
   g_console_command[g_console_command_length] = '\0';
   console_write("\n");
-  if (console_locked_out()) {
+  if (sshd_auth_console_locked_out()) {
     console_write("Locked out. Try again in a moment.\n");
     console_write_login_prompt();
     g_console_auth_state = SSHD_CONSOLE_AUTH_USER;
@@ -966,27 +919,27 @@ static void console_submit_auth(void) {
     return;
   }
   if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER) {
-    if (g_console_pin_available != 0U &&
-        console_input_is_pin(g_console_command, submitted_length)) {
-      if (authenticate_console_pin(g_console_command) != 0) {
+    if (sshd_auth_pin_available() != 0U &&
+        sshd_auth_pin_matches(g_console_command, submitted_length)) {
+      if (sshd_auth_pin_verify(g_console_command) != 0) {
         console_auth_failed();
       } else {
         /* A PIN identifies the machine's account rather than naming one, so
            it logs in as that account. */
-        console_set_username(console_only_username());
+        console_set_account_username();
         console_auth_succeeded();
       }
-    } else if (!sshd_user_exists(g_console_command)) {
+    } else if (!sshd_auth_user_exists(g_console_command)) {
       console_write("Login incorrect\n");
       console_write_login_prompt();
-      console_record_auth_failure();
+      sshd_auth_console_record_failure();
     } else {
       console_set_username(g_console_command);
       g_console_auth_state = SSHD_CONSOLE_AUTH_PASSWORD;
       console_write("Password: ");
     }
   } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
-    if (authenticate_password(console_username(), g_console_command) != 0) {
+    if (sshd_auth_password_verify(console_username(), g_console_command) != 0) {
       console_auth_failed();
     } else {
       console_auth_succeeded();
@@ -1090,9 +1043,9 @@ static void console_tick(void) {
       if (g_console_auth_state == SSHD_CONSOLE_AUTH_PASSWORD) {
         /* Never echo a password. */
       } else if (g_console_auth_state == SSHD_CONSOLE_AUTH_USER &&
-                 g_console_pin_available != 0U &&
-                 console_input_is_pin_prefix(g_console_command,
-                                             g_console_command_length)) {
+                 sshd_auth_pin_available() != 0U &&
+                 sshd_auth_pin_prefix(g_console_command,
+                                      g_console_command_length)) {
         /* An all-digit entry at the login prompt may be a PIN, which is a
            secret rather than a user name, so mask it while it is typed. A
            user name that merely starts with digits is masked for those
@@ -1106,164 +1059,10 @@ static void console_tick(void) {
   }
 }
 
-/* ---- User Database ---- */
-#define SSHD_USERS_PATH "/etc/xaios_sshd_users"
-
-static int parse_decimal_u32(const char *text, uint32_t text_len,
-                             uint32_t *value) {
-  uint32_t result = 0;
-  if (text_len == 0U || value == 0) return -1;
-  for (uint32_t i = 0; i < text_len; ++i) {
-    if (text[i] < '0' || text[i] > '9') return -1;
-    uint32_t digit = (uint32_t)(text[i] - '0');
-    if (result > (UINT32_MAX - digit) / 10U) return -1;
-    result = result * 10U + digit;
-  }
-  *value = result;
-  return 0;
-}
-
-static int hex_nibble(char value) {
-  if (value >= '0' && value <= '9') return value - '0';
-  if (value >= 'a' && value <= 'f') return 10 + value - 'a';
-  if (value >= 'A' && value <= 'F') return 10 + value - 'A';
-  return -1;
-}
-
-static int parse_hex_bytes(const char *text, uint32_t text_len,
-                           uint8_t *output, uint32_t output_capacity,
-                           uint32_t *output_len) {
-  if (text == 0 || output == 0 || output_len == 0 || text_len == 0U ||
-      (text_len & 1U) != 0U || text_len / 2U > output_capacity) {
-    return -1;
-  }
-  for (uint32_t i = 0; i < text_len / 2U; ++i) {
-    int high = hex_nibble(text[i * 2U]);
-    int low = hex_nibble(text[i * 2U + 1U]);
-    if (high < 0 || low < 0) return -1;
-    output[i] = (uint8_t)(((uint32_t)high << 4U) | (uint32_t)low);
-  }
-  *output_len = text_len / 2U;
-  return 0;
-}
-
-static int parse_user_line(const char *line, uint32_t line_len,
-                           sshd_user_t *user) {
-  uint32_t separator[4];
-  uint32_t separator_count = 0;
-  while (line_len > 0U && line[line_len - 1U] == '\r') --line_len;
-  if (line_len == 0U || line[0] == '#') return 1;
-  for (uint32_t i = 0; i < line_len; ++i) {
-    if (line[i] == ':') {
-      if (separator_count >= 4U) return -1;
-      separator[separator_count++] = i;
-    }
-  }
-  if (separator_count != 4U || separator[0] == 0U ||
-      separator[0] >= SSHD_USERNAME_MAX) return -1;
-  /* Any name the grammar allows, not one name. The record used to be required
-     to begin "admin", which meant a machine could only ever have the account
-     the build shipped -- and once a released image stopped shipping one, no
-     account at all. What matters is that the name cannot forge the rest of
-     the record or the prompt it is echoed to, so the character class is the
-     check: lower-case letters, digits, - and _. */
-  for (uint32_t i = 0; i < separator[0]; ++i) {
-    char c = line[i];
-    int ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
-             c == '_';
-    if (!ok) return -1;
-  }
-  static const char scheme[] = "pbkdf2-sha256";
-  uint32_t scheme_start = separator[0] + 1U;
-  uint32_t scheme_len = separator[1] - scheme_start;
-  if (scheme_len != sizeof(scheme) - 1U) return -1;
-  for (uint32_t i = 0; i < scheme_len; ++i) {
-    if (line[scheme_start + i] != scheme[i]) return -1;
-  }
-  uint32_t iterations = 0;
-  if (parse_decimal_u32(line + separator[1] + 1U,
-                        separator[2] - separator[1] - 1U,
-                        &iterations) != 0 ||
-      iterations < SSHD_PASSWORD_ITERATIONS_MIN ||
-      iterations > SSHD_PASSWORD_ITERATIONS_MAX) return -1;
-  uint32_t salt_len = 0;
-  if (parse_hex_bytes(line + separator[2] + 1U,
-                      separator[3] - separator[2] - 1U,
-                      user->password_salt, sizeof(user->password_salt),
-                      &salt_len) != 0 || salt_len < 16U) return -1;
-  uint32_t hash_len = 0;
-  if (parse_hex_bytes(line + separator[3] + 1U,
-                      line_len - separator[3] - 1U,
-                      user->password_hash, sizeof(user->password_hash),
-                      &hash_len) != 0 || hash_len != SSHD_PASSWORD_HASH_SIZE) {
-    return -1;
-  }
-  for (uint32_t i = 0; i < separator[0]; ++i) user->username[i] = line[i];
-  user->username[separator[0]] = '\0';
-  user->password_salt_len = salt_len;
-  user->password_iterations = iterations;
-  user->active = 1;
-  return 0;
-}
-
-static int load_user_database(void) {
-  char buffer[4096];
-#if XAIOS_PASSWORD_AUTH_AVAILABLE == 0
-  ssh_mem_zero(g_users, sizeof(g_users));
-  g_user_count = 0U;
-  ssh_log(SSH_LOG_INFO, "Password authentication unavailable in this build\n");
-  return 0;
-#endif
-  if (g_password_auth_enabled == 0U) {
-    ssh_mem_zero(g_users, sizeof(g_users));
-    g_user_count = 0U;
-    ssh_log(SSH_LOG_INFO, "Password authentication disabled by configuration\n");
-    return 0;
-  }
-  int result = xaios_read_file(SSHD_USERS_PATH, buffer, sizeof(buffer));
-  ssh_mem_zero(g_users, sizeof(g_users));
-  g_user_count = 0;
-  if (result < 0) {
-    ssh_log(SSH_LOG_INFO, "Password authentication disabled\n");
-    return 0;
-  }
-  uint32_t line_start = 0;
-  for (uint32_t i = 0; i <= (uint32_t)result; ++i) {
-    if (i == (uint32_t)result || buffer[i] == '\n') {
-      sshd_user_t parsed;
-      ssh_mem_zero(&parsed, sizeof(parsed));
-      int line_result = parse_user_line(buffer + line_start, i - line_start,
-                                        &parsed);
-      if (line_result < 0 ||
-          (line_result == 0 && g_user_count != 0U) ||
-          (line_result == 0 && g_user_count >= SSHD_MAX_USERS)) {
-        ssh_mem_zero(buffer, sizeof(buffer));
-        ssh_mem_zero(g_users, sizeof(g_users));
-        g_user_count = 0;
-        ssh_log(SSH_LOG_ERROR, "Invalid SSH user database\n");
-        return -1;
-      }
-      if (line_result == 0) g_users[g_user_count++] = parsed;
-      line_start = i + 1U;
-    }
-  }
-  ssh_mem_zero(buffer, sizeof(buffer));
-  if (g_user_count == 0U) return -1;
-  ssh_log(SSH_LOG_INFO, "Loaded %u SSH password users\n", g_user_count);
-  return 0;
-}
-
-/* Whether this machine has an account by that name. The console and the SSH
-   path both used to compare against the literal "admin"; they ask this now, so
-   a machine set up with another name can be logged into with it. */
-static int sshd_user_exists(const char *username) {
-  for (uint32_t i = 0U; i < g_user_count; ++i) {
-    if (g_users[i].active && ssh_str_eq(g_users[i].username, username)) {
-      return 1;
-    }
-  }
-  return 0;
-}
+/* The password user database, the password and PIN checks, and the console
+   lockout moved to sshd_auth.c; sshd_auth.h declares what crosses. What stays
+   here is the console's own session identity, which the console login state
+   machine above reads and writes. */
 
 /* The console's own idea of who is at it. Set when a name is accepted at the
    prompt, and when a PIN is -- a PIN identifies the machine's single account
@@ -1281,215 +1080,21 @@ static void console_set_username(const char *username) {
   g_console_username[i] = '\0';
 }
 
-/* The name this machine's account goes by: the password database when there
-   is one, and "admin" when there is not. A key-only image has no password
-   database at all -- authorized keys and nothing else, which is a configured
-   machine rather than an unconfigured one -- and its logins have always been
-   "admin". */
-static const char *sshd_account_name(void) {
-  for (uint32_t i = 0U; i < g_user_count; ++i) {
-    if (g_users[i].active) return g_users[i].username;
-  }
-  return "admin";
+/* The account a PIN logs in as, or the name the machine's account goes by when
+   there is no password database. Copied out of sshd_auth.c rather than held as
+   a pointer into its user table. */
+static void console_set_account_username(void) {
+  (void)sshd_auth_account_name(g_console_username, sizeof(g_console_username));
 }
-
-/* The account a PIN logs in as. A machine has one account today; if that
-   changes, a PIN will need to say which. */
-static const char *console_only_username(void) { return sshd_account_name(); }
 
 /* Who the console is acting as. Falls back to the machine's account so a
-   command dispatched before a name was recorded still names someone. */
+   command dispatched before a name was recorded still names someone. The
+   account name is filled into this file's own console session buffer, not
+   returned from sshd_auth.c as a pointer into its table. */
 static const char *console_username(void) {
-  return g_console_username[0] != '\0' ? g_console_username
-                                        : console_only_username();
+  if (g_console_username[0] == '\0') console_set_account_username();
+  return g_console_username;
 }
-
-static int authenticate_password(const char *username, const char *password) {
-  static const uint8_t dummy_salt[16] = {
-    0x58,0x41,0x49,0x4f,0x53,0x2d,0x53,0x53,
-    0x48,0x2d,0x44,0x55,0x4d,0x4d,0x59,0x31
-  };
-  static const uint8_t dummy_hash[32] = {0};
-  const uint8_t *salt = dummy_salt;
-  const uint8_t *expected = dummy_hash;
-  uint32_t salt_len = sizeof(dummy_salt);
-  uint32_t iterations = SSHD_PASSWORD_ITERATIONS_MIN;
-  int found = 0;
-  for (uint32_t i = 0; i < g_user_count; ++i) {
-    if (!g_users[i].active) continue;
-    if (!ssh_str_eq(g_users[i].username, username)) continue;
-    salt = g_users[i].password_salt;
-    salt_len = g_users[i].password_salt_len;
-    expected = g_users[i].password_hash;
-    iterations = g_users[i].password_iterations;
-    found = 1;
-    break;
-  }
-  uint8_t hash[32];
-  if (pbkdf2_hmac_sha256((const uint8_t *)password,
-                         ssh_str_len(password), salt, salt_len,
-                         iterations, hash) != 0) return -1;
-  uint8_t diff = (uint8_t)(found == 0);
-  for (uint32_t i = 0; i < sizeof(hash); ++i) diff |= hash[i] ^ expected[i];
-  ssh_mem_zero(hash, sizeof(hash));
-  return diff == 0U ? 0 : -1;
-}
-
-/* ---- Local Console PIN ----
-   A six digit PIN is a 10^6 search space, so this credential is deliberately
-   restricted: it is accepted only on the local console, never over SSH, and
-   only when password authentication is already enabled for the image. The
-   console prompt is rate limited below, because an unthrottled prompt makes a
-   space this small trivially searchable. */
-#define SSHD_CONSOLE_PIN_PATH "/etc/xaios_console_pin"
-#define SSHD_CONSOLE_PIN_DIGITS 6U
-
-static uint8_t g_console_pin_salt[SSHD_PASSWORD_SALT_MAX];
-static uint8_t g_console_pin_hash[32];
-static uint32_t g_console_pin_salt_len;
-static uint32_t g_console_pin_iterations;
-
-static int parse_console_pin_line(const char *line, uint32_t line_len) {
-  uint32_t separator[3];
-  uint32_t separator_count = 0U;
-  while (line_len > 0U && line[line_len - 1U] == '\r') --line_len;
-  if (line_len == 0U || line[0] == '#') return 1;
-  for (uint32_t i = 0U; i < line_len; ++i) {
-    if (line[i] != ':') continue;
-    if (separator_count >= 3U) return -1;
-    separator[separator_count++] = i;
-  }
-  if (separator_count != 3U) return -1;
-
-  static const char scheme[] = "pbkdf2-sha256";
-  if (separator[0] != sizeof(scheme) - 1U) return -1;
-  for (uint32_t i = 0U; i < sizeof(scheme) - 1U; ++i) {
-    if (line[i] != scheme[i]) return -1;
-  }
-
-  uint32_t iterations = 0U;
-  if (parse_decimal_u32(line + separator[0] + 1U,
-                        separator[1] - separator[0] - 1U, &iterations) != 0 ||
-      iterations < SSHD_PASSWORD_ITERATIONS_MIN ||
-      iterations > SSHD_PASSWORD_ITERATIONS_MAX) {
-    return -1;
-  }
-
-  uint32_t salt_len = 0U;
-  if (parse_hex_bytes(line + separator[1] + 1U,
-                      separator[2] - separator[1] - 1U, g_console_pin_salt,
-                      sizeof(g_console_pin_salt), &salt_len) != 0 ||
-      salt_len == 0U) {
-    return -1;
-  }
-  uint32_t hash_len = 0U;
-  if (parse_hex_bytes(line + separator[2] + 1U, line_len - separator[2] - 1U,
-                      g_console_pin_hash, sizeof(g_console_pin_hash),
-                      &hash_len) != 0 ||
-      hash_len != sizeof(g_console_pin_hash)) {
-    return -1;
-  }
-  g_console_pin_salt_len = salt_len;
-  g_console_pin_iterations = iterations;
-  return 0;
-}
-
-static int load_console_pin(void) {
-  char buffer[512];
-  ssh_mem_zero(g_console_pin_salt, sizeof(g_console_pin_salt));
-  ssh_mem_zero(g_console_pin_hash, sizeof(g_console_pin_hash));
-  g_console_pin_salt_len = 0U;
-  g_console_pin_iterations = 0U;
-  g_console_pin_available = 0U;
-  /* The PIN never widens the authentication surface on its own: an image with
-     password authentication disabled stays key-only. */
-  if (g_password_auth_enabled == 0U) return 0;
-
-  int result = xaios_read_file(SSHD_CONSOLE_PIN_PATH, buffer, sizeof(buffer));
-  if (result <= 0) return 0;
-
-  uint32_t line_start = 0U;
-  for (uint32_t i = 0U; i <= (uint32_t)result; ++i) {
-    if (i != (uint32_t)result && buffer[i] != '\n') continue;
-    int parsed = parse_console_pin_line(buffer + line_start, i - line_start);
-    if (parsed < 0) {
-      ssh_mem_zero(buffer, sizeof(buffer));
-      ssh_mem_zero(g_console_pin_salt, sizeof(g_console_pin_salt));
-      ssh_mem_zero(g_console_pin_hash, sizeof(g_console_pin_hash));
-      g_console_pin_salt_len = 0U;
-      g_console_pin_iterations = 0U;
-      ssh_log(SSH_LOG_ERROR, "Invalid local console PIN record\n");
-      return -1;
-    }
-    if (parsed == 0) {
-      g_console_pin_available = 1U;
-      break;
-    }
-    line_start = i + 1U;
-  }
-  ssh_mem_zero(buffer, sizeof(buffer));
-  if (g_console_pin_available != 0U)
-    ssh_log(SSH_LOG_INFO, "Local console PIN authentication enabled\n");
-  return 0;
-}
-
-static int authenticate_console_pin(const char *pin) {
-  static const uint8_t dummy_salt[16] = {
-    0x58,0x41,0x49,0x4f,0x53,0x2d,0x50,0x49,
-    0x4e,0x2d,0x44,0x55,0x4d,0x4d,0x59,0x31
-  };
-  static const uint8_t dummy_hash[32] = {0};
-  const uint8_t *salt = g_console_pin_available != 0U ? g_console_pin_salt
-                                                      : dummy_salt;
-  const uint8_t *expected = g_console_pin_available != 0U ? g_console_pin_hash
-                                                          : dummy_hash;
-  uint32_t salt_len = g_console_pin_available != 0U ? g_console_pin_salt_len
-                                                    : (uint32_t)sizeof(dummy_salt);
-  uint32_t iterations = g_console_pin_available != 0U
-                            ? g_console_pin_iterations
-                            : SSHD_PASSWORD_ITERATIONS_MIN;
-  uint8_t hash[32];
-  if (pbkdf2_hmac_sha256((const uint8_t *)pin, ssh_str_len(pin), salt,
-                         salt_len, iterations, hash) != 0) {
-    return -1;
-  }
-  /* Fold availability into the accumulator so a missing PIN record cannot
-     authenticate regardless of the derived hash, and keep the compare
-     constant time. */
-  uint8_t diff = (uint8_t)(g_console_pin_available == 0U);
-  for (uint32_t i = 0U; i < sizeof(hash); ++i) diff |= hash[i] ^ expected[i];
-  ssh_mem_zero(hash, sizeof(hash));
-  return diff == 0U ? 0 : -1;
-}
-
-static int console_input_is_pin_prefix(const char *text, uint32_t length) {
-  if (length == 0U || length > SSHD_CONSOLE_PIN_DIGITS) return 0;
-  for (uint32_t i = 0U; i < length; ++i) {
-    if (text[i] < '0' || text[i] > '9') return 0;
-  }
-  return 1;
-}
-
-static int console_input_is_pin(const char *text, uint32_t length) {
-  return length == SSHD_CONSOLE_PIN_DIGITS &&
-         console_input_is_pin_prefix(text, length);
-}
-
-/* ---- Authorized Keys for Public Key Auth ---- */
-#define AUTHORIZED_KEYS_PATH "/etc/xaios_authorized_keys"
-#define MAX_AUTHORIZED_KEYS 16
-
-typedef struct {
-  uint8_t key[32];
-  uint8_t fingerprint[32];
-  char principal[XAIOS_ADMIN_PRINCIPAL_MAX];
-  uint32_t role;
-  int active;
-} authorized_key_t;
-
-static authorized_key_t g_authorized_keys[MAX_AUTHORIZED_KEYS];
-static uint32_t g_authorized_key_count = 0;
-static uint32_t g_authorized_database_invalid;
 
 int sshd_bytes_equal(const uint8_t *left, const uint8_t *right,
                      uint32_t size) {
@@ -1522,349 +1127,6 @@ static int valid_client_version(const uint8_t *version, uint32_t length) {
   return 1;
 }
 
-static int parse_ed25519_key_blob(const uint8_t *blob, uint32_t blob_len,
-                                  uint8_t key[32]) {
-  static const uint8_t algorithm[] = "ssh-ed25519";
-  if (blob == 0 || blob_len != 51U || ssh_read_u32_be(blob) != 11U ||
-      !sshd_bytes_equal(blob + 4U, algorithm, 11U) ||
-      ssh_read_u32_be(blob + 15U) != 32U) {
-    return -1;
-  }
-  ssh_mem_copy(key, blob + 19U, 32U);
-  return 0;
-}
-
-static int base64_value(char value) {
-  if (value >= 'A' && value <= 'Z') return value - 'A';
-  if (value >= 'a' && value <= 'z') return 26 + value - 'a';
-  if (value >= '0' && value <= '9') return 52 + value - '0';
-  if (value == '+') return 62;
-  if (value == '/') return 63;
-  return -1;
-}
-
-static int decode_base64(const char *text, uint32_t text_len, uint8_t *output,
-                         uint32_t output_capacity, uint32_t *output_len) {
-  uint32_t accumulator = 0;
-  uint32_t bits = 0;
-  uint32_t written = 0;
-  if (text_len == 0U || (text_len & 3U) != 0U) return -1;
-  for (uint32_t i = 0; i < text_len; ++i) {
-    char value = text[i];
-    if (value == '=') {
-      if (i < text_len - 2U ||
-          (i == text_len - 2U && text[i + 1U] != '=')) return -1;
-      continue;
-    }
-    if (i > 0U && text[i - 1U] == '=') return -1;
-    int decoded = base64_value(value);
-    if (decoded < 0) return -1;
-    accumulator = (accumulator << 6U) | (uint32_t)decoded;
-    bits += 6U;
-    if (bits >= 8U) {
-      bits -= 8U;
-      if (written >= output_capacity) return -1;
-      output[written++] = (uint8_t)(accumulator >> bits);
-      if (bits != 0U) accumulator &= (UINT32_C(1) << bits) - 1U;
-      else accumulator = 0U;
-    }
-  }
-  *output_len = written;
-  return 0;
-}
-
-static int parse_authorized_key_line(const char *line, uint32_t line_len,
-                                     uint8_t key[32]) {
-  static const char algorithm[] = "ssh-ed25519";
-  uint32_t position = 0;
-  while (position < line_len) {
-    while (position < line_len &&
-           (line[position] == ' ' || line[position] == '\t')) ++position;
-    if (position == line_len || line[position] == '#') return -1;
-    uint32_t token_start = position;
-    while (position < line_len && line[position] != ' ' &&
-           line[position] != '\t' && line[position] != '\r') ++position;
-    uint32_t token_len = position - token_start;
-    if (token_len == sizeof(algorithm) - 1U &&
-        sshd_bytes_equal((const uint8_t *)line + token_start,
-                    (const uint8_t *)algorithm, token_len)) {
-      while (position < line_len &&
-             (line[position] == ' ' || line[position] == '\t')) ++position;
-      uint32_t key_start = position;
-      while (position < line_len && line[position] != ' ' &&
-             line[position] != '\t' && line[position] != '\r') ++position;
-      uint8_t blob[96];
-      uint32_t blob_len = 0;
-      if (decode_base64(line + key_start, position - key_start, blob,
-                        sizeof(blob), &blob_len) != 0) return -1;
-      int result = parse_ed25519_key_blob(blob, blob_len, key);
-      ssh_mem_zero(blob, sizeof(blob));
-      return result;
-    }
-  }
-  return -1;
-}
-
-static int managed_auth_database_valid(
-    const xaios_admin_auth_database_user_t *database) {
-  uint64_t checksum_offset =
-      (uint64_t)((const uint8_t *)&database->checksum -
-                 (const uint8_t *)database);
-  if (database->magic != XAIOS_ADMIN_AUTH_MAGIC ||
-      database->version != XAIOS_ADMIN_SCHEMA_VERSION ||
-      database->header_size !=
-          sizeof(*database) - sizeof(database->keys) -
-              sizeof(database->revoked) ||
-      database->generation == 0U ||
-      database->key_count > XAIOS_ADMIN_MAX_KEYS ||
-      database->revoked_count > XAIOS_ADMIN_MAX_REVOKED_KEYS ||
-      database->checksum !=
-          fnv1a64_zero_range(database, sizeof(*database), checksum_offset,
-                             sizeof(database->checksum))) {
-    return 0;
-  }
-  for (uint32_t i = 0U; i < database->key_count; ++i) {
-    const xaios_admin_key_record_user_t *record = &database->keys[i];
-    uint32_t terminated = 0U;
-    for (uint32_t j = 0U; j < sizeof(record->principal); ++j) {
-      if (record->principal[j] == '\0') {
-        terminated = j != 0U;
-        break;
-      }
-    }
-    uint8_t fingerprint[32];
-    sha256_hash(record->public_key, sizeof(record->public_key), fingerprint);
-    int fingerprint_valid =
-        sshd_bytes_equal(fingerprint, record->fingerprint, sizeof(fingerprint));
-    ssh_mem_zero(fingerprint, sizeof(fingerprint));
-    if (terminated == 0U || fingerprint_valid == 0 ||
-        record->role < XAIOS_CONTROL_ROLE_OBSERVER ||
-        record->role > XAIOS_CONTROL_ROLE_ADMIN || record->reserved != 0U) {
-      return 0;
-    }
-  }
-  return 1;
-}
-
-static int load_authorized_keys_from_volume(void) {
-  xaios_xbfs_stat_user_t stat;
-  ssh_mem_zero(g_authorized_keys, sizeof(g_authorized_keys));
-  g_authorized_key_count = 0U;
-  g_authorized_database_invalid = 0U;
-  if (xaios_fs_stat(XAIOS_ADMIN_AUTH_PATH, &stat) == 0) {
-    xaios_admin_auth_database_user_t database;
-    if (stat.size != sizeof(database) ||
-        read_exact_file(XAIOS_ADMIN_AUTH_PATH, &database, sizeof(database)) !=
-            0 ||
-        !managed_auth_database_valid(&database)) {
-      ssh_mem_zero(&database, sizeof(database));
-      g_authorized_database_invalid = 1U;
-      ssh_log(SSH_LOG_ERROR, "Managed authorized-key database rejected\n");
-      return -1;
-    }
-    for (uint32_t i = 0U; i < database.key_count; ++i) {
-      authorized_key_t *key = &g_authorized_keys[i];
-      ssh_mem_copy(key->key, database.keys[i].public_key, sizeof(key->key));
-      ssh_mem_copy(key->fingerprint, database.keys[i].fingerprint,
-                   sizeof(key->fingerprint));
-      ssh_mem_copy(key->principal, database.keys[i].principal,
-                   sizeof(key->principal));
-      key->role = database.keys[i].role;
-      key->active = 1;
-    }
-    g_authorized_key_count = database.key_count;
-    ssh_mem_zero(&database, sizeof(database));
-    ssh_log(SSH_LOG_INFO, "Loaded %u managed authorized keys\n",
-            g_authorized_key_count);
-    return g_authorized_key_count != 0U ? 0 : -1;
-  }
-  char buf[4096];
-  int ret = xaios_read_file(AUTHORIZED_KEYS_PATH, buf, sizeof(buf));
-  if (ret < 0) {
-    ssh_log(SSH_LOG_INFO, "No authorized keys file\n");
-    return -1;
-  }
-  if (ret <= 0) return -1;
-  uint32_t line_start = 0;
-  uint32_t key_idx = 0;
-  for (uint32_t i = 0; i <= (uint32_t)ret && key_idx < MAX_AUTHORIZED_KEYS;
-       ++i) {
-    if (i == (uint32_t)ret || buf[i] == '\n') {
-      uint32_t line_len = i - line_start;
-      if (parse_authorized_key_line(buf + line_start, line_len,
-                                    g_authorized_keys[key_idx].key) == 0) {
-        g_authorized_keys[key_idx].active = 1;
-        sha256_hash(g_authorized_keys[key_idx].key,
-                    sizeof(g_authorized_keys[key_idx].key),
-                    g_authorized_keys[key_idx].fingerprint);
-        static const char bootstrap[] = "bootstrap-admin";
-        uint32_t principal_length = sizeof(bootstrap) - 1U;
-        ssh_mem_copy(g_authorized_keys[key_idx].principal, bootstrap,
-                     principal_length);
-        if (key_idx != 0U) {
-          uint32_t number = key_idx + 1U;
-          g_authorized_keys[key_idx].principal[principal_length++] = '-';
-          if (number >= 10U) {
-            g_authorized_keys[key_idx].principal[principal_length++] =
-                (char)('0' + number / 10U);
-          }
-          g_authorized_keys[key_idx].principal[principal_length++] =
-              (char)('0' + number % 10U);
-        }
-        g_authorized_keys[key_idx].principal[principal_length] = '\0';
-        g_authorized_keys[key_idx].role = XAIOS_CONTROL_ROLE_ADMIN;
-        ++key_idx;
-      }
-      line_start = i + 1;
-    }
-  }
-  g_authorized_key_count = key_idx;
-  if (g_authorized_key_count != 0U) {
-    xaios_log("sshd: authorized key parser accepted input\n");
-  }
-  ssh_log(SSH_LOG_INFO, "Loaded %u authorized keys\n", g_authorized_key_count);
-  return (g_authorized_key_count > 0) ? 0 : -1;
-}
-
-/* The authorized keys, and the one thing that makes not re-reading them safe.
- *
- * Every publickey attempt called the loader, and the loader reads the key file
- * off the durable volume -- twice per connection, measured. That is a read of
- * the volume in the middle of authentication, and by B-44 sshd's loop is the
- * machine's network thread, so it is a read of the volume with the guest's
- * networking stopped behind it. The keys change when an administrator changes
- * them, which is approximately never, and the attempts happen on every
- * connection.
- *
- * A cache is obvious. A cache that goes stale is worse than the re-read, and
- * worse in the direction that matters: a revoked key that still opens the
- * machine, or a key just added that does not. So the question is not whether
- * to cache but what the cache is keyed on, and the answer has to be something
- * that changes whenever the file does, from any writer, without anyone having
- * remembered to tell sshd.
- *
- * xaibootFS gives exactly that. Every write to a file assigns the node a fresh
- * generation from a volume-wide counter, and `xaios_fs_stat` reports it along
- * with the size and the content hash. So the cache holds the (present,
- * generation, size, hash) of *both* files the loader consults -- the managed
- * database and the bootstrap file -- and serves the parsed keys only while all
- * eight numbers still match. Both, because which file wins is itself a
- * function of whether the managed one exists: a managed database appearing has
- * to invalidate the keys parsed from the bootstrap file, and that is a change
- * of presence rather than of content.
- *
- * `xaios_fs_stat` is a lookup in the resident node table. It reads no block
- * and does no IO, which is the entire difference between it and what it
- * replaces.
- *
- * Note what this deliberately does *not* rely on: `sshd_reload_control_state`
- * calls the loader after an `xaiosctl auth key add`, and that hook is not the
- * invalidation. Keying on the generation catches every writer, including the
- * ones that do not go through that hook -- the kernel writing the database for
- * a local-console administrator, a restored snapshot, a rollback. A cache that
- * trusted the hook would be correct only for the paths someone remembered. */
-#ifndef SSHD_KEY_CACHE
-#define SSHD_KEY_CACHE 1
-#endif
-#ifndef SSHD_KEY_CACHE_INVALIDATES
-#define SSHD_KEY_CACHE_INVALIDATES 1
-#endif
-
-#if SSHD_KEY_CACHE
-typedef struct {
-  int present;
-  uint64_t generation;
-  uint64_t size;
-  uint64_t content_hash;
-} key_source_sample_t;
-
-typedef struct {
-  int valid;
-  int result;
-  key_source_sample_t managed;
-  key_source_sample_t bootstrap;
-} authorized_keys_cache_t;
-
-static authorized_keys_cache_t g_authorized_keys_cache;
-
-static void sample_key_source(const char *path, key_source_sample_t *out) {
-  xaios_xbfs_stat_user_t stat;
-  ssh_mem_zero(out, sizeof(*out));
-  if (xaios_fs_stat(path, &stat) != 0) return;
-  out->present = 1;
-  out->generation = stat.generation;
-  out->size = stat.size;
-  out->content_hash = stat.content_hash;
-}
-
-#if SSHD_KEY_CACHE_INVALIDATES
-static int key_source_same(const key_source_sample_t *a,
-                           const key_source_sample_t *b) {
-  return a->present == b->present && a->generation == b->generation &&
-         a->size == b->size && a->content_hash == b->content_hash;
-}
-#endif
-
-static int authorized_keys_cache_current(const key_source_sample_t *managed,
-                                         const key_source_sample_t *bootstrap) {
-  if (g_authorized_keys_cache.valid == 0) return 0;
-#if SSHD_KEY_CACHE_INVALIDATES
-  return key_source_same(&g_authorized_keys_cache.managed, managed) &&
-         key_source_same(&g_authorized_keys_cache.bootstrap, bootstrap);
-#else
-  /* The control, built only by the gate. A cache that never looks at the file
-     again is faster than one that does and is wrong from the first key an
-     administrator adds or revokes -- which is why the real one is keyed on the
-     generation, and why "it is faster now" is not on its own a result. */
-  (void)managed;
-  (void)bootstrap;
-  return 1;
-#endif
-}
-#endif /* SSHD_KEY_CACHE */
-
-static int load_authorized_keys(void) {
-  uint64_t started = xaios_clock_nanos();
-  uint64_t audit_before = ssh_audit_write_ns();
-  int result;
-  ++g_key_load_calls;
-#if SSHD_KEY_CACHE
-  key_source_sample_t managed;
-  key_source_sample_t bootstrap;
-  sample_key_source(XAIOS_ADMIN_AUTH_PATH, &managed);
-  sample_key_source(AUTHORIZED_KEYS_PATH, &bootstrap);
-  if (authorized_keys_cache_current(&managed, &bootstrap) != 0) {
-    result = g_authorized_keys_cache.result;
-  } else {
-    ++g_key_load_file_reads;
-    result = load_authorized_keys_from_volume();
-    g_authorized_keys_cache.valid = 1;
-    g_authorized_keys_cache.result = result;
-    g_authorized_keys_cache.managed = managed;
-    g_authorized_keys_cache.bootstrap = bootstrap;
-  }
-#else
-  ++g_key_load_file_reads;
-  result = load_authorized_keys_from_volume();
-#endif
-  /* The loader writes an audit line of its own, and that write is already
-     counted as audit cost. Subtracting it keeps the two totals disjoint, so
-     they can be added up without counting the same nanoseconds twice. */
-  g_key_load_ns += (xaios_clock_nanos() - started) -
-                   (ssh_audit_write_ns() - audit_before);
-  return result;
-}
-
-static const authorized_key_t *check_authorized_key(const uint8_t *pubkey) {
-  for (uint32_t i = 0; i < g_authorized_key_count; ++i) {
-    if (!g_authorized_keys[i].active) continue;
-    if (sshd_bytes_equal(g_authorized_keys[i].key, pubkey, 32U)) {
-      return &g_authorized_keys[i];
-    }
-  }
-  return 0;
-}
-
 static int command_starts_with(const char *command, const char *prefix) {
   uint32_t i = 0U;
   if (command == 0 || prefix == 0) return 0;
@@ -1878,13 +1140,13 @@ static int command_starts_with(const char *command, const char *prefix) {
 int sshd_reload_control_state(const char *command) {
   if (command_starts_with(command, "xaiosctl config apply ")) {
     if (load_runtime_config() != 0) return -1;
-    if (load_user_database() != 0) return -1;
-    if (load_console_pin() != 0) return -1;
+    if (sshd_auth_load_users(g_password_auth_enabled) != 0) return -1;
+    if (sshd_auth_load_pin(g_password_auth_enabled) != 0) return -1;
     ssh_log(SSH_LOG_INFO, "Applied SSH runtime configuration generation=%u\n",
             g_runtime_config.generation);
   } else if (command_starts_with(command, "xaiosctl auth key add ") ||
              command_starts_with(command, "xaiosctl auth key remove ")) {
-    if (load_authorized_keys() != 0) return -1;
+    if (sshd_keys_load() != 0) return -1;
   } else if (command_starts_with(command,
                                  "xaiosctl auth host-key rotate")) {
     if (ssh_host_key_reload() != 0) return -1;
@@ -2107,7 +1369,7 @@ static int process_connection(ssh_connection_t *conn) {
 
       /* ---- "password" method ---- */
       if (ssh_str_eq(method, "password")) {
-        if (g_password_auth_enabled == 0U || g_user_count == 0U) {
+        if (g_password_auth_enabled == 0U || sshd_auth_user_count() == 0U) {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
           if (send_auth_failure(conn) != 0) return -1;
@@ -2126,7 +1388,7 @@ static int process_connection(ssh_connection_t *conn) {
         ssh_mem_copy(password, pkt->data + password_offset + 4U, pass_len);
         password[pass_len] = '\0';
 
-        int authenticated = authenticate_password(username, password);
+        int authenticated = sshd_auth_password_verify(username, password);
         ssh_mem_zero(password, sizeof(password));
         if (authenticated == 0) {
           uint8_t auth_reply[1] = {SSH_MSG_USERAUTH_SUCCESS};
@@ -2156,8 +1418,10 @@ static int process_connection(ssh_connection_t *conn) {
            refuses every key login on a key-only image, where that database is
            empty by design -- which is what this did, and what stopped two
            interoperability gates. */
-        if (!sshd_user_exists(username) &&
-            !ssh_str_eq(username, sshd_account_name())) {
+        char account[SSHD_USERNAME_MAX];
+        (void)sshd_auth_account_name(account, sizeof(account));
+        if (!sshd_auth_user_exists(username) &&
+            !ssh_str_eq(username, account)) {
           conn->auth_attempts++;
           record_auth_failure(&conn->client_addr);
           if (send_auth_failure(conn) != 0) return -1;
@@ -2188,16 +1452,18 @@ static int process_connection(ssh_connection_t *conn) {
         if (pubkey_len > pkt->len - offset) return 0;
         const uint8_t *pubkey_blob = pkt->data + offset;
         uint8_t client_pubkey[32];
-        if (parse_ed25519_key_blob(pubkey_blob, pubkey_len,
-                                   client_pubkey) != 0) return 0;
+        if (sshd_keys_blob_parse(pubkey_blob, pubkey_len,
+                                 client_pubkey) != 0) return 0;
         offset += pubkey_len;
         uint32_t signed_request_len = offset;
 
-        const authorized_key_t *authorized = 0;
-        if (load_authorized_keys() == 0) {
-          authorized = check_authorized_key(client_pubkey);
+        sshd_keys_entry_t authorized;
+        int authorized_found = 0;
+        ssh_mem_zero(&authorized, sizeof(authorized));
+        if (sshd_keys_load() == 0) {
+          authorized_found = sshd_keys_lookup(client_pubkey, &authorized) == 0;
         }
-        if (authorized == 0) {
+        if (!authorized_found) {
           xaios_log("sshd: presented public key was not authorized\n");
           ssh_log(SSH_LOG_WARN, "Public key not authorized\n");
           conn->auth_attempts++;
@@ -2261,10 +1527,10 @@ static int process_connection(ssh_connection_t *conn) {
                                           sizeof(auth_reply)) != 0) return -1;
           conn->auth_attempts = 0;
           record_auth_success(&conn->client_addr);
-          conn->principal_role = authorized->role;
-          ssh_mem_copy(conn->principal, authorized->principal,
+          conn->principal_role = authorized.role;
+          ssh_mem_copy(conn->principal, authorized.principal,
                        sizeof(conn->principal));
-          ssh_mem_copy(conn->principal_fingerprint, authorized->fingerprint,
+          ssh_mem_copy(conn->principal_fingerprint, authorized.fingerprint,
                        sizeof(conn->principal_fingerprint));
           ssh_log(SSH_LOG_INFO, "Public key auth success principal=%s role=%u\n",
                   conn->principal, (uint64_t)conn->principal_role);
@@ -2408,18 +1674,18 @@ int sshd_run(void) {
     goto service_loop;
   }
 
-  if (load_user_database() != 0) {
+  if (sshd_auth_load_users(g_password_auth_enabled) != 0) {
     ssh_log(SSH_LOG_ERROR, "SSH user database rejected\n");
     g_console_boot_error = 2202;
     goto service_loop;
   }
-  if (load_console_pin() != 0) {
+  if (sshd_auth_load_pin(g_password_auth_enabled) != 0) {
     ssh_log(SSH_LOG_ERROR, "Local console PIN record rejected\n");
     g_console_boot_error = 2203;
     goto service_loop;
   }
-  (void)load_authorized_keys();
-  if (g_authorized_database_invalid != 0U) {
+  (void)sshd_keys_load();
+  if (sshd_keys_database_invalid() != 0) {
     g_console_boot_error = 2203;
     goto service_loop;
   }
@@ -2634,9 +1900,15 @@ close_conn:
             timer_now() - closed_connect_time);
         ssh_log(SSH_LOG_INFO, "Connection closed\n");
         /* After the audit line above, so the totals include this connection's
-           last record rather than all of it but that. */
-        log_durable_cost(g_connection_close_count, g_key_load_calls,
-                         g_key_load_file_reads, g_key_load_ns);
+           last record rather than all of it but that. The key-loader counters
+           live with the cache in sshd_keys.c and are read out here. */
+        uint32_t key_load_calls = 0U;
+        uint32_t key_load_file_reads = 0U;
+        uint64_t key_load_ns = 0U;
+        sshd_keys_load_stats(&key_load_calls, &key_load_file_reads,
+                             &key_load_ns);
+        log_durable_cost(g_connection_close_count, key_load_calls,
+                         key_load_file_reads, key_load_ns);
         /* Only when there is enough to be worth the fsync.
          *
          * Flushing at every close made it one fsync per connection, which was
