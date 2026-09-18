@@ -32,6 +32,19 @@ esac
 mkdir -p "$OUT/bearssl" "$OUT/objects"
 
 CC=${CC:-clang}
+# The archiver, resolved rather than assumed. This builds a HOST archive, so
+# the system `ar` is the right tool; `llvm-ar` is preferred when it is there
+# because that is what the rest of this repository uses. It is not on PATH on
+# every runner -- the Linux CI image has clang and lld but no llvm-ar, and this
+# script said `llvm-ar: not found` the first time that step ran.
+AR=${AR:-}
+if [ -z "$AR" ]; then
+  if command -v llvm-ar >/dev/null 2>&1; then
+    AR=llvm-ar
+  else
+    AR=ar
+  fi
+fi
 CFLAGS="-std=c99 -g -O1 -Wall -Wextra -Werror -fno-strict-aliasing"
 # Vendored BearSSL is compiled without -Werror, and with the feature macro its
 # POSIX seeder needs.
@@ -65,7 +78,7 @@ for relative in $(CDPATH= cd -- "$BEARSSL" && find src -name '*.c' \
   set -- "$@" "$object"
 done
 if [ "$stale" = 1 ] || [ ! -f "$archive" ]; then
-  llvm-ar rcs "$archive" "$@"
+  "$AR" rcs "$archive" "$@"
 fi
 
 objects=""

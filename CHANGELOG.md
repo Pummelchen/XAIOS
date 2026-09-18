@@ -76,6 +76,13 @@ clothes.
   L3 table array if a kernel span ever exceeds the 32 MiB the early tables
   cover.
 
+- **The interop peer finds an archiver anywhere.** With the compile fixed, the
+  same step failed on `llvm-ar: not found`: it hard-coded that name, and the
+  Linux CI image ships clang and lld without it. The script now prefers
+  `llvm-ar` and falls back to the system `ar`, which is the correct tool for a
+  host archive. Two defects in one step, both of which had been invisible
+  because a job stops at its first failing step.
+
 - **The interop peer builds on Linux.** The host peer compiles the vendored
   BearSSL tree, and it compiled it with `-Werror`; on a Linux runner the POSIX
   entropy seeder calls `getentropy()`, which glibc declares only when
