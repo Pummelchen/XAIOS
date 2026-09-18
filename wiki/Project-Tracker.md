@@ -95,7 +95,9 @@ check and every other repository check pass, and CI is green on the commit that 
 the peer fix. A record taken now would differ from build 7's only in the Fusion
 entries, which is what the version-line change above fixed.
 
-**One defect was found by booting the runner's own artifact here.****One defect was found by booting the runner's own artifact here.** The
+**A third red was the same shape, and it is instrumented now.** `qemu-core-os-rc` failed twice with `DNS A (well-formed) produced no output at all for 180 seconds` -- on a commit whose kernel and gate code were identical to a run that passed it -- and then passed the same leg when it was re-run on an idle queue. The probe could not say whether the resolver had answered nothing or the SSH session had never run, which is the confusion the module's own docstring records from the first time this happened; it now keeps the return code and stderr and prints them, and its per-command timeout scales past the resolver's own 45-second walk. The assertion is unchanged. **CI is green on both commits that carry the fixes: 22 jobs, no failures.**
+
+**One defect was found by booting the runner's own artifact here.** The
 RISC-V release image built on Linux panicked in the kernel-services stage; the
 same ISO booted on this host halted identically, and the kernel taken out of it
 gave `sepc` inside `virtio_transport_reset` with a `stval` no pointer in the
