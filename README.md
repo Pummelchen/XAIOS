@@ -47,22 +47,21 @@ Two paths. Neither needs the other.
 
 Released builds are on the
 [releases page](https://github.com/Pummelchen/XAIOS/releases); the current one
-is [**build 6**](https://github.com/Pummelchen/XAIOS/releases/tag/b6). You do
+is [**build 8**](https://github.com/Pummelchen/XAIOS/releases/tag/b8). You do
 not need to compile anything to try XAIOS.
 
-**Pick your architecture first.** From build 6 a release is one image per
-machine rather than one image for all of them, and the choice is not reversible
-by downloading a different kit: an AArch64 image will not boot an x86-64
-machine.
+**Pick your architecture first.** A release is one image per machine: the choice
+is not reversible by downloading a different kit, and an AArch64 image will not
+boot an x86-64 machine.
 
 | To run XAIOS on | AArch64 | x86-64 | RISC-V 64-bit |
 |---|---|---|---|
-| QEMU | `xaios_b6-aarch64-qemu.zip` | `xaios_b6-x86_64-qemu.zip` | `xaios_b6-riscv64-qemu.zip` |
-| VMware Fusion | `xaios_b6-aarch64-vmware-fusion.zip` | — | — |
-| Apple Virtualization.framework | `xaios_b6-aarch64-virtualization-framework.zip` | — | — |
-| a real machine, from a USB stick | `xaios_b6-aarch64-usb.zip` | `xaios_b6-x86_64-usb.zip` | `xaios_b6-riscv64-usb.zip` |
-| a real machine with no disk, over the network | `xaios_b6-aarch64-netboot.zip` | `xaios_b6-x86_64-netboot.zip` | `xaios_b6-riscv64-netboot.zip` |
-| your own tooling | `xaios_b6-aarch64.iso.zip` | `xaios_b6-x86_64.iso.zip` | `xaios_b6-riscv64.iso.zip` |
+| QEMU | `xaios_b8-aarch64-qemu.zip` | `xaios_b8-x86_64-qemu.zip` | `xaios_b8-riscv64-qemu.zip` |
+| VMware Fusion | `xaios_b8-aarch64-vmware-fusion.zip` | — | — |
+| Apple Virtualization.framework | `xaios_b8-aarch64-virtualization-framework.zip` | — | — |
+| a real machine, from a USB stick | `xaios_b8-aarch64-usb.zip` | `xaios_b8-x86_64-usb.zip` | `xaios_b8-riscv64-usb.zip` |
+| a real machine with no disk, over the network | `xaios_b8-aarch64-netboot.zip` | `xaios_b8-x86_64-netboot.zip` | `xaios_b8-riscv64-netboot.zip` |
+| your own tooling | `xaios_b8-aarch64.iso.zip` | `xaios_b8-x86_64.iso.zip` | `xaios_b8-riscv64.iso.zip` |
 
 Fusion and Virtualization.framework have no x86-64 or RISC-V column because
 both run guests on the host Mac's own cores. An x86-64 or RISC-V guest there
@@ -75,7 +74,7 @@ and no default password; the machine asks how to set itself up.
 
 Each release note records exactly which hypervisors and firmware that build was
 booted on, and what was *not* tested — see the
-[build 6 note](./release/xaios_b6.md). How a build is produced and what each
+[build 8 note](./release/xaios_b8.md). How a build is produced and what each
 step is guarding against is in
 [docs/BUILD-PROCESS.md](./docs/BUILD-PROCESS.md).
 

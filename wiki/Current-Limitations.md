@@ -25,7 +25,7 @@ qualified on real machines and hypervisors; RISC-V has been run on one
 emulated board and nothing else, so no claim about firmware behaviour, timing
 or scaling on RISC-V hardware is supported by anything here. Both boot paths are complete: the kernel can be handed to QEMU directly, or
 booted from its own disk through UEFI firmware. Build 8 ships a RISC-V image of its own, along with a QEMU kit, a USB
-kit and a network-boot binary, as build 6 did first, and
+kit and a network-boot binary, and
 `make release-image-gate` boots that image
 *as the file that ships* -- it is one of the gate's five environments. Getting there corrected two things that had made the claim
 weaker than it read: the image build did not build the RISC-V half at all but

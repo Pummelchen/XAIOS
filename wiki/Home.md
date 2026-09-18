@@ -94,7 +94,7 @@ there show what a session actually looks like.
 
 0. Take a released build from the
    [releases page](https://github.com/Pummelchen/XAIOS/releases) — currently
-   **build 6** — or build one from source. A release is one image per
+   **build 8** — or build one from source. A release is one image per
    architecture; which download to take, and what is in each, is in
    [[Getting Started|Getting-Started]].
 1. Follow [[Getting Started|Getting-Started]] to build and boot an image.

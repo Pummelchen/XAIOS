@@ -18,7 +18,7 @@ It boots from UEFI to a login prompt with durable storage, dual-stack networking
 and an OpenSSH-compatible SSH/SFTP server on three guest architectures — AArch64,
 x86-64 and RISC-V (rv64gc) — under QEMU, plus VMware Fusion and Apple
 Virtualization.framework on AArch64. Real-model inference is not implemented. It is
-released through build 6 and is explicitly **not production software**: the syscall
+released through build 8 and is explicitly **not production software**: the syscall
 surface is not frozen.
 
 ## Layout
@@ -45,7 +45,12 @@ surface is not frozen.
   runs the `publish-wiki` CI job, which copies `wiki/*.md` over
   `XAIOS.wiki.git` and then reads it back with `make wiki-parity-check`. An edit
   made on the published pages is overwritten by the next publish.
-- The 78 KB `Makefile` is the entry point for all of it.
+- `mk/` — the Makefile's fragments (`image-targets.mk`, `release-targets.mk`,
+  `qemu-targets.mk`, `hosted-tests.mk`, `repository-targets.mk`, and the rest),
+  included by the root `Makefile`, which is the entry point for all of it.
+- `scripts/lib/` — the sourced helpers the image builders are split into
+  (`aarch64-*.sh`, `riscv64-*.sh`, `kernel-*.sh`); flattening the `source`
+  lines reproduces the original builder byte for byte.
 
 ## Build
 
@@ -89,7 +94,7 @@ A released build needs no compiler: download the per-architecture kit and unzip.
 
 ## Identity
 
-**One integer in `BUILD_NUMBER` at the repository root** (currently `6`) is the
+**One integer in `BUILD_NUMBER` at the repository root** (currently `8`) is the
 single source of the build's identity. `build-image.sh`, `build-arch-image.sh`,
 `build-riscv64.sh`, `build-release.sh`, `build-boot-media.sh` and
 `build-vm-packages.sh` all read it; the kernel is compiled with
@@ -107,6 +112,10 @@ Do not introduce a semantic version.
   `make xapt-test`, `make docs-check`, `make wt-vectors-check`,
   `make wt-host-test`, `make wt-host-sanitize`, `make wt-interop-test`,
   `python3 tests/scripts/qemu-abi-contract.py`.
+- **The booted-guest handshake gate is the one macOS CI job**
+  (`WebTransport Handshake from a Booted Guest`, `macos-14`). Every other job
+  is `ubuntu-latest`; that one boots a guest and needs the host side of QEMU's
+  user-mode network, and it is the only check in the workflow that does.
 - CI boot gates: `make image-qemu-test` followed by `qemu-netboot-gate.py`,
   `qemu-installed-disk-gate.py`, `qemu-smoke.py`; then `make qemu-update-gate`,
   `make qemu-fault-matrix` and `make qemu-quic-handshake-gate`.
@@ -157,6 +166,14 @@ Do not introduce a semantic version.
   macOS host, but `scripts/macos-bootstrap.sh` only *warns* (`host architecture is
   $HOST_ARCH; Apple Silicon arm64 is the primary macOS target`) when the host is not
   arm64.
+- **The Fusion kit's chainloader is built in a Docker container.**
+  `platform/vmware-fusion/build-vmware-fusion.sh` needs a working `docker` *and*
+  a way to pull a public image: on a host whose `~/.docker/config.json` names a
+  credential helper that wants the login keychain, a headless session cannot
+  unlock it and the build fails with `error getting credentials`. Point
+  `DOCKER_CONFIG` at a copy of the config with `credsStore` removed; the image is
+  public and needs no credentials. The kit and the chainloader digest are the
+  same either way.
 - EDK2 prints several `Error:` lines during startup that are not XAIOS's.
 - Only `release/xaios_b<n>*.iso.zip` and `release/xaios_b<n>.md` are tracked; kits
   and raw ISOs are gitignored.
@@ -175,6 +192,10 @@ The non-negotiables:
 - **Assert it** — `lipo -archs <binary>` must report exactly `arm64`. A build that
   silently produced a fat binary is a release defect, not a build option.
 - **Every release carries the artifacts.** A tag alone is not a release.
+  This repository commits them: `release/xaios_b<n>-<arch>.iso.zip` beside
+  `release/xaios_b<n>.md`, whose checksum table `check-release-package`
+  cross-checks against the files, and the same files are attached to the
+  GitHub Release with a `SHA256SUMS` beside them.
 - **Identity is single-sourced and enforced** — never bump one declaration of the
   version or build number on its own; the build or CI must fail on a mismatch.
 - **Dry run first**; publish only on an explicit flag.

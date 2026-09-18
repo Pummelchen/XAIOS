@@ -28,15 +28,17 @@ a boot went wrong.
 | a real machine with no disk, over the network | `xaios_b8-aarch64-netboot.zip` | `xaios_b8-x86_64-netboot.zip` | `xaios_b8-riscv64-netboot.zip` |
 | your own tooling | `xaios_b8-aarch64.iso.zip` | `xaios_b8-x86_64.iso.zip` | `xaios_b8-riscv64.iso.zip` |
 
-Build 8's Apple Virtualization.framework kit is published, and its guest was **not
-checked** on the machine that cut the build: the console never attached there, and the
-released build 6 image behaves the same way on that host, so it is the host and not the
-kit. The kit is the same arrangement build 6 shipped. The release note for build 7
-records this in the same words.
+Each QEMU kit carries one launch script, for the machine it is for, and each
+kit's `README` names the one command that starts it.
 
-Each QEMU kit carries one launch script, for the machine it is for. RISC-V has
-a kit for the first time in build 6: before it, the shipped image carried a
-RISC-V kernel and nothing anyone downloaded could start it.
+**One caveat on the Virtualization.framework kit:** its guest could not be
+checked on the machine that cut build 8, because the guest console never
+attached there (the harness runs, the firmware loads the loader, and then
+nothing -- no kernel line, no serial, no framebuffer). That is a property of
+that host, not of the kit: a released image from an earlier build behaves the
+same way on it, while the QEMU and VMware Fusion rows boot the same file to a
+login. The build 8 release note records it as **not checked**, which is a
+different sentence from "checked and passing".
 
 Fusion and Virtualization.framework have no x86-64 or RISC-V column because
 both run guests on the host Mac's own cores. An x86-64 or RISC-V guest there

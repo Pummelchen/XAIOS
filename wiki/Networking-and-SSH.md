@@ -4,6 +4,65 @@ XAIOS provides a native IPv4/IPv6 stack, TCP, UDP, DNS, an SSH/SFTP server, and
 bounded outbound SSH/SCP clients. The server is implemented in XAIOS userspace;
 it is not a forwarded host `sshd`.
 
+## Do this first: reach the guest and move a file
+
+The kit's `README` starts the machine; the launch script forwards a host port to
+the guest's port 22. QEMU on AArch64 and x86-64 uses **7788**, QEMU on RISC-V
+uses **2222**, and both are overridable (`XAIOS_QEMU_HOSTFWD_PORT`,
+`XAIOS_RISCV64_SSH_PORT`).
+
+```sh
+# 1. Start it. On the console, first boot asks for an account name, a console
+#    PIN, whether SSH is allowed, and a hostname.
+unzip xaios_b8-aarch64-qemu.zip && cd xaios_b8-aarch64-qemu && ./run.sh
+
+# 2. From the host, with the account you just created.
+ssh -p 7788 admin@127.0.0.1
+sftp -P 7788 admin@127.0.0.1
+```
+
+Routine access is by public key. The authorised-keys file is
+`/etc/xaios_authorized_keys`, and SFTP can write it, so the usual way to add a
+key is to put it there once you are in:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/xaios -C "admin@xaios"   # on the host
+sftp -P 7788 admin@127.0.0.1 <<'EOF'
+put ~/.ssh/xaios.pub /etc/xaios_authorized_keys
+ls -l /etc
+EOF
+ssh -p 7788 -i ~/.ssh/xaios admin@127.0.0.1              # key login from now on
+```
+
+Copying in both directions is ordinary SFTP, and from inside the guest there is
+`scp` for the other direction:
+
+```sh
+sftp -P 7788 admin@127.0.0.1 <<'EOF'
+put ./model.gguf /models/
+get /var/log/messages ./guest-messages.log
+EOF
+
+# on the guest, outbound:
+scp -r /models/user.bin operator@10.0.2.2:/srv/models/
+```
+
+On VMware Fusion the guest has its own address, printed by its kit's launcher;
+on Virtualization.framework it is reached over `vmnet` with the helper in
+`platform/virtualization-framework/`. The inbound port and the guest's own
+address are separate things, and only QEMU needs the forwarded port.
+
+## If the host says the connection closed with no banner
+
+XAIOS refuses more than 120 *accepted* connections a minute from one address,
+and closes the extra ones before the SSH version banner -- from OpenSSH that is
+`Connection closed` or a banner timeout, with no explanation on the wire. The
+guest prints the reason and a per-reason counter on its console, so a refusal
+can be attributed rather than guessed at. A connection that authenticates is
+credited back, so ordinary work and repeated SFTP transfers do not trip it; a
+client that retries in a tight loop does. Wait out the window, or slow the loop
+down.
+
 ## Connect to QEMU
 
 The default QEMU launcher maps `127.0.0.1:7788` to guest TCP port 22:

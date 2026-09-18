@@ -190,7 +190,7 @@ Leave previous releases' notes and performance tables alone.
 
 # Part 2 — This repository
 
-## XAIOS — C, **build numbers**, 6 releases
+## XAIOS — C, **build numbers**, 8 releases
 
 *An operating system, not an application. Two rules that apply elsewhere do not
 apply here.*

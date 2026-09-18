@@ -8,6 +8,28 @@ do not execute in XAIOS.
 Session syntax such as `cd` and the invocation syntax for dedicated applications
 are documented separately in [[Commands|Commands]].
 
+## Try these first
+
+Log in on the console or over SSH and run a few things; each is a normal
+executable in `/bin`, so `ls /bin` is the real inventory.
+
+```sh
+xaiosctl version            # the build this machine is running
+xaiosctl status             # services, storage, network, uptime
+sysinfo                     # hardware and memory summary
+xtop                        # live dashboard: CPUs, memory, network, storage
+nettest                     # DHCP/SLAAC, DNS, and a validated lookup
+systest                     # the kernel and syscall self-test suite
+hello                       # the smallest program that prints and exits
+pong                        # the smallest interactive program
+```
+
+`xaiosctl` is the administrative surface; its subcommands are listed in
+[[Administration|Administration]], and the shell's own `help` prints what the
+session layer offers (including a bounded compatibility command family). The
+repository's own tests drive these by name, so the list above is the same
+surface `make qemu-smoke` asserts.
+
 ## Boot and service applications
 
 `/bin` is the boot image mounted read-only into the VFS, so `ls /bin`
