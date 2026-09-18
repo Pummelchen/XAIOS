@@ -263,6 +263,17 @@ def main() -> int:
     if failures:
         for failure in failures:
             print(f"qemu-quic-handshake-gate: {failure}")
+        # The peer's transcript is the one piece of evidence that says where a
+        # failing handshake died: a peer that logged the guest's first packet
+        # and then nothing is a protocol failure, and a peer that logged
+        # nothing at all means the packets never left the guest's virtual
+        # network. Both have been seen on the runner and neither could be told
+        # from the other, because the transcript stayed in a file the job does
+        # not upload.
+        print("qemu-quic-handshake-gate: --- host peer transcript ---")
+        for line in peer_text.splitlines():
+            print(f"qemu-quic-handshake-gate: peer: {line}")
+        print("qemu-quic-handshake-gate: --- end host peer transcript ---")
         return 1
     print("qemu-quic-handshake-gate: the guest completed a WebTransport "
           "handshake")
