@@ -38,3 +38,4 @@ QEMU is the default and is covered in [[Getting Started|Getting-Started]].
 
 - [[Testing XAIOS|Testing-XAIOS]]
 - [[Project Tracker|Project-Tracker]]
+- [[Risks and traps|Risks-and-Traps]]
