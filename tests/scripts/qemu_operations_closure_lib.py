@@ -124,7 +124,13 @@ def ssh_base(key: Path, port: int, host: str = "127.0.0.1") -> list[str]:
         "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=5",
+        # Scaled, because the banner exchange is the guest's work and every
+        # other budget in this file already says so: five seconds is a
+        # connection a Mac answers instantly and an interpreted guest on a
+        # shared runner can miss -- and a missed banner is an *accepted*
+        # connection the guest never authenticated, which counts against
+        # its accept-rate limit until it refuses the address outright.
+        "-o", f"ConnectTimeout={8 * timeout_scale()}",
         "-p", str(port), f"admin@{host}",
     ]
 
@@ -230,7 +236,12 @@ def wait_ssh(key: Path, port: int, arch: str = "aarch64",
                 return
         except (RuntimeError, subprocess.TimeoutExpired):
             pass
-        time.sleep(0.25)
+        # Two seconds, not a quarter of one. The guest counts an accepted
+        # connection that never authenticates against a 120-a-minute limit and
+        # then closes new connections before any SSH is spoken, which from here
+        # is a banner that never arrives. Four polls a second manufactures that
+        # refusal; the boot budget is minutes, so this loses nothing.
+        time.sleep(2.0)
     raise TimeoutError(
         f"{arch}: SSH did not become ready on port {port} within {scaled}s "
         f"(base {timeout}s, scaled by qemu_gate_lib.smoke_timeout). On a host "

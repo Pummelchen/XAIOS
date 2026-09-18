@@ -81,7 +81,14 @@ def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
                            f"seconds; the command was still running")
         if "pending" not in value and value.strip() != "":
             return value
-        time.sleep(0.5)
+        # The same reasoning as `wait_ssh`, with more at stake: an attempt that
+        # reaches the guest but does not authenticate counts against its
+        # accept-rate limit, and this loop used to make one every half second.
+        # Five seconds between attempts is twelve a minute against a limit of
+        # a hundred and twenty; a connection the guest refused outright gets
+        # ten, because asking a machine that is already saying no is what
+        # sustains the refusal.
+        time.sleep(10.0 if code != 0 else 5.0)
     if value.strip() == "":
         raise RuntimeError(
             f"DNS {label} produced no output at all for "

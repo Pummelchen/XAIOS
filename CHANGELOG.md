@@ -19,6 +19,26 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
+## Unreleased
+
+Landed after build 8 and not in any released image.
+
+- **The operations closure stopped making the guest refuse it.** `qemu-core-os-rc`
+  kept failing a leg with `DNS A (well-formed) produced no output at all for 180
+  seconds`, and the diagnostic that prints the session's outcome finally said
+  what it was: `rc=255 stderr='Connection timed out during banner exchange'` --
+  the connection reached the guest and the guest never spoke. The guest's sshd
+  counts every accepted connection that does not authenticate against a limit of
+  120 a minute per address and then closes new ones **before any SSH is spoken**,
+  which from this side is a banner that never arrives. The closure was polling
+  the guest four times a second (`wait_ssh`) and the DNS probe twice a second,
+  so once a connection was missed the hammering sustained the refusal for the
+  whole patience. `wait_ssh` now polls every two seconds and the probe every
+  five, ten after a connection the guest refused outright, which is twelve a
+  minute against the limit of a hundred and twenty. `ConnectTimeout` scales with
+  the host now instead of being a flat five seconds, because a missed banner is
+  the exact connection the limiter counts.
+
 ## Build 8 — 2026-09-18
 
 - **The DNS probe keeps the session's outcome, not just its stdout.** The
