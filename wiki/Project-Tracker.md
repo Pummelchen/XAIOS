@@ -85,7 +85,17 @@ not a way past a hang. `Linux OpenSSH Interoperability` failed once with a
 `docker run` exiting 255 with no output at all, which is the container rather
 than the guest, and passed on the runs either side of it.
 
-**One defect was found by booting the runner's own artifact here.** The
+**The local hypervisor record has not been re-taken, and cannot be here.** It covers
+six gates and three of them drive Virtualization.framework -- `vz-gate`,
+`vz-stress-gate` and the memory matrix's VZ half -- which does not come up on this host
+at all (the section below has the evidence, including the released build 6 image
+stalling the same way). `make release-check` therefore reports the record as failed and
+stale, and that is the whole of what it reports: `docs-check`, the release package
+check and every other repository check pass, and CI is green on the commit that carries
+the peer fix. A record taken now would differ from build 7's only in the Fusion
+entries, which is what the version-line change above fixed.
+
+**One defect was found by booting the runner's own artifact here.****One defect was found by booting the runner's own artifact here.** The
 RISC-V release image built on Linux panicked in the kernel-services stage; the
 same ISO booted on this host halted identically, and the kernel taken out of it
 gave `sepc` inside `virtio_transport_reset` with a `stval` no pointer in the
