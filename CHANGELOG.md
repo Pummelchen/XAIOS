@@ -19,6 +19,24 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
+## Unreleased
+
+Landed after build 7 and not in any released image.
+
+- **The virtio-net packet self-test no longer overruns its stack buffer.**
+  `malformed_packet_self_test` built a 54-byte ARP frame in `uint8_t packet[52]`
+  -- `build_arp_request` writes `VIRTIO_NET_HDR_SIZE + 42`, and
+  `VIRTIO_NET_HDR_SIZE` is 12 -- so every call wrote two bytes past the array.
+  macOS clang happened to leave padding there and nothing was ever seen; the
+  Linux CI compiler reused those two bytes for the caller's driver pointer, so
+  the `virtio_transport_reset` on the next line read a garbage device and the
+  RISC-V release image panicked during the kernel-services stage. It was found
+  by booting the CI-built image here, where it halted identically, and
+  symbolising the fault against the kernel extracted from that ISO:
+  `load-page-fault`, `sepc` in `virtio_transport_reset`, `stval` a value no
+  pointer in the image could be. The array is now sized by the builder rather
+  than by a number, so it cannot drift from what is written into it again.
+
 ## Build 7 — 2026-09-17
 
 **No source file is over 500 lines any more.** When this work started, 120

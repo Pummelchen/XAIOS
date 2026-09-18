@@ -82,7 +82,15 @@ static int is_expected_arp_reply(const uint8_t *packet, uint32_t len) {
 }
 
 static void malformed_packet_self_test(void) {
-  uint8_t packet[52];
+  /* Sized by the builder, not by a number: `build_arp_request` writes
+     VIRTIO_NET_HDR_SIZE + 42 bytes, and this was `uint8_t packet[52]`, two
+     bytes short of that. It overflowed the frame by two bytes on every call.
+     macOS clang put padding after the array and nothing was seen; the Linux
+     CI compiler reused those bytes for the caller's driver pointer, so the
+     `virtio_transport_reset` that follows read a garbage device and the
+     RISC-V image panicked during the kernel-services stage -- and only an
+     image built there. */
+  uint8_t packet[VIRTIO_NET_HDR_SIZE + 42U];
   uint64_t len = 0;
   build_arp_request(packet, &len);
   kassert(is_expected_arp_reply(packet, 8) == 0);
