@@ -19,9 +19,7 @@ deferred; see the [project tracker](./wiki/Project-Tracker.md).
 Entries record what changed for someone *running* XAIOS. The commit history
 records how it was built.
 
-## Unreleased
-
-Landed after build 7 and not in any released image.
+## Build 8 — 2026-09-18
 
 - **The DNS probe keeps the session's outcome, not just its stdout.** The
   aggregate's `qemu-core-os-rc` leg has been failing on the runner with `DNS A
