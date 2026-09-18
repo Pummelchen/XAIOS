@@ -28,6 +28,7 @@ EXPECTED_PAGES = {
     "Networking-and-SSH.md",
     "Operations-and-Recovery.md",
     "Project-Tracker.md",
+    "Risks-and-Traps.md",
     "Security-Model.md",
     "Screen-Framework.md",
     "Testing-XAIOS.md",
