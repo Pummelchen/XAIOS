@@ -51,10 +51,10 @@ typedef struct x86_64_idtr {
   uint64_t base;
 } __attribute__((packed)) x86_64_idtr_t;
 
-/* The frame entry.S pushes before it calls the C trap entry, in the order the
- * stub pushes it. Shared because early.c's exception entry and early_irq.c's
- * interrupt dispatch both name it; the layout is entry.S's, so it is defined
- * once here rather than on either side of the seam. */
+/* The frame entry.S pushes before it calls the C trap entry, in the order
+ * entry.S itself pushes it. Shared because early.c's exception entry and
+ * early_irq.c's interrupt dispatch both name it; the layout is entry.S's, so it
+ * is defined once here rather than on either side of the seam. */
 typedef struct x86_64_exception_frame {
   uint64_t r15;
   uint64_t r14;

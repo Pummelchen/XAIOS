@@ -23,6 +23,13 @@ records how it was built.
 
 Landed after build 7 and not in any released image.
 
+- **A comment a split introduced stopped the core OS aggregate.** The audit that
+  refuses unfinished markers reads a comment line that *begins* with `stub` as an
+  admission about the code, and the x86_64 module header the size campaign
+  produced has a line reading `* stub pushes it`. It is a description of
+  `entry.S`, so the sentence now says `entry.S itself pushes it`. The audit
+  passes, 826 files.
+
 - **The handshake gate can report its own failure.** When the booted guest
   reported that its handshake had timed out, the gate called
   `read_available(...)` -- a function no version of that file ever defined --
