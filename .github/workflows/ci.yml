@@ -183,6 +183,43 @@ jobs:
       - name: WebTransport handshake interop
         run: make wt-interop-test
 
+  webtransport-guest-handshake:
+    name: WebTransport Handshake from a Booted Guest (Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      # The port's own client, on a booted guest, completing a QUIC and TLS 1.3
+      # handshake against the same host peer the interop test uses (B-131). It
+      # rebuilds the image with XAIOS_WT_HANDSHAKE_TEST=1, so it is a boot gate
+      # and stands alone.
+      #
+      # It runs on Apple Silicon here rather than in the Linux job, and that is
+      # a statement about the network rather than about the guest. The peer is
+      # reached through QEMU's user-mode network, and GitHub's Linux runners do
+      # not deliver guest-to-host UDP through it: the run that first printed the
+      # peer's transcript shows `WT-PEER-BOUND port=4433` followed by
+      # `WT-PEER-TIMEOUT no Initial arrived`, no packet at all, while the same
+      # boot logged a DHCP lease and a validated ARP reply from the gateway and
+      # the gate completes on a Mac. SSH and every other network gate arrive
+      # through `hostfwd`, which is a different path.
+      #
+      # macOS minutes bill at a multiple of Linux ones, so this is the only
+      # macOS job in the workflow, and it is the only check that needs one.
+      - name: Install the macOS toolchain
+        run: |
+          brew install llvm lld qemu mtools xorriso meson ninja python3
+
+      - name: Boot a guest and complete the handshake
+        run: |
+          export PATH="$(brew --prefix llvm)/bin:$PATH:/usr/sbin"
+          clang --version | head -1
+          make qemu-quic-handshake-gate
+        env:
+          XAIOS_WT_GATE_TIMEOUT: "300"
+
   abi-contract:
     name: ABI Contract Validation
     runs-on: ubuntu-latest
@@ -312,15 +349,6 @@ jobs:
         run: make qemu-datagram-ephemeral-port-gate
         env:
           XAIOS_EPHEMERAL_UDP_TIMEOUT: "300"
-
-      # The WebTransport port's own client, on a booted guest, completing a
-      # QUIC and TLS 1.3 handshake against the host peer the interop test uses
-      # (B-131). It rebuilds the image with XAIOS_WT_HANDSHAKE_TEST=1, which is
-      # why it runs after the other boot gates rather than beside them.
-      - name: WebTransport handshake from a booted guest
-        run: make qemu-quic-handshake-gate
-        env:
-          XAIOS_WT_GATE_TIMEOUT: "300"
 
       - name: Upload build artifacts
         if: always()

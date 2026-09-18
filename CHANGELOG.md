@@ -23,6 +23,17 @@ records how it was built.
 
 Landed after build 7 and not in any released image.
 
+- **The booted-guest handshake gate runs on a macOS CI runner.** It reached the
+  host peer through QEMU's user-mode network, and GitHub's Linux runners do not
+  deliver guest-to-host UDP over it: the peer logs `WT-PEER-BOUND port=4433`
+  and then `WT-PEER-TIMEOUT no Initial arrived`, no packet at all, while the
+  same boot logs a DHCP lease and a validated ARP reply from the gateway and
+  the gate completes on a Mac. Every other network gate arrives through
+  `hostfwd`, which is a different path, which is why only this one was affected.
+  The gate now has its own job on `macos-14` -- the workflow's only macOS job --
+  and the peer's transcript is printed on failure, so the reason cannot go
+  quiet.
+
 - **A comment a split introduced stopped the core OS aggregate.** The audit that
   refuses unfinished markers reads a comment line that *begins* with `stub` as an
   admission about the code, and the x86_64 module header the size campaign
