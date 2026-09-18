@@ -28,12 +28,12 @@ Two ways in, and neither needs the other.
 
 **From a released build — no compiler.** Download the kit for your machine from
 the [releases page](https://github.com/Pummelchen/XAIOS/releases) — currently
-**build 7** — unzip it, and run the launcher. The choice of architecture is not
+**build 8** — unzip it, and run the launcher. The choice of architecture is not
 reversible by downloading another kit, so pick yours first:
 
 ```sh
-unzip xaios_b7-aarch64-qemu.zip
-cd xaios_b7-aarch64-qemu
+unzip xaios_b8-aarch64-qemu.zip
+cd xaios_b8-aarch64-qemu
 ./run.sh                 # Ctrl-A X quits QEMU
 ```
 

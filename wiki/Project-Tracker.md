@@ -29,9 +29,14 @@ place it lives.
 
 ## Where the tree stands
 
-**Build 7 is cut and published** -- `b7` on the releases page, carrying one
+**Build 8 is cut and published** -- `b8` on the releases page, carrying one
 image per architecture, eleven kits and a checksum file, with every digest in
-`release/xaios_b7.md`. It was gated on this host by `docs-check`,
+`release/xaios_b8.md`. It is the build that closes everything the runner and
+build 7's cut turned up: the virtio-net self-test's two-byte stack overrun (the
+one that panicked the RISC-V release image built anywhere but this machine), the
+whole WebTransport host/interop chain, the handshake gate's peer waiting long
+enough for a booting guest, and three repository checks that had been read as
+product defects. **CI is green end to end on the commit that cuts it.** It was gated on this host by `docs-check`,
 `compile-check` (three architectures), `hosted-test`, `xapt-test`,
 `release-image-gate` (the three QEMU guests and VMware Fusion, each to a login
 with SSH), `boot-media-gate` (72 checks) and `vm-package-gate` (four of five
@@ -42,13 +47,13 @@ on its own page tables -- a bisect over the 333 commits since build 6 named the
 commit and resolving `ELR`/`FAR` named the variable. Both are fixed and both
 fixes are in build 7.
 
-**Two things were not checked, and the notes say so in those words.** Apple
-Virtualization.framework's guest console never attached on this host (below),
-and `make vmware-fusion-smoke` refused to run because it pinned Fusion to
-`26.0.0` exactly while this host has `26.0.1`. The pin is now the version *line*
+**One thing is still not checked, and the notes say so in those words.** Apple
+Virtualization.framework's guest console never attached on this host (below).
+`make vmware-fusion-smoke` used to refuse to run because it pinned Fusion to
+`26.0.0` exactly while this host has `26.0.1`; the pin is now the version *line*
 (`26.0.x`) with the exact version reported beside the result, and the smoke
-passes on `26.0.1`; the exact pin was a precondition, not an assertion about the
-guest.
+passes on `26.0.1`. The exact pin was a precondition, not an assertion about the
+guest, and the build 8 note records the smoke as run.
 
 **CI has been red on `main` for reasons that were not the tree's latest
 commit**, and fixing them uncovered each other, because a job stops at its first
@@ -103,8 +108,9 @@ same ISO booted on this host halted identically, and the kernel taken out of it
 gave `sepc` inside `virtio_transport_reset` with a `stval` no pointer in the
 image could be. The cause was two bytes: `malformed_packet_self_test` built a
 54-byte frame in `uint8_t packet[52]`, macOS clang left padding there and Linux
-clang reused those bytes for the caller's driver pointer. Build 7 is immutable,
-so the fix is recorded under `## Unreleased`.
+clang reused those bytes for the caller's driver pointer. Build 7 was already
+published and immutable when it was found, so it went into build 8, which is
+the first build whose images carry the fix.
 
 The ten aggregate targets -- `qemu-core-os-rc`, `qemu-full-os-rc`,
 `qemu-developer-ux`, `qemu-operations-closure`, `qemu-network-adversarial-gate`,
@@ -273,7 +279,8 @@ this page does not repeat it.
 
 | Build | State | Note |
 |---|---|---|
-| `b7` | **current** | Cut with the size campaign complete and the WebTransport host, sanitizer and interop gates green. Fixes the Fusion chainloader hang and the Fusion boot panic, and ships one image per architecture plus eleven kits. Apple Virtualization.framework is recorded as **not checked**, not as passing. |
+| `b8` | **current** | Every defect the runner and build 7's cut exposed is fixed: the virtio-net self-test's two-byte stack overrun, the WebTransport host/interop chain, the handshake gate's peer waiting long enough for a booting guest, and three repository checks. CI is green end to end. Apple Virtualization.framework is recorded as **not checked**, not as passing. |
+| `b7` | superseded | Cut with the size campaign complete and the WebTransport host, sanitizer and interop gates green. Fixes the Fusion chainloader hang and the Fusion boot panic, and ships one image per architecture plus eleven kits. Apple Virtualization.framework is recorded as **not checked**, not as passing. |
 | `b6` | superseded | One image per architecture instead of one image for all three, and eleven kits built for one machine each. RISC-V gets a launcher, a USB kit and a network-boot binary for the first time. Cut with `make release-check` green against `7df4fc8`. |
 | `b5` | superseded | A RISC-V kernel in the shipped image, `xtop`, the screen framework, and a machine that is idle when nothing is happening. The last build to ship a single unified image. |
 | `b4` | superseded | Cut from a green CI run. Adds first-boot setup, and an account and machine name a person chooses. |
@@ -315,7 +322,7 @@ and every row of the QEMU and Fusion columns above is gated on this machine.
 Apple Virtualization.framework is a fourth environment that exists on the Macs;
 it is a development target rather than a platform this project has settled on,
 its guest does not currently come up here at all (the section below records what
-was seen), and no release claim rests on it -- the build 7 note names it as
+was seen), and no release claim rests on it -- every release note since names it as
 **not checked**.
 
 **The Virtualization.framework column above describes the platform, not this
