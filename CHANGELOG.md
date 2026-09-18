@@ -23,6 +23,18 @@ records how it was built.
 
 Landed after build 7 and not in any released image.
 
+- **The DNS probe keeps the session's outcome, not just its stdout.** The
+  aggregate's `qemu-core-os-rc` leg has been failing on the runner with `DNS A
+  (well-formed) produced no output at all for 180 seconds`, and the probe could
+  not say whether the resolver had answered nothing or the SSH session had
+  never run -- it discarded the return code and stderr, and `ssh_command`
+  returns stdout alone. That is the same confusion its own docstring records
+  from the first time it happened. It now uses a variant that keeps all three,
+  uses a per-command timeout scaled past the resolver's own 45-second walk, and
+  prints the last session's `rc` and stderr when the patience runs out. The
+  assertion is unchanged: an empty answer is still never accepted as a verdict.
+  The closure passes locally with the change.
+
 - **The host peer waited less time for the guest than the guest took to
   boot.** `wt_peer --server` waited twenty seconds for the client's first
   datagram, and the handshake gate starts it *before* booting the image, so on

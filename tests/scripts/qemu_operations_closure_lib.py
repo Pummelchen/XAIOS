@@ -184,6 +184,20 @@ def ssh_command(key: Path, port: int, command: str, *, ok: bool | None = True,
     return result.stdout
 
 
+def ssh_command_status(key: Path, port: int, command: str,
+                        timeout: int = 30) -> tuple[int, str, str]:
+    """The same command as `ssh_command`, with the return code and stderr kept.
+
+    `ssh_command` returns stdout alone, so a caller cannot tell a session that
+    never ran from a command with nothing to say -- and the DNS probe needs to
+    tell exactly those apart, because it spends three minutes waiting for one
+    and should not spend them on the other.
+    """
+    result = subprocess.run(ssh_base(key, port) + [command], cwd=ROOT,
+                            text=True, capture_output=True, timeout=timeout)
+    return result.returncode, result.stdout, result.stderr
+
+
 def wait_ssh(key: Path, port: int, arch: str = "aarch64",
              timeout: int = 180) -> None:
     """Wait for the guest to answer, on a budget that knows what host it is on.

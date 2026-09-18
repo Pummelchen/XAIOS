@@ -10,6 +10,7 @@ Nothing in the code below changed in the move; the gate imports these names.
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -18,6 +19,7 @@ from qemu_gate_lib import timeout_scale  # noqa: E402
 from qemu_operations_closure_lib import (  # noqa: E402
     assert_contains,
     ssh_command,
+    ssh_command_status,
 )
 
 
@@ -64,8 +66,19 @@ def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
     patience = DNS_PATIENCE_SECONDS * timeout_scale()
     deadline = time.monotonic() + patience
     value = ""
+    last_status = "no attempt was made"
     while time.monotonic() < deadline:
-        value = ssh_command(key, port, command, ok=None)
+        # The session's outcome is kept, not just its stdout. `ssh_command`
+        # returns stdout alone, which is how a refused connection came to read
+        # as a resolver that answered nothing; the two are told apart here.
+        try:
+            code, value, error = ssh_command_status(
+                key, port, command, timeout=int(30 * timeout_scale()))
+            last_status = f"rc={code} stderr={error.strip()[:200]!r}"
+        except subprocess.TimeoutExpired:
+            value = ""
+            last_status = (f"no output within {int(30 * timeout_scale())} "
+                           f"seconds; the command was still running")
         if "pending" not in value and value.strip() != "":
             return value
         time.sleep(0.5)
@@ -74,7 +87,7 @@ def wait_dns_result(key: Path, port: int, command: str, label: str) -> str:
             f"DNS {label} produced no output at all for "
             f"{patience:.0f} seconds: the command printed nothing, "
             f"which is a connection that did not run rather than a resolver "
-            f"that answered"
+            f"that answered. Last session: {last_status}"
         )
     raise RuntimeError(
         f"DNS {label} remained pending for {patience:.0f} seconds, "
