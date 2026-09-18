@@ -23,6 +23,14 @@ records how it was built.
 
 Landed after build 7 and not in any released image.
 
+- **The RISC-V release-image row gets a realistic budget on the runner.** It
+  interprets rather than accelerates, and the runner is shared: at 600 seconds
+  the guest has twice been killed while its own boot-test applications were
+  still finishing -- the log ends mid-suite with a `terminating on signal 15`
+  from the gate rather than in a panic. The CI step allows fifteen minutes now.
+  This is headroom for a slow runner and not a way past a hang: a guest that
+  never reaches the markers still fails, and the gate names the missing one.
+
 - **The booted-guest handshake gate runs on a macOS CI runner.** It reached the
   host peer through QEMU's user-mode network, and GitHub's Linux runners do not
   deliver guest-to-host UDP over it: the peer logs `WT-PEER-BOUND port=4433`

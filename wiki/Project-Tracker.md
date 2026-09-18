@@ -64,6 +64,15 @@ reporting its own timeout. The host tests (1,572 checks), the sanitizer run and
 the interop handshake now pass on Linux -- verified in an Ubuntu 24.04 container
 with clang 18 rather than on this Mac, which is where they were failing.
 
+**Two of the red jobs were the runner rather than the tree.** The RISC-V
+release-image row has twice been killed at its 600-second budget while the
+guest's own boot-test applications were still finishing -- the log ends
+mid-suite with the gate's `terminating on signal 15`, not in a panic -- so the
+CI step now allows fifteen minutes, which is headroom for a shared runner and
+not a way past a hang. `Linux OpenSSH Interoperability` failed once with a
+`docker run` exiting 255 with no output at all, which is the container rather
+than the guest, and passed on the runs either side of it.
+
 **One defect was found by booting the runner's own artifact here.** The
 RISC-V release image built on Linux panicked in the kernel-services stage; the
 same ISO booted on this host halted identically, and the kernel taken out of it
