@@ -186,10 +186,23 @@ def main() -> int:
                 # marker would cut it off at the words "timed out".
                 silence = time.monotonic() + 2.0
                 while time.monotonic() < silence:
-                    chunk = read_available(descriptor, 0.2)
+                    # The same read the loop above does. This called
+                    # `read_available`, which no version of this file ever
+                    # defined: the path runs only when the guest reports its
+                    # own timeout, and on this host the handshake always
+                    # completed, so the failure reported itself as a
+                    # NameError instead of as the reason it failed.
+                    ready, _, _ = select.select([descriptor], [], [], 0.2)
+                    if not ready:
+                        break
+                    chunk = os.read(descriptor, 8192)
                     if not chunk:
                         break
                     output.extend(chunk)
+                    try:
+                        os.write(sys.stdout.fileno(), chunk)
+                    except (BrokenPipeError, OSError):
+                        pass
                 break
             if not ready and guest.poll() is not None:
                 break

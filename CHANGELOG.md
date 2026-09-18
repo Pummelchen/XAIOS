@@ -23,6 +23,14 @@ records how it was built.
 
 Landed after build 7 and not in any released image.
 
+- **The handshake gate can report its own failure.** When the booted guest
+  reported that its handshake had timed out, the gate called
+  `read_available(...)` -- a function no version of that file ever defined --
+  and died with a `NameError` instead of reading the last lines of the failure
+  and the peer's log. It never showed up here because the handshake completes
+  on this host; the CI runner is the only place the path has ever run, and it
+  reported a Python traceback rather than the reason the handshake failed.
+
 - **The virtio-net packet self-test no longer overruns its stack buffer.**
   `malformed_packet_self_test` built a 54-byte ARP frame in `uint8_t packet[52]`
   -- `build_arp_request` writes `VIRTIO_NET_HDR_SIZE + 42`, and
