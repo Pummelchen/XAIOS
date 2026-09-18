@@ -33,6 +33,17 @@ mkdir -p "$OUT/bearssl" "$OUT/objects"
 
 CC=${CC:-clang}
 CFLAGS="-std=c99 -g -O1 -Wall -Wextra -Werror -fno-strict-aliasing"
+# Vendored BearSSL is compiled without -Werror, and with the feature macro its
+# POSIX seeder needs.
+#
+# The seeder calls getentropy(), which glibc declares in <unistd.h> only when
+# _DEFAULT_SOURCE is set -- so on a Linux runner, under `-std=c99`, it is an
+# implicit declaration and -Werror turns it into a build failure for this
+# repository. That is exactly the shape the host-test runner already documents
+# avoiding: a third-party portability warning must not read as an XAIOS defect.
+# Upstream's own build defines the macro; this one now does too, and keeps
+# -Wall -Wextra so its warnings are still printed.
+BEARSSL_CFLAGS="-std=c99 -g -O1 -Wall -Wextra -D_DEFAULT_SOURCE -fno-strict-aliasing"
 INCLUDES="-I$BEARSSL/inc -I$BEARSSL/src -I$VENDOR/include -I$VENDOR/src \
 -I$ROOT/userspace/wt/include -I$ROOT/userspace/wt/xaios -I$ROOT/userspace/include"
 
@@ -48,7 +59,7 @@ for relative in $(CDPATH= cd -- "$BEARSSL" && find src -name '*.c' \
   object="$OUT/bearssl/$(printf '%s' "$relative" | tr '/' '_').o"
   if [ ! -f "$object" ] || [ "$BEARSSL/$relative" -nt "$object" ]; then
     # shellcheck disable=SC2086
-    $CC $CFLAGS $INCLUDES -c "$BEARSSL/$relative" -o "$object"
+    $CC $BEARSSL_CFLAGS $INCLUDES -c "$BEARSSL/$relative" -o "$object"
     stale=1
   fi
   set -- "$@" "$object"

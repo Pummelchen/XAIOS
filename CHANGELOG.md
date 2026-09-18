@@ -76,6 +76,16 @@ clothes.
   L3 table array if a kernel span ever exceeds the 32 MiB the early tables
   cover.
 
+- **The interop peer builds on Linux.** The host peer compiles the vendored
+  BearSSL tree, and it compiled it with `-Werror`; on a Linux runner the POSIX
+  entropy seeder calls `getentropy()`, which glibc declares only when
+  `_DEFAULT_SOURCE` is set, so the strict `-std=c99` build failed on an implicit
+  declaration in *upstream's* code. The vendored sources now compile with the
+  same flags minus `-Werror` and with that macro defined, which is the rule the
+  host-test runner already followed: a third-party portability warning must not
+  read as an XAIOS defect. It was invisible until now because the job stops at
+  its first failing step, and the host tests above it were failing first.
+
 - **The WebTransport host tests link, and CI is no longer red because of them.**
   The runner compiles its own small BearSSL subset, and it carried only the
   *verify* half of the signature primitives: from the day the port started
