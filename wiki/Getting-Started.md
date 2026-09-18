@@ -11,7 +11,7 @@ which builds and runs the same way through its own scripts.
 
 Released builds are on the
 [releases page](https://github.com/Pummelchen/XAIOS/releases), the current one
-being **build 6**.
+being **build 7**.
 
 **Pick your architecture first.** A release is one image per machine, and the
 choice is not reversible by downloading a different kit: an AArch64 image will
@@ -21,12 +21,18 @@ a boot went wrong.
 
 | To run XAIOS on | AArch64 | x86-64 | RISC-V 64-bit |
 |---|---|---|---|
-| QEMU | `xaios_b6-aarch64-qemu.zip` | `xaios_b6-x86_64-qemu.zip` | `xaios_b6-riscv64-qemu.zip` |
-| VMware Fusion | `xaios_b6-aarch64-vmware-fusion.zip` | — | — |
-| Apple Virtualization.framework | `xaios_b6-aarch64-virtualization-framework.zip` | — | — |
-| a real machine, from a USB stick | `xaios_b6-aarch64-usb.zip` | `xaios_b6-x86_64-usb.zip` | `xaios_b6-riscv64-usb.zip` |
-| a real machine with no disk, over the network | `xaios_b6-aarch64-netboot.zip` | `xaios_b6-x86_64-netboot.zip` | `xaios_b6-riscv64-netboot.zip` |
-| your own tooling | `xaios_b6-aarch64.iso.zip` | `xaios_b6-x86_64.iso.zip` | `xaios_b6-riscv64.iso.zip` |
+| QEMU | `xaios_b7-aarch64-qemu.zip` | `xaios_b7-x86_64-qemu.zip` | `xaios_b7-riscv64-qemu.zip` |
+| VMware Fusion | `xaios_b7-aarch64-vmware-fusion.zip` | — | — |
+| Apple Virtualization.framework | `xaios_b7-aarch64-virtualization-framework.zip` | — | — |
+| a real machine, from a USB stick | `xaios_b7-aarch64-usb.zip` | `xaios_b7-x86_64-usb.zip` | `xaios_b7-riscv64-usb.zip` |
+| a real machine with no disk, over the network | `xaios_b7-aarch64-netboot.zip` | `xaios_b7-x86_64-netboot.zip` | `xaios_b7-riscv64-netboot.zip` |
+| your own tooling | `xaios_b7-aarch64.iso.zip` | `xaios_b7-x86_64.iso.zip` | `xaios_b7-riscv64.iso.zip` |
+
+Build 7's Apple Virtualization.framework kit is published, and its guest was **not
+checked** on the machine that cut the build: the console never attached there, and the
+released build 6 image behaves the same way on that host, so it is the host and not the
+kit. The kit is the same arrangement build 6 shipped. The release note for build 7
+records this in the same words.
 
 Each QEMU kit carries one launch script, for the machine it is for. RISC-V has
 a kit for the first time in build 6: before it, the shipped image carried a
