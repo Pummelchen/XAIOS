@@ -364,8 +364,18 @@ def main() -> int:
         raise SystemExit("VMware Fusion smoke requires Apple Silicon macOS")
     if not VMRUN.is_file() or not os.access(VMRUN, os.X_OK):
         raise SystemExit(f"vmrun is unavailable: {VMRUN}")
-    if fusion_version() != "26.0.0":
-        raise SystemExit(f"VMware Fusion 26H1 requires 26.0.0, got {fusion_version()!r}")
+    # The version line, not one build of it. Fusion patches its own version
+    # without changing the virtual hardware, and an exact pin meant this gate
+    # refused to test anything at all once the host was updated -- so the
+    # hypervisor record could not be produced and `make release-check` could not
+    # pass. What the gate asserts is the guest; the host version is a
+    # precondition, and a patch inside the line the smoke was written for is not
+    # a reason to refuse. The exact version is reported with the result, so a
+    # difference is visible rather than hidden.
+    version = fusion_version()
+    if not version.startswith("26.0"):
+        raise SystemExit(f"VMware Fusion 26H1 requires 26.0.x, got {version!r}")
+    print(f"vmware-fusion-smoke: host Fusion {version}")
     for tool in ("ssh", "sftp", "ssh-keygen"):
         if not shutil.which(tool):
             raise SystemExit(f"required macOS client tool unavailable: {tool}")

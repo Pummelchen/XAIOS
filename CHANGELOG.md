@@ -94,6 +94,17 @@ clothes.
   L3 table array if a kernel span ever exceeds the 32 MiB the early tables
   cover.
 
+- **The interop peer compiles the vendored runtime with the vendored flag
+  set.** With the archiver resolved, the same step failed on the *other*
+  vendored tree: `third_party/webtransport-c99/src/core/time.c` wants
+  `clock_gettime` and `struct timespec`, which a strict `-std=c99` build on
+  glibc does not declare, and the peer compiled every vendored source with this
+  repository's `-Werror`. Vendored sources now have their own flag set -- the
+  feature macro they need, no `-Werror` -- while this repository's own sources
+  keep both. Verified on Linux, not on the runner: an Ubuntu 24.04 container
+  with clang 18 runs `make wt-interop-test` through all eight checks,
+  `make wt-host-test` and `make wt-host-sanitize` with it.
+
 - **The interop peer finds an archiver anywhere.** With the compile fixed, the
   same step failed on `llvm-ar: not found`: it hard-coded that name, and the
   Linux CI image ships clang and lld without it. The script now prefers

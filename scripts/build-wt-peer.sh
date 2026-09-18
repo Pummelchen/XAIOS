@@ -45,7 +45,7 @@ if [ -z "$AR" ]; then
     AR=ar
   fi
 fi
-CFLAGS="-std=c99 -g -O1 -Wall -Wextra -Werror -fno-strict-aliasing"
+CFLAGS="-std=c99 -g -O1 -Wall -Wextra -Werror -D_DEFAULT_SOURCE -fno-strict-aliasing"
 # Vendored BearSSL is compiled without -Werror, and with the feature macro its
 # POSIX seeder needs.
 #
@@ -56,7 +56,7 @@ CFLAGS="-std=c99 -g -O1 -Wall -Wextra -Werror -fno-strict-aliasing"
 # avoiding: a third-party portability warning must not read as an XAIOS defect.
 # Upstream's own build defines the macro; this one now does too, and keeps
 # -Wall -Wextra so its warnings are still printed.
-BEARSSL_CFLAGS="-std=c99 -g -O1 -Wall -Wextra -D_DEFAULT_SOURCE -fno-strict-aliasing"
+VENDOR_CFLAGS="-std=c99 -g -O1 -Wall -Wextra -D_DEFAULT_SOURCE -fno-strict-aliasing"
 INCLUDES="-I$BEARSSL/inc -I$BEARSSL/src -I$VENDOR/include -I$VENDOR/src \
 -I$ROOT/userspace/wt/include -I$ROOT/userspace/wt/xaios -I$ROOT/userspace/include"
 
@@ -72,7 +72,7 @@ for relative in $(CDPATH= cd -- "$BEARSSL" && find src -name '*.c' \
   object="$OUT/bearssl/$(printf '%s' "$relative" | tr '/' '_').o"
   if [ ! -f "$object" ] || [ "$BEARSSL/$relative" -nt "$object" ]; then
     # shellcheck disable=SC2086
-    $CC $BEARSSL_CFLAGS $INCLUDES -c "$BEARSSL/$relative" -o "$object"
+    $CC $VENDOR_CFLAGS $INCLUDES -c "$BEARSSL/$relative" -o "$object"
     stale=1
   fi
   set -- "$@" "$object"
@@ -85,16 +85,21 @@ objects=""
 compile() {
   source=$1
   name=$2
+  flags=${3:-$CFLAGS}
   object="$OUT/objects/$name.o"
   if [ ! -f "$object" ] || [ "$source" -nt "$object" ]; then
     # shellcheck disable=SC2086
-    $CC $CFLAGS $INCLUDES -c "$source" -o "$object"
+    $CC $flags $INCLUDES -c "$source" -o "$object"
   fi
   objects="$objects $object"
 }
 
 # The upstream runtime: core, the QUIC connection, the socket branch and the
-# TLS handshake. Nothing above the handshake is driven here.
+# TLS handshake. Nothing above the handshake is driven here. It compiles with
+# the vendored flag set -- see VENDOR_CFLAGS above: upstream asks POSIX for
+# `clock_gettime` and `struct timespec` in `src/core/time.c`, which a strict
+# `-std=c99` build on glibc does not declare, and it is not this repository's
+# code to fail a build over.
 # The object name comes from the path, not the basename: `handshake.c` and
 # `session.c` each exist in two of these directories, and one overwriting the
 # other is a link error that names the missing function rather than the file.
@@ -104,7 +109,8 @@ for source in "$VENDOR"/src/core/*.c "$VENDOR"/src/quic/*.c \
               "$VENDOR"/src/tls/extension.c "$VENDOR"/src/tls/handshake.c \
               "$VENDOR"/src/tls/keyschedule.c "$VENDOR"/src/tls/session.c; do
   relative=${source#"$VENDOR"/src/}
-  compile "$source" "vendor-$(printf '%s' "${relative%.c}" | tr '/' '_')"
+  compile "$source" "vendor-$(printf '%s' "${relative%.c}" | tr '/' '_')" \
+    "$VENDOR_CFLAGS"
 done
 
 # The XAIOS side: the BearSSL crypto backend, the key share, the trust and
