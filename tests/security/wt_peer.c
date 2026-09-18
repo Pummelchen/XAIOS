@@ -194,6 +194,22 @@ static int run_until_ready(wt_peer_t *peer, const char *who) {
   return 1;
 }
 
+/* How long the server waits for the client's first datagram, from
+   XAIOS_WT_PEER_WAIT_SECONDS: the interop test's two host processes need
+   seconds, a booted guest needs minutes, and the gate passes its own budget. */
+static uint64_t server_wait_micros(unsigned *seconds_out) {
+  const char *text = getenv("XAIOS_WT_PEER_WAIT_SECONDS");
+  char *end = NULL;
+  unsigned seconds = 20U;
+  unsigned long parsed =
+      (text != NULL && text[0] != '\0') ? strtoul(text, &end, 10) : 0UL;
+  if (parsed > 0UL && parsed <= 3600UL && end != NULL && *end == '\0') {
+    seconds = (unsigned)parsed;
+  }
+  if (seconds_out != NULL) *seconds_out = seconds;
+  return (uint64_t)seconds * 1000000U;
+}
+
 static int run_server(const char *bind_host, uint16_t port, const char *cert_path,
                       const char *key_path) {
   wt_peer_t peer;
@@ -208,7 +224,8 @@ static int run_server(const char *bind_host, uint16_t port, const char *cert_pat
   size_t client_destination_length = 0U;
   char joined[128];
   wt_udp_address_t local;
-  unsigned waited;
+  unsigned waited, wait_seconds = 0U;
+  uint64_t wait_micros = server_wait_micros(&wait_seconds);
   int arrived = 0;
 
   if (read_file(cert_path, g_certificate, sizeof(g_certificate),
@@ -244,7 +261,8 @@ static int run_server(const char *bind_host, uint16_t port, const char *cert_pat
     wt_udp_close(&peer.socket);
     return 1;
   }
-  printf("WT-PEER-BOUND port=%u\n", (unsigned)peer.socket.port);
+  printf("WT-PEER-BOUND port=%u wait_seconds=%u\n",
+         (unsigned)peer.socket.port, wait_seconds);
   printf("WT-PEER-PIN ");
   {
     size_t index;
@@ -260,7 +278,7 @@ static int run_server(const char *bind_host, uint16_t port, const char *cert_pat
      it is PEEKED rather than received. The client's first Initial names both
      connection IDs this server needs: the destination it chose, which the
      transport parameters must echo, is the one the Initial keys derive from. */
-  for (waited = 0U; waited < 2000U; ++waited) {
+  for (waited = 0U; (uint64_t)waited * 10000U < wait_micros; ++waited) {
     size_t datagram_length = 0U;
     size_t available = 0U;
     wt_udp_address_t candidate;

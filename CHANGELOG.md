@@ -23,6 +23,19 @@ records how it was built.
 
 Landed after build 7 and not in any released image.
 
+- **The host peer waited less time for the guest than the guest took to
+  boot.** `wt_peer --server` waited twenty seconds for the client's first
+  datagram, and the handshake gate starts it *before* booting the image, so on
+  anything slower than a warm local machine the peer was gone before the guest
+  reached `/bin/wtqtest`. It then reported `WT-PEER-TIMEOUT no Initial arrived`
+  -- for a client that had not started -- and the gate read that as a network
+  failure. Measured here: the whole boot and handshake takes 18 seconds, which
+  is why it passed on this Mac and failed on both CI runners. The wait is now
+  the caller's budget (`XAIOS_WT_PEER_WAIT_SECONDS`, default unchanged at 20
+  seconds for the interop test) and the gate passes it the same 300 seconds it
+  gives the boot. The peer prints its budget in `WT-PEER-BOUND`, so a failing
+  run shows it.
+
 - **The RISC-V release-image row gets a realistic budget on the runner.** It
   interprets rather than accelerates, and the runner is shared: at 600 seconds
   the guest has twice been killed while its own boot-test applications were

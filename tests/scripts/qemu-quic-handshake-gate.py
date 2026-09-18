@@ -113,11 +113,17 @@ def main() -> int:
     #    a peer started afterwards would be racing the handshake's own timeout.
     peer_log_path.unlink(missing_ok=True)
     peer_log = peer_log_path.open("wb")
+    # The peer waits for the guest, and the guest is booting: it gets the same
+    # budget this gate gives the boot. Its own default is twenty seconds, which
+    # expired while the guest was still at its login prompt and produced
+    # "no Initial arrived" for a client that had not started.
+    peer_environment = environment.copy()
+    peer_environment["XAIOS_WT_PEER_WAIT_SECONDS"] = str(timeout)
     peer = subprocess.Popen(
         [str(PEER), "--server", "--host", "0.0.0.0", "--port", str(port),
          "--cert", str(CERT), "--key", str(KEY)],
-        cwd=ROOT, stdout=peer_log, stderr=subprocess.STDOUT,
-        start_new_session=True,
+        cwd=ROOT, env=peer_environment, stdout=peer_log,
+        stderr=subprocess.STDOUT, start_new_session=True,
     )
     peer_text = ""
     deadline = started + min(timeout, 30)
