@@ -53,7 +53,12 @@ Virtualization.framework's guest console never attached on this host (below).
 `26.0.0` exactly while this host has `26.0.1`; the pin is now the version *line*
 (`26.0.x`) with the exact version reported beside the result, and the smoke
 passes on `26.0.1`. The exact pin was a precondition, not an assertion about the
-guest, and the build 8 note records the smoke as run.
+guest, and the build 8 note records the smoke as run. On this host the smoke also
+needs Docker's own credential helper reachable -- the fusion kit's chainloader is
+built in a container -- and the helper reads the login keychain, which a headless
+session cannot unlock. It was run with a credential-free Docker config, which is a
+host detail rather than an artifact one: the image it pulls is public, and the
+chainloader it builds is hashed in the kit either way.
 
 **CI has been red on `main` for reasons that were not the tree's latest
 commit**, and fixing them uncovered each other, because a job stops at its first
